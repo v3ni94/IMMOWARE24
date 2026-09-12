@@ -9,3 +9,8 @@
 /.github export-ignore
 CHANGELOG.md export-ignore
 .styleci.yml export-ignore
+
+# Fixtures mit protokollbedingtem CRLF (vCard, iCalendar, DATEV/CSV-Exporte) nicht normalisieren
+*.vcf -text
+*.ics -text
+tests/Fixtures/imports/*.csv -text
