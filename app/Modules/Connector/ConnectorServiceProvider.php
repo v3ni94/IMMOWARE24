@@ -19,6 +19,7 @@ use App\Modules\Connector\Services\RemoteRequestLogger;
 use App\Modules\Connector\Support\ConnectorContext;
 use App\Modules\Connector\Support\ResponseSchemaFingerprint;
 use App\Modules\Connector\Support\UrlSanitizer;
+use App\Modules\Connector\Testing\Console\MockImmowareServeCommand;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\ServiceProvider;
@@ -81,6 +82,10 @@ class ConnectorServiceProvider extends ServiceProvider
 
         if ($this->app->runningInConsole()) {
             $this->commands([ProbeCommand::class, PruneRemoteRequestsCommand::class]);
+
+            if ($this->app->environment(['local', 'testing'])) {
+                $this->commands([MockImmowareServeCommand::class]);
+            }
         }
     }
 }

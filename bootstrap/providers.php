@@ -8,6 +8,7 @@ use App\Modules\Contacts\ContactsServiceProvider;
 use App\Modules\Documents\DocumentsServiceProvider;
 use App\Modules\Estate\EstateServiceProvider;
 use App\Modules\Imports\ImportsServiceProvider;
+use App\Modules\Mcp\McpServiceProvider;
 use App\Modules\Security\SecurityServiceProvider;
 use App\Modules\Sync\SyncServiceProvider;
 use App\Modules\Webhooks\WebhooksServiceProvider;
@@ -25,5 +26,6 @@ return [
     ImportsServiceProvider::class,
     ApiServiceProvider::class,
     WebhooksServiceProvider::class,
+    McpServiceProvider::class,
     AdminServiceProvider::class,
 ];

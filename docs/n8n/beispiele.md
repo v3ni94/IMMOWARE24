@@ -13,21 +13,32 @@ Jeder Flow folgt demselben Grundmuster:
 
 ## Signaturprüfung (Code-Node, JavaScript)
 
+Änderungsvermerk 12.09.2026: Format an die Implementierung des Moduls Webhooks angepasst (`X-Hub-Signature: t=<unix>,v1=<hex>`). Vollständige, importierbare Fassung in `workflows/`.
+
 ```javascript
 const crypto = require('crypto');
 const secret = $env.HUB_WEBHOOK_SECRET; // aus n8n-Credentials, nie im Flow
-const headers = $input.first().json.headers;
-const rawBody = $input.first().json.rawBody; // Raw Body im Webhook-Node aktivieren
-const ts = headers['x-hub-timestamp'];
-const sigHeader = headers['x-hub-signature'] || ''; // Format v1=<hex>, bei Rotation v1=<alt>,v1=<neu>
+const item = $input.first().json;
+const headers = item.headers;
+const binary = $input.first().binary;
+const rawBody = binary && binary.data && binary.data.data
+  ? Buffer.from(binary.data.data, 'base64').toString('utf8') // Raw Body im Webhook-Node aktivieren
+  : JSON.stringify(item.body);
+const header = headers['x-hub-signature'] || ''; // Format t=<unix>,v1=<hex>[,v1=<hex alt>]
 
+let ts = null;
+const candidates = [];
+for (const part of header.split(',')) {
+  const [k, v] = part.trim().split('=');
+  if (k === 't' && /^\d+$/.test(v || '')) ts = Number(v);
+  if (k === 'v1' && v) candidates.push(v.toLowerCase());
+}
 const now = Math.floor(Date.now() / 1000);
-if (!ts || Math.abs(now - Number(ts)) > 300) {
-  throw new Error('Zeitstempel ausserhalb des Replay-Fensters');
+if (ts === null || Math.abs(now - ts) > 300) {
+  throw new Error('Zeitstempel fehlt oder ausserhalb des Replay-Fensters');
 }
 const expected = Buffer.from(crypto.createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));
-const candidates = sigHeader.split(',').map(s => s.trim()).filter(s => s.startsWith('v1=')).map(s => Buffer.from(s.slice(3)));
-const valid = candidates.some(c => c.length === expected.length && crypto.timingSafeEqual(c, expected));
+const valid = candidates.some(c => Buffer.from(c).length === expected.length && crypto.timingSafeEqual(Buffer.from(c), expected));
 if (!valid) {
   throw new Error('Signatur ungueltig');
 }

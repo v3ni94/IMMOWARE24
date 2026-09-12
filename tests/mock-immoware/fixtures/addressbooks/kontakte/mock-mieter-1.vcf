@@ -1,0 +1,9 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:mock-mieter-1
+N:Beispiel;Max;;;
+FN:Max Beispiel
+TEL;TYPE=CELL:+49 170 0000000
+EMAIL;TYPE=HOME:max.beispiel@example.invalid
+CATEGORIES:Mieter
+END:VCARD

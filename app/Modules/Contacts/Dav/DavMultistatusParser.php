@@ -93,6 +93,19 @@ final class DavMultistatusParser
         return $this->token($this->text($this->xpath($document), '/d:multistatus/d:sync-token', $document->documentElement));
     }
 
+    /**
+     * true, wenn der Body ein wohlgeformtes DAV:multistatus-Dokument ist.
+     */
+    public function isMultistatus(string $xml): bool
+    {
+        $document = $this->load($xml);
+
+        return $document !== null
+            && $document->documentElement !== null
+            && $document->documentElement->namespaceURI === self::NS_DAV
+            && $document->documentElement->localName === 'multistatus';
+    }
+
     private function xpath(DOMDocument $document): DOMXPath
     {
         $xpath = new DOMXPath($document);

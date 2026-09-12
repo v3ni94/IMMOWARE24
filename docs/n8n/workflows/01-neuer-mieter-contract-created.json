@@ -1,0 +1,282 @@
+{
+  "name": "Immoware Hub: Neuer Mieter (contract.created)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "immoware-hub/contract-created",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "4be1b528-13d4-5eec-8902-f3e0aa30a2d0",
+      "name": "Hub Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "Empfängt contract.created vom Immoware Hub. Endpunkt im Hub über POST /api/v1/webhook-endpoints registrieren (Scope webhooks:manage). Raw Body muss aktiv sein."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Signaturprüfung gemäß Modul Webhooks des Immoware Hub (app/Modules/Webhooks/Services/WebhookSigner.php).\n// Header X-Hub-Signature: t=<unix-sekunden>,v1=<hex HMAC-SHA256(secret, \"<t>.<roher Body>\")>\n// Bei Secret-Rotation folgt ein zweiter Eintrag v1=<hex> für das alte Secret; ein Treffer genügt.\n// Zusätzlich sendet der Hub X-Hub-Timestamp (gleicher Wert wie t), X-Hub-Event, X-Hub-Event-Id, X-Hub-Delivery.\nconst crypto = require('crypto');\nconst secret = $env.HUB_WEBHOOK_SECRET; // n8n-Credential oder Umgebungsvariable, nie im Workflow\nif (!secret) { throw new Error('HUB_WEBHOOK_SECRET fehlt'); }\n\nconst item = $input.first().json;\nconst headers = item.headers || {};\nconst binary = $input.first().binary;\n// Raw Body des Webhook-Nodes liegt base64-kodiert in binary.data; nur er ist byteidentisch mit dem signierten Body.\nconst rawBody = binary && binary.data && binary.data.data\n  ? Buffer.from(binary.data.data, 'base64').toString('utf8')\n  : (typeof item.body === 'string' ? item.body : JSON.stringify(item.body));\nconst header = headers['x-hub-signature'] || '';\n\nlet ts = null;\nconst candidates = [];\nfor (const part of header.split(',')) {\n  const [k, v] = part.trim().split('=');\n  if (k === 't' && /^\\d+$/.test(v || '')) { ts = Number(v); }\n  if (k === 'v1' && v) { candidates.push(v.toLowerCase()); }\n}\nif (ts === null || candidates.length === 0) { throw new Error('X-Hub-Signature unvollständig'); }\n\nconst now = Math.floor(Date.now() / 1000);\nif (Math.abs(now - ts) > 300) { throw new Error('Zeitstempel außerhalb des Replay-Fensters (300 s)'); }\n\nconst expected = Buffer.from(crypto.createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\nconst valid = candidates.some((c) => {\n  const buf = Buffer.from(c);\n  return buf.length === expected.length && crypto.timingSafeEqual(buf, expected);\n});\nif (!valid) { throw new Error('Signatur ungültig'); }\n\nconst payload = JSON.parse(rawBody);\nif (payload.event !== 'contract.created') { throw new Error(`Unerwartetes Ereignis ${payload.event}`); }\nreturn [{ json: { ...payload, _hub_event_id: headers['x-hub-event-id'], _hub_delivery: headers['x-hub-delivery'] } }];\n"
+      },
+      "id": "5850b737-a812-5965-80cd-2826f388a920",
+      "name": "HMAC prüfen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplizierung über event_id (Outbox-UUID). Ablage in Workflow Static Data; für Produktion Datenbank verwenden.\nconst staticData = $getWorkflowStaticData('global');\nstaticData.seen = staticData.seen || {};\nconst id = $input.first().json.event_id;\nif (staticData.seen[id]) { return []; }\nstaticData.seen[id] = Date.now();\n// Einträge älter als 7 Tage entfernen\nfor (const [k, t] of Object.entries(staticData.seen)) { if (Date.now() - t > 7 * 86400 * 1000) { delete staticData.seen[k]; } }\nreturn $input.all();\n"
+      },
+      "id": "704fa058-0ef4-50fc-9611-df4668d07086",
+      "name": "event_id deduplizieren",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "status",
+              "leftValue": "={{ $json.source.status }}",
+              "rightValue": "fresh",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "fb99b893-8483-5d30-a53d-cbea3d16a606",
+      "name": "Quelle fresh?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ],
+      "notes": "Bei stale oder degraded keine automatische Aktion, nur Hinweis an den Operator."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.HUB_BASE_URL }}{{ $json.data.href }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fe7bd7e0-df9c-5d73-8593-756bd63dce54",
+      "name": "Details über Hub-API laden",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        200
+      ],
+      "notes": "Authorization: Bearer <API-Key> als n8n-Credential (Header Auth). Benötigter Scope: contracts:read (zusätzlich units:read, contacts:read für Nachladen). Webhook-Payloads enthalten keine personenbezogenen Werte; alle Details kommen aus dieser Antwort mit provenance und meta.source."
+    },
+    {
+      "parameters": {},
+      "id": "735936ec-b51d-512c-b5cc-49d7e9918817",
+      "name": "Operator informieren (stale)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        960,
+        460
+      ],
+      "notes": "Platzhalter: Benachrichtigung an Operator, dass die Quelle nicht fresh ist. Kein Versand an Dritte."
+    },
+    {
+      "parameters": {},
+      "id": "140c0500-f11e-5864-aa12-61ae3ff7abb2",
+      "name": "Google Workspace (Platzhalter)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        40
+      ],
+      "notes": "Platzhalter: Willkommensschreiben als Entwurf in Google Docs anlegen, Aufgabe für Sachbearbeiter. Kein Versand."
+    },
+    {
+      "parameters": {},
+      "id": "d8a5d219-c863-5ecb-8faf-0ee266ae40cd",
+      "name": "Google Drive (Platzhalter)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        200
+      ],
+      "notes": "Platzhalter: Mieterordner unter Objekt/Einheit anlegen, Entwurf ablegen."
+    },
+    {
+      "parameters": {},
+      "id": "558b2392-97cb-5a31-ada1-e8f8fd7ab172",
+      "name": "Telefonbuch/CRM (Platzhalter)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        360
+      ],
+      "notes": "Platzhalter: Kontakt im Telefonbuch oder CRM anlegen. Daten aus GET /api/v1/contacts/{contact_id} (contacts:read)."
+    },
+    {
+      "parameters": {},
+      "id": "11e45123-e2e6-51a2-818a-20af3d8fa323",
+      "name": "Reporting (Platzhalter)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        520
+      ],
+      "notes": "Platzhalter: Zeile in Auswertung Neuvermietungen (Google Sheets oder Datenbank) mit contract_id, unit_id, start_date."
+    },
+    {
+      "parameters": {
+        "content": "## Immoware Hub, Stand 12.09.2026\nQuelle der Ereignisse ist der Immoware Hub (https://immoware.muellerhv.de), nicht Immoware24 (keine API, NICHT VERFÜGBAR).\nSignatur: Header X-Hub-Signature mit t=<unix>,v1=<hex HMAC-SHA256(secret, t + '.' + Body)>, Replay-Fenster 300 s.\nCredentials: HUB_WEBHOOK_SECRET (Endpunkt-Secret), HUB_BASE_URL, API-Key als Header-Auth-Credential. Nie im Workflow speichern.\nPayload enthält nur IDs, Typ, href, Herkunft und Steuerfelder. Namen, Adressen und Beträge nur über die Hub-API mit passendem Scope.\nAlle Zielsysteme sind Platzhalter (NoOp). Kein Versand an Dritte ohne Freigabe eines Mitarbeiters.\nFlow 1: Neuer Mietvertrag im Spiegel (contract.created). Vertragsdaten über data.href (GET /api/v1/contracts/{id}), Mieter über contacts mit filter contact_id.",
+        "height": 260,
+        "width": 640
+      },
+      "id": "b2c79281-e9e4-5d24-a916-6dab1e87d9e5",
+      "name": "Hinweis",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -20
+      ]
+    }
+  ],
+  "connections": {
+    "Hub Webhook": {
+      "main": [
+        [
+          {
+            "node": "HMAC prüfen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HMAC prüfen": {
+      "main": [
+        [
+          {
+            "node": "event_id deduplizieren",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "event_id deduplizieren": {
+      "main": [
+        [
+          {
+            "node": "Quelle fresh?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quelle fresh?": {
+      "main": [
+        [
+          {
+            "node": "Details über Hub-API laden",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Operator informieren (stale)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Details über Hub-API laden": {
+      "main": [
+        [
+          {
+            "node": "Google Workspace (Platzhalter)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Google Drive (Platzhalter)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telefonbuch/CRM (Platzhalter)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Reporting (Platzhalter)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [
+    {
+      "name": "immoware-hub"
+    }
+  ],
+  "pinData": {},
+  "versionId": "b720a256-b58b-517c-b495-63ec36512075"
+}

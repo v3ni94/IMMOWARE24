@@ -1,0 +1,39 @@
+# Immoware Hub, Queue-Worker als systemd-Template (Betrieb ohne Docker, Alternative zu supervisord).
+# Ablage: /etc/systemd/system/immoware-hub-worker@.service
+# Start zweier Worker: systemctl enable --now immoware-hub-worker@1 immoware-hub-worker@2
+# Der Worker beendet sich nach --max-time selbst und wird von systemd neu gestartet (Restart=always).
+# "php artisan queue:restart" aus deploy.sh signalisiert allen Workern das geordnete Ende.
+
+[Unit]
+Description=Immoware Hub Queue Worker %i
+After=network.target redis-server.service mariadb.service
+Wants=redis-server.service mariadb.service
+PartOf=immoware-hub.target
+
+[Service]
+Type=simple
+User=immoware
+Group=immoware
+WorkingDirectory=/var/www/immoware-hub/current
+EnvironmentFile=-/etc/immoware-hub/worker.env
+ExecStart=/usr/bin/php artisan queue:work redis --queue=high,default,sync,write,documents,low --sleep=3 --tries=1 --max-time=3600 --memory=256 --timeout=1800
+Restart=always
+RestartSec=5
+TimeoutStopSec=1830
+KillSignal=SIGTERM
+KillMode=mixed
+Nice=5
+
+# Haertung
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/www/immoware-hub/shared/storage /var/www/immoware-hub/current/bootstrap/cache
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,89 @@
+{
+    "contract_version": 1,
+    "options": {
+        "status": 200,
+        "dav_classes": [
+            "1",
+            "3"
+        ],
+        "allow": [
+            "GET",
+            "HEAD",
+            "OPTIONS",
+            "PROPFIND",
+            "PUT"
+        ],
+        "server_header_present": true
+    },
+    "auth": {
+        "status_without_credentials": 401,
+        "scheme": "basic",
+        "realm_present": true
+    },
+    "files": {
+        "propfind_depth0": {
+            "status": 207,
+            "is_multistatus": true,
+            "is_collection": true,
+            "content_type": "application/xml"
+        },
+        "propfind_depth1": {
+            "status": 207,
+            "entries": 2,
+            "collection_properties": [
+                "displayname",
+                "getlastmodified",
+                "resourcetype"
+            ],
+            "file_properties": [
+                "displayname",
+                "getcontentlength",
+                "getcontenttype",
+                "getetag",
+                "getlastmodified",
+                "resourcetype"
+            ],
+            "etag_format": "strong_quoted",
+            "lastmodified_format": "rfc7231"
+        }
+    },
+    "addressbook": {
+        "propfind_depth0": {
+            "status": 207,
+            "is_collection": true,
+            "ctag_present": true,
+            "sync_token_present": false,
+            "reports": [
+                "addressbook-multiget",
+                "addressbook-query"
+            ],
+            "resourcetypes": [
+                "addressbook",
+                "collection"
+            ]
+        },
+        "report_query_status": 207,
+        "report_multiget_status": 207,
+        "multiget_returns_address_data": true,
+        "etag_format": "strong_quoted",
+        "sync_collection_status": 403
+    },
+    "calendar": {
+        "propfind_depth0": {
+            "status": 207,
+            "is_collection": true,
+            "ctag_present": true,
+            "sync_token_present": false,
+            "reports": [
+                "calendar-multiget",
+                "calendar-query"
+            ],
+            "resourcetypes": [
+                "calendar",
+                "collection"
+            ]
+        },
+        "report_query_status": 207,
+        "etag_format": "strong_quoted"
+    }
+}

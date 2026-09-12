@@ -226,5 +226,10 @@ abstract class AbstractDavClient
         if ($response->status !== 207) {
             throw new ConnectorException(sprintf('%s: unerwarteter Status %d.', $operation, $response->status));
         }
+
+        if (! $this->parser->isMultistatus($response->body)) {
+            // Datenintegrität: ein 207 ohne auswertbares Multistatus darf nie als leere Collection gelten (sonst Sweep).
+            throw new ConnectorException(sprintf('%s: Status 207 ohne gültiges Multistatus-XML.', $operation));
+        }
     }
 }

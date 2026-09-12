@@ -1,0 +1,9 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:mock-firma-1
+FN:Handwerk Muster GmbH
+ORG:Handwerk Muster GmbH
+TEL;TYPE=WORK:+49 211 111111
+EMAIL;TYPE=WORK:info@handwerk-muster.example.invalid
+CATEGORIES:Handwerker
+END:VCARD

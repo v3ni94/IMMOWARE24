@@ -1,6 +1,6 @@
 # Immoware Hub, Implementierungsplan
 
-Stand: 11.09.2026. Auftraggeber: Hausverwaltung Müller GmbH. Zielsystem: Laravel 12, PHP 8.4, MariaDB 10.11+, Redis 7, Horizon, Scheduler.
+Stand: 11.09.2026, Statusspalte ergänzt am 12.09.2026. Auftraggeber: Hausverwaltung Müller GmbH. Zielsystem: Laravel 13, PHP 8.4, MariaDB 10.11+, Redis 7, Scheduler (Änderungsvermerk 12.09.2026: Laravel 13 statt 12, kein Horizon, Queue-Worker über supervisord oder systemd, siehe docs/operations/01-deployment.md).
 
 Grundlage sind die Architekturentscheidung, das Datenmodell und die Schnittstellenrecherche in `docs/immoware/`. Der Plan gliedert die vier Grobphasen der Architekturentscheidung (Phase 0 Voraussetzungen, Phase 1 lesend, Phase 2 Schreiben, Phase 3 Buchhaltung, Phase 4 Konsumenten) in 15 Arbeitsphasen 0 bis 14 mit Definition of Done.
 
@@ -15,23 +15,25 @@ Aufwandsangaben sind Schätzungen in Personenwochen (PW) für ein Team aus einer
 
 ## Übersicht
 
-| Phase | Titel | Grobphase | Aufwand | Blockierende Abhängigkeit |
-|---|---|---|---|---|
-| 0 | Voraussetzungen, Zugang, Probe | 0 | 2 bis 3 Wochen Kalender, 1 PW | DAV-Modul gebucht |
-| 1 | Projektgerüst, Core, Auth, Audit | 1 | 1,5 PW | keine |
-| 2 | Capability Registry, Probe-Kommando, Connection-Verwaltung | 1 | 1 PW | Phase 0 Probe-Ergebnisse, Phase 1 |
-| 3 | WebDAV-Dokumentenspiegel (lesend) | 1 | 1,5 PW | Phase 2 |
-| 4 | CardDAV-Kontaktspiegel (lesend) | 1 | 1 PW | Phase 2 |
-| 5 | CSV-Import Stammdaten mit Bootstrap | 1 | 1,5 PW | Phase 0 CSV-Dateien, Phase 1 |
-| 6 | Konfliktqueue, proposed_change, Datenalter, Export-Erinnerungen | 1 | 1 PW | Phasen 3 bis 5 |
-| 7 | Resilienz, Degraded-Mode, DLQ, Backups, Betrieb | 1 | 1 PW | Phase 6 |
-| 8 | Schreibpfad Posteingang, Freigabeprozess | 2 | 1,5 PW | Phase 7, Supportbestätigung, GF-Freigabe |
-| 9 | Pilotbetrieb Schreibpfad und Abnahme | 2 | 0,5 PW plus 4 Wochen Pilot | Phase 8 |
-| 10 | DATEV-Buchungsexport und OP-Listen (lesend) | 3 | 1 PW | Phase 5, DATEV-Datei aus Phase 0 |
-| 11 | CAMT.053 und optional HeiWaKo (lesend) | 3 | 1 PW | Phase 10 |
-| 12 | CalDAV-Terminspiegel (lesend) | 3 | 0,5 PW | Phase 4 |
-| 13 | Ausgehende Webhooks für benannte Konsumenten (n8n) | 4 | 1 PW | Phase 9, benannter Konsument |
-| 14 | Lesende API mit Scopes, Regelbetrieb, Review | 4 | 1 PW | Phase 13 |
+| Phase | Titel | Grobphase | Aufwand | Blockierende Abhängigkeit | Status 12.09.2026 |
+|---|---|---|---|---|---|
+| 0 | Voraussetzungen, Zugang, Probe | 0 | 2 bis 3 Wochen Kalender, 1 PW | DAV-Modul gebucht | offen (WAITING_FOR_VENDOR_ACCESS, Probe am Mandanten nicht begonnen) |
+| 1 | Projektgerüst, Core, Auth, Audit | 1 | 1,5 PW | keine | Code vorhanden, am Mandanten ungetestet |
+| 2 | Capability Registry, Probe-Kommando, Connection-Verwaltung | 1 | 1 PW | Phase 0 Probe-Ergebnisse, Phase 1 | Code vorhanden, am Mandanten ungetestet |
+| 3 | WebDAV-Dokumentenspiegel (lesend) | 1 | 1,5 PW | Phase 2 | Code vorhanden, am Mandanten ungetestet |
+| 4 | CardDAV-Kontaktspiegel (lesend) | 1 | 1 PW | Phase 2 | Code vorhanden, am Mandanten ungetestet |
+| 5 | CSV-Import Stammdaten mit Bootstrap | 1 | 1,5 PW | Phase 0 CSV-Dateien, Phase 1 | Code vorhanden, am Mandanten ungetestet (Spaltenformate offen) |
+| 6 | Konfliktqueue, proposed_change, Datenalter, Export-Erinnerungen | 1 | 1 PW | Phasen 3 bis 5 | Code vorhanden, am Mandanten ungetestet |
+| 7 | Resilienz, Degraded-Mode, DLQ, Backups, Betrieb | 1 | 1 PW | Phase 6 | Code vorhanden, am Mandanten ungetestet (Betriebsunterlagen unter docs/operations/) |
+| 8 | Schreibpfad Posteingang, Freigabeprozess | 2 | 1,5 PW | Phase 7, Supportbestätigung, GF-Freigabe | Code vorhanden, am Mandanten ungetestet, Flags deaktiviert |
+| 9 | Pilotbetrieb Schreibpfad und Abnahme | 2 | 0,5 PW plus 4 Wochen Pilot | Phase 8 | offen |
+| 10 | DATEV-Buchungsexport und OP-Listen (lesend) | 3 | 1 PW | Phase 5, DATEV-Datei aus Phase 0 | Code vorhanden, am Mandanten ungetestet (DATEV-Datei offen) |
+| 11 | CAMT.053 und optional HeiWaKo (lesend) | 3 | 1 PW | Phase 10 | Code vorhanden, am Mandanten ungetestet (CAMT.053, HeiWaKo nicht gebaut) |
+| 12 | CalDAV-Terminspiegel (lesend) | 3 | 0,5 PW | Phase 4 | Code vorhanden, am Mandanten ungetestet |
+| 13 | Ausgehende Webhooks für benannte Konsumenten (n8n) | 4 | 1 PW | Phase 9, benannter Konsument | Code vorhanden, am Mandanten ungetestet, standardmäßig deaktiviert |
+| 14 | Lesende API mit Scopes, Regelbetrieb, Review | 4 | 1 PW | Phase 13 | Code vorhanden, am Mandanten ungetestet |
+
+Statusspalte (Änderungsvermerk 12.09.2026): "Code vorhanden" bedeutet, dass der Anwendungscode der Phase im Repository liegt und automatisiert gegen simulierte DAV-Server (`Http::fake()`, Mock-Server unter `tests/mock-immoware/`) getestet ist. "am Mandanten ungetestet" bedeutet, dass die Definition of Done noch nicht erfüllt ist, weil das Testprotokoll am eigenen Immoware24-Mandanten fehlt. Nicht im Plan enthaltene, aber gebaute Querschnittsbausteine: Admin-Oberfläche (Modul Admin, 17 Bereiche), MCP-Tool-Schicht (Modul Mcp), Mock-Immoware-Server und Contract-Tests, Betriebsunterlagen (Dockerfile, compose.yaml, deploy/, docs/operations/).
 
 Kritischer Pfad: 0, 1, 2, 3, 6, 7, 8, 9. Phasen 4, 5, 10, 11, 12 können parallel geplant werden, sobald ihre Voraussetzungen vorliegen.
 

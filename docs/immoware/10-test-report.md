@@ -92,41 +92,52 @@ Legende Status: OFFEN (noch nicht ausgeführt), BLOCKIERT (Voraussetzung fehlt),
 | T-W-08 | Hub-Neustart mit write_operation in status sent, Fortsetzung nur per PROPFIND | 1 | OFFEN, nur Mock |
 | T-W-09 | Erkennung der hochgeladenen Datei durch OCR/KI im Posteingang und Zuordnung zu Objekt | 1 | BLOCKIERT, Verhalten NICHT belegt, nur Beobachtung am Mandanten |
 
-## 3. Mock-Server-Plan tests/mock-immoware
+## 3. Mock-Server tests/mock-immoware
 
-Zweck: reproduzierbare Tests aller Adapter, Retry-Stufen, Breaker und Guards ohne Zugriff auf den Mandanten. Der Mock bildet ausschließlich das nach, was als VERIFIZIERT oder DOKUMENTIERT gilt, plus konfigurierbare Fehlerfälle. Er ist keine Aussage über das tatsächliche Verhalten des Immoware24-DAV-Servers; alle Annahmen im Mock sind als solche im Code kommentiert und in Phase 0 gegen die Probe abzugleichen.
+Zweck: reproduzierbare Tests aller Adapter, Retry-Stufen, Breaker und Guards ohne Zugriff auf den Mandanten. Der Mock bildet ausschließlich das nach, was als VERIFIZIERT oder DOKUMENTIERT gilt, plus konfigurierbare Fehlerfälle. Er ist keine Aussage über das tatsächliche Verhalten des Immoware24-DAV-Servers; alle Annahmen im Mock sind als solche im Code kommentiert (Kennzeichnung "Simulation auf Basis belegter Aussagen, kein Nachbau nicht dokumentierter Immoware24-Interna") und in Phase 0 gegen die Probe abzugleichen.
+
+Änderungsvermerk 12.09.2026: Der Mock ist umgesetzt. Abweichend vom ursprünglichen Plan (Docker-Container, YAML-Szenarien, Technologie offen) ist er ein eigenständiger PHP-Built-in-Server (`tests/mock-immoware/server.php`, Start über `php -S` oder `php artisan hub:mock-immoware:serve`), Szenarien werden je Request per Header, Query oder Pfadpräfix gewählt. Grund: keine neuen Abhängigkeiten, Start innerhalb der PHPUnit-Suite per Process, identische Laufzeit wie der Hub. Die Abschnitte 3.1, 3.2, 3.4 und 3.5 sind entsprechend angepasst, die Antwortmatrix in 3.3 bleibt als Sollverhalten gültig.
 
 ### 3.1 Aufbau
 
 ```
 tests/mock-immoware/
-  docker-compose.yml        Container mit WebDAV-, CardDAV- und CalDAV-Endpunkt
-  config/
-    scenarios/*.yaml        Szenarien: Statuscodes, Latenzen, Feature-Flags
-    fixtures/
-      dms/Posteingang/      Beispiel-PDFs (synthetisch, keine Echtdaten)
-      dms/Dokumente/
-      contacts/*.vcf        synthetische vCards, keine Daten aus dem Bestand
-      calendar/*.ics
-      csv/                  synthetische Exporte in mehreren Header-Varianten
-  src/                      Mock-Implementierung (PHP oder Node, Entscheidung offen)
-  README.md
+  server.php                Router für den PHP-Built-in-Server (WebDAV, CardDAV, CalDAV, Szenarien, Protokoll)
+  README.md                 Endpunkte, Szenarien, Umgebungsvariablen
+  fixtures/
+    files/Posteingang/      synthetische Dateien mit Präfix HUBTEST_, keine Echtdaten
+    files/Dokumente/        inkl. Unterordner Objekt-Musterstrasse-1
+    addressbooks/kontakte/  drei synthetische vCards (Eigentümer, Mieter, Handwerker)
+    calendars/termine/      zwei synthetische iCalendar-Termine
+tests/Contract/
+  DavContractTestCase.php   Strukturprüfung eines laufenden DAV-Servers, JSON-Fingerprint, Snapshot-Vergleich
+  DavServerContractTest.php Ziel aus CONTRACT_DAV_BASE_URL (Mock oder Mandant), ohne Variable Skip
+  MockServerContractTest.php startet den Mock per Process auf freiem Port, Snapshot snapshots/mock.json
+  MockScenarioTest.php      Fehlerszenarien gegen echten WebDavConnector und CardDavConnector
+  MockDavResponsesTest.php  Prüfung der Http::fake-Bausteine
+  snapshots/*.json          Fingerprint des letzten Laufs je Ziel
+app/Modules/Connector/Testing/
+  MockDavResponses.php      wiederverwendbare Http::fake-Antworten (Multistatus-Builder, vCard, iCal, Fehlerfälle)
+  Console/MockImmowareServeCommand.php  hub:mock-immoware:serve, nur local und testing
 ```
+
+Per PUT angelegte Dateien, das Request-Protokoll und der ETag-Zähler liegen im Laufzeitverzeichnis (`MOCK_RUNTIME_DIR`, Standard im Temp-Verzeichnis), nicht im Repository.
 
 Datenschutz: Fixtures enthalten ausschließlich synthetische Daten. Keine Kontakte, Objekte oder Dokumente der Hausverwaltung Müller GmbH werden in den Mock kopiert.
 
-### 3.2 Feature-Flags (aus Probe-Ergebnis abzuleiten)
+### 3.2 Annahmen im Mock (aus Probe-Ergebnis abzugleichen)
 
-| Flag | Default im Mock | Bezug |
+| Merkmal | Verhalten im Mock | Bezug |
 |---|---|---|
-| auth_scheme | basic | Auth-Schema am Mandanten VERMUTET, Digest ebenfalls testbar |
-| etag_stable | true und false | ETag-Stabilität NICHT VERFÜGBAR |
-| sync_token | false | RFC 6578 NICHT VERFÜGBAR |
-| ctag | false | NICHT VERFÜGBAR |
-| if_none_match | true und false | NICHT VERFÜGBAR |
-| folders_exposed | Posteingang, Dokumente | VERIFIZIERT als mindestens vorhanden, weitere VERMUTET |
-| addressbooks | 1 und 3 | Aufteilung nach Kontakttypen VERMUTET |
-| rate_limit_rps | unbegrenzt und 2 | Limits NICHT VERFÜGBAR |
+| auth_scheme | Basic, 401 mit `WWW-Authenticate: Basic realm=...` | Auth-Schema am Mandanten VERMUTET |
+| etag_stable | stabil (SHA-256 des Inhalts, starkes ETag in Anführungszeichen); Szenario `etagunstable` wechselt je Request | ETag-Stabilität NICHT VERFÜGBAR |
+| sync_token | nicht unterstützt, REPORT sync-collection antwortet 403 | RFC 6578 NICHT VERFÜGBAR |
+| ctag | vorhanden (`CS:getctag`, abgeleitet aus den ETags der Ressourcen) | NICHT VERFÜGBAR |
+| if_none_match | ausgewertet: PUT mit `If-None-Match: *` auf vorhandene Ressource 412, ohne Header 412 und Protokolleintrag als Verstoß | NICHT VERFÜGBAR |
+| folders_exposed | Posteingang, Dokumente (mit Unterordner) | VERIFIZIERT als mindestens vorhanden, weitere VERMUTET |
+| addressbooks | ein Adressbuch `kontakte` mit drei Kontakttypen über CATEGORIES | Aufteilung nach Kontakttypen VERMUTET |
+| rate_limit | kein eigenes Limit; Szenario `ratelimited` liefert 429 mit `Retry-After: 10` | Limits NICHT VERFÜGBAR |
+| DAV-Header | `DAV: 1, 3` (plus `addressbook` bzw. `calendar-access`), keine Klasse 2 | Server-Header NICHT VERFÜGBAR |
 
 ### 3.3 Antwortmatrix
 
@@ -146,27 +157,33 @@ Datenschutz: Fixtures enthalten ausschließlich synthetische Daten. Keine Kontak
 | Verbindungsabbruch nach PUT-Body | Szenario drop_after_put | status unknown, drei PROPFIND im Abstand von 5 Minuten (im Test verkürzt), kein zweites PUT |
 | Antwort mit geändertem Server-Header oder DAV-Header | Szenario fingerprint_change | Connection degraded, Uploads pausieren, Lesen läuft |
 
-### 3.4 Szenarien (config/scenarios)
+### 3.4 Szenarien
 
-| Datei | Inhalt |
-|---|---|
-| happy_path.yaml | alle Endpunkte 200, etag_stable true, if_none_match true |
-| no_features.yaml | kein sync-token, kein CTag, ETags instabil, Strategie muss auf lastmodified_size_hash fallen |
-| auth_failure.yaml | 401 ab Request 3 |
-| rate_limited.yaml | jeder fünfte Request 429 mit Retry-After 10 |
-| flaky_5xx.yaml | 20 Prozent 500, Breaker muss öffnen |
-| write_conflicts.yaml | Zielpfad existiert, 412 und 409 Fälle |
-| drop_after_put.yaml | Verbindungsabbruch nach PUT-Body |
-| mass_missing.yaml | 30 Prozent der Ressourcen fehlen plötzlich, Schutzgrenze muss greifen |
-| fingerprint_change.yaml | Server-Header ändert sich zwischen zwei Proben |
-| csv_variants.yaml | drei Header-Varianten, BOM, Windows-1252, Semikolon und Komma |
+Auswahl je Request über Header `X-Mock-Scenario`, Query `?scenario=` oder Pfadpräfix `/s/<szenario>/dav/...` (für Connections mit fester Basis-URL).
+
+| Szenario | Verhalten | Geprüftes Hub-Verhalten (MockScenarioTest) |
+|---|---|---|
+| ok | Normalbetrieb | WebDAV-Spiegel liest alle Fixtures mit OPTIONS und PROPFIND, CardDAV spiegelt drei Kontakte mit PROPFIND und REPORT, keine Verstöße im Protokoll |
+| unauthorized | 401 | Breaker öffnet sofort, weitere Requests werden mit CircuitOpenException abgebrochen, CardDAV meldet ConnectorException |
+| forbidden | 403 | fachliches Signal, Breaker bleibt geschlossen, CardDAV meldet ConnectorException |
+| notfound | 404 | wie forbidden |
+| conflict | 409 | PUT liefert 409, Breaker bleibt geschlossen |
+| ratelimited | 429 mit Retry-After 10 | RateLimitManager halbiert die Rate (throttled), Breaker bleibt wegen Retry-After geschlossen |
+| servererror | 500 | fünf Fehler öffnen den Breaker, sechster Request erreicht den Server nicht |
+| timeout | Antwort erst nach MOCK_TIMEOUT_SLEEP (Test: 3 s bei Client-Timeout 1 s) | ConnectionException, timeout_count 1, Drosselung, ein Breaker-Fehler |
+| invalidxml | 207 mit unvollständigem XML | ConnectorException in WebDavClient und CardDAV-Client statt leerer Collection (kein Sweep) |
+| slow | Antwort nach 2 s | Latenzmessung, nur manuell |
+| etagunstable | ETag wechselt je Request | zwei PROPFIND liefern unterschiedliche ETags |
+
+Nicht umgesetzt gegenüber dem ursprünglichen Plan: Verbindungsabbruch nach PUT-Body (drop_after_put), Server-Header-Wechsel (fingerprint_change), Massenverlust von Ressourcen (mass_missing), CSV-Varianten. Diese Fälle sind über `Http::fake` mit `MockDavResponses` in den Modultests abgedeckt bzw. für den Mock offen (Abschnitt 5).
 
 ### 3.5 Abnahmekriterien Mock
 
-- Alle Szenarien laufen in der CI (GitHub Actions) bei jedem Pull Request.
-- Kein Szenario darf ein DELETE, MOVE, COPY, PROPPATCH, LOCK, UNLOCK oder ein PUT ohne If-None-Match vom Hub empfangen. Der Mock protokolliert jede eingehende Methode; ein Verstoß lässt den Test fehlschlagen.
-- put_attempts überschreitet in keinem Szenario den Wert 1 je write_operation.
-- Nach Abschluss jedes Szenarios ist der Spiegel per hub:replay --from payload aus external_payloads identisch rekonstruierbar (Checksum-Vergleich).
+- Contract- und Szenario-Tests laufen in der CI bei jedem Lauf von `php artisan test` (Testsuite `Contract`, rund 7 Sekunden). Der Mock wird dafür per Process auf einem freien Port gestartet.
+- Kein Szenario darf ein DELETE, MOVE, COPY, PROPPATCH, MKCOL, LOCK, UNLOCK oder ein PUT ohne `If-None-Match: *` vom Hub empfangen. Der Mock protokolliert jede eingehende Methode (`/__mock/log`); jeder Eintrag mit `violation` lässt den Test fehlschlagen. Stand 12.09.2026: keine Verstöße.
+- Der Fingerprint des DAV-Servers (DAV-Klassen, Allow, Auth-Schema, Properties, ETag-Format, CTag, Reports) wird als JSON unter `tests/Contract/snapshots/` gespeichert und mit dem letzten Lauf verglichen. Abweichung bedeutet Test rot mit Diff; Erneuerung nur bewusst mit `CONTRACT_SNAPSHOT_UPDATE=1` und Anpassung des Belegstands in `docs/immoware/`.
+- Derselbe Contract-Test läuft in Phase 0 gegen den Mandanten (`CONTRACT_DAV_BASE_URL`, `CONTRACT_DAV_USER`, `CONTRACT_DAV_PASS`, Pfade über `CONTRACT_DAV_FILES_PATH`, `CONTRACT_DAV_ADDRESSBOOK_PATH`, `CONTRACT_DAV_CALENDAR_PATH`). Er sendet ausschließlich OPTIONS, PROPFIND und REPORT. Der Unterschied zwischen `snapshots/mock.json` und dem Mandanten-Snapshot ist die Liste der zu korrigierenden Annahmen.
+- put_attempts überschreitet in keinem Szenario den Wert 1 je write_operation (geprüft in den Documents-Tests, im Mock über das PUT-Protokoll).
 
 ## 4. Ergebnisübersicht (fortzuschreiben)
 
@@ -183,11 +200,11 @@ Datenschutz: Fixtures enthalten ausschließlich synthetische Daten. Keine Kontak
 | Alle Feature-Flags in Abschnitt 3.2 | NICHT VERFÜGBAR bzw. VERMUTET | Probe T-P0-04 bis T-P0-09 am eigenen Mandanten |
 | Spaltenformat CSV und DATEV | NICHT VERFÜGBAR | T-P0-10 |
 | Automatische Objektzuordnung hochgeladener Dateien im DMS | NICHT VERFÜGBAR | T-W-09, nur Beobachtung |
-| Technologie des Mock-Servers (PHP oder Node) | offen | Entscheidung vor Sprint 1 |
+| Technologie des Mock-Servers | entschieden 12.09.2026: PHP-Built-in-Server, siehe Abschnitt 3 | Szenarien drop_after_put, fingerprint_change, mass_missing im Mock noch offen |
 
 ## 6. Automatisierte Tests
 
-Stand 12.09.2026, Lauf `php artisan test` auf Branch claude/vibrant-lovelace-c624qw: **284 Tests, 2.220 Assertions, alle bestanden**, Laufzeit rund 4,6 Sekunden. `vendor/bin/pint --test` sauber, `phpstan analyse --no-progress` (Level 5) ohne Fehler. Umgebung: PHPUnit, `RefreshDatabase`, SQLite in-memory, Queue `sync`, Cache `array`, alle Schreib-Flags false, `HUB_BOOT_GUARD=true`. HTTP nach außen ausschließlich über die `Http`-Facade mit `Http::fake()`, es wurde kein Immoware24-System kontaktiert.
+Stand 12.09.2026 (Änderungsvermerk 12.09.2026, Integrationslauf nach Admin-, Mcp-, Contract- und Betriebsarbeiten), Lauf `php artisan test` auf Branch claude/vibrant-lovelace-c624qw: **427 Tests, 3.281 Assertions, 420 bestanden, 7 übersprungen** (DavServerContractTest ohne `CONTRACT_DAV_BASE_URL`), Laufzeit rund 14 Sekunden. Die Modultabelle unten (Summe 284) umfasst die Fachmodule; hinzu kommen Admin 91 Tests (708 Assertions), Mcp 14 Tests (207 Assertions) und Testsuite Contract 38 Tests (136 Assertions, 7 Skips). `vendor/bin/pint --test` sauber, `phpstan analyse --no-progress` (Level 5) ohne Fehler. Umgebung: PHPUnit, `RefreshDatabase`, SQLite in-memory, Queue `sync`, Cache `array`, alle Schreib-Flags false, `HUB_BOOT_GUARD=true`. HTTP nach außen ausschließlich über die `Http`-Facade mit `Http::fake()`, es wurde kein Immoware24-System kontaktiert.
 
 Zahlen je Modul (Filter `Feature\<Modul>|Unit\<Modul>`, Summe 284):
 
@@ -205,5 +222,5 @@ Zahlen je Modul (Filter `Feature\<Modul>|Unit\<Modul>`, Summe 284):
 | Core | 25 | 115 | BootGuard (alle hart gesperrten Flags, String-true, Boot-Abbruch im Prozess), Migrationen auf SQLite, Formatter (Datum, Beträge), Checksummen und externe Identität (Trait), SecretMasker, `hub:doctor` (Exit-Code 0 ohne Redis, 1 bei Flag-Verletzung) |
 | EndToEnd | 3 | 49 | WebDAV-Multistatus mit drei Dateien → RunSyncJob synchron → `GET /api/v1/documents` mit Scope documents:read liefert drei Dokumente mit Provenance, Outbox `document.created`; CardDAV mit zwei vCards → `/api/v1/contacts`, `/api/v1/directory`, vcf-Suche, Outbox `contact.created`; fehlgeschlagener Lauf → SyncRun failed, DLQ-Eintrag, Outbox `sync.failed` |
 
-Nicht durch automatisierte Tests abgedeckt: Verhalten des echten Immoware24-DAV-Servers (Abschnitt 3.2), MariaDB-spezifisches Verhalten (Tests laufen auf SQLite, Migrationen sind für beide Systeme geschrieben), Redis-Locks im Mehrprozessbetrieb, Horizon, Mailversand, Admin-Oberfläche. Diese Punkte sind Bestandteil der Phasen 0 und 9 am eigenen Mandanten.
+Nicht durch automatisierte Tests abgedeckt: Verhalten des echten Immoware24-DAV-Servers (Abschnitt 3.2), MariaDB-spezifisches Verhalten (Tests laufen auf SQLite, Migrationen sind für beide Systeme geschrieben), Redis-Locks im Mehrprozessbetrieb, Mailversand, Docker-Build und nginx-Konfiguration (kein Daemon in der Entwicklungsumgebung). Die Admin-Oberfläche ist seit 12.09.2026 durch tests/Feature/Admin abgedeckt (Änderungsvermerk). Diese Punkte sind Bestandteil der Phasen 0 und 9 am eigenen Mandanten.
 

@@ -1,0 +1,534 @@
+{
+    "title": "Immoware Hub MCP-Tool-Katalog",
+    "version": "v1",
+    "generated_by": "php artisan hub:mcp:export",
+    "hub_base_url": "https://immoware.muellerhv.de",
+    "endpoints": {
+        "catalog": {
+            "method": "POST",
+            "path": "/api/v1/mcp/tools"
+        },
+        "call": {
+            "method": "POST",
+            "path": "/api/v1/mcp/call",
+            "body": {
+                "tool": "string",
+                "arguments": "object",
+                "idempotency_key": "string (optional)"
+            }
+        }
+    },
+    "write_scope": "mcp:write",
+    "tools": [
+        {
+            "name": "immoware_search_contacts",
+            "description": "Sucht Kontakte im CardDAV-Spiegel des Hubs (Name, Firma, Rolle, Objekt, Einheit). Liefert keine Bankverbindungen. Ergebnisse tragen Datenalter und Herkunft.",
+            "class": "read",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "q": {
+                        "type": "string",
+                        "minLength": 2,
+                        "maxLength": 120,
+                        "description": "Freitextsuche über die durchsuchbaren Felder."
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": [
+                            "owner",
+                            "tenant",
+                            "board_member",
+                            "prospect",
+                            "service_provider",
+                            "contact_person",
+                            "craftsman",
+                            "other"
+                        ],
+                        "description": "Rolle des Kontakts."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "maxLength": 20,
+                        "description": "Kontaktart, z. B. person oder company."
+                    },
+                    "property_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "unit_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "updated_since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Nur Datensätze mit updated_at ab diesem ISO-8601-Zeitpunkt."
+                    },
+                    "page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Seite, ab 1."
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Treffer je Seite, höchstens 50."
+                    }
+                },
+                "required": [],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "GET",
+                "path": "/api/v1/contacts"
+            },
+            "required_scopes": [
+                "contacts:read"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_get_contact",
+            "description": "Liefert einen Kontakt anhand seiner Hub-ID. Zusammengeführte Kontakte verweisen auf den Zielkontakt.",
+            "class": "read",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    }
+                },
+                "required": [
+                    "id"
+                ],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "GET",
+                "path": "/api/v1/contacts/{id}"
+            },
+            "required_scopes": [
+                "contacts:read"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_search_properties",
+            "description": "Sucht Objekte (Liegenschaften) im Spiegel nach Name, Straße, Ort oder Immoware-Objektnummer.",
+            "class": "read",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "q": {
+                        "type": "string",
+                        "minLength": 2,
+                        "maxLength": 120,
+                        "description": "Freitextsuche über die durchsuchbaren Felder."
+                    },
+                    "management_type": {
+                        "type": "string",
+                        "maxLength": 40,
+                        "description": "Verwaltungsart, z. B. WEG oder Miete."
+                    },
+                    "postal_code": {
+                        "type": "string",
+                        "maxLength": 10
+                    },
+                    "city": {
+                        "type": "string",
+                        "maxLength": 120
+                    },
+                    "immoware_object_number": {
+                        "type": "string",
+                        "maxLength": 64
+                    },
+                    "updated_since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Nur Datensätze mit updated_at ab diesem ISO-8601-Zeitpunkt."
+                    },
+                    "page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Seite, ab 1."
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Treffer je Seite, höchstens 50."
+                    }
+                },
+                "required": [],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "GET",
+                "path": "/api/v1/properties"
+            },
+            "required_scopes": [
+                "properties:read"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_get_property",
+            "description": "Liefert ein Objekt anhand seiner Hub-ID.",
+            "class": "read",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    }
+                },
+                "required": [
+                    "id"
+                ],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "GET",
+                "path": "/api/v1/properties/{id}"
+            },
+            "required_scopes": [
+                "properties:read"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_search_units",
+            "description": "Sucht Verwaltungseinheiten, in der Regel eingeschränkt auf ein Objekt (property_id).",
+            "class": "read",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "q": {
+                        "type": "string",
+                        "minLength": 2,
+                        "maxLength": 120,
+                        "description": "Freitextsuche über die durchsuchbaren Felder."
+                    },
+                    "property_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "unit_type": {
+                        "type": "string",
+                        "maxLength": 40
+                    },
+                    "unit_number": {
+                        "type": "string",
+                        "maxLength": 40
+                    },
+                    "updated_since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Nur Datensätze mit updated_at ab diesem ISO-8601-Zeitpunkt."
+                    },
+                    "page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Seite, ab 1."
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Treffer je Seite, höchstens 50."
+                    }
+                },
+                "required": [],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "GET",
+                "path": "/api/v1/units"
+            },
+            "required_scopes": [
+                "units:read"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_get_unit",
+            "description": "Liefert eine Verwaltungseinheit anhand ihrer Hub-ID.",
+            "class": "read",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    }
+                },
+                "required": [
+                    "id"
+                ],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "GET",
+                "path": "/api/v1/units/{id}"
+            },
+            "required_scopes": [
+                "units:read"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_get_contract",
+            "description": "Liefert einen Mietvertrag anhand seiner Hub-ID. Beträge sind Ganzzahlen in Cent mit Währung.",
+            "class": "read",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    }
+                },
+                "required": [
+                    "id"
+                ],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "GET",
+                "path": "/api/v1/contracts/{id}"
+            },
+            "required_scopes": [
+                "contracts:read"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_search_documents",
+            "description": "Sucht Dokumentmetadaten im WebDAV-Spiegel (Dateiname, Pfad, Typ, Zuordnung). Liefert keinen Dateiinhalt.",
+            "class": "read",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "q": {
+                        "type": "string",
+                        "minLength": 2,
+                        "maxLength": 120,
+                        "description": "Freitextsuche über die durchsuchbaren Felder."
+                    },
+                    "property_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "unit_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "contact_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "case_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "document_type": {
+                        "type": "string",
+                        "maxLength": 60
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "maxLength": 120
+                    },
+                    "updated_since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Nur Datensätze mit updated_at ab diesem ISO-8601-Zeitpunkt."
+                    },
+                    "page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Seite, ab 1."
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Treffer je Seite, höchstens 50."
+                    }
+                },
+                "required": [],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "GET",
+                "path": "/api/v1/documents"
+            },
+            "required_scopes": [
+                "documents:read"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_create_case",
+            "description": "Legt einen Hub-eigenen Vorgang an (kein Schreibpfad nach Immoware24). Verlangt zusätzlich den Scope mcp:write und wird mit Quelle mcp auditiert.",
+            "class": "write",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 300
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "open",
+                            "in_progress",
+                            "waiting",
+                            "closed"
+                        ]
+                    },
+                    "property_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "unit_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "contact_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "immoware_ticket_reference": {
+                        "type": "string",
+                        "maxLength": 64
+                    }
+                },
+                "required": [
+                    "title"
+                ],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "POST",
+                "path": "/api/v1/cases"
+            },
+            "required_scopes": [
+                "cases:write"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_propose_contact_change",
+            "description": "Legt je Feld einen Änderungsvorschlag (proposed_change) zu einem Kontakt an. Kein Writeback nach Immoware24, Umsetzung erfolgt manuell. Verlangt zusätzlich den Scope mcp:write.",
+            "class": "write",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Hub-interne ID der Ressource."
+                    },
+                    "changes": {
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 20,
+                        "description": "Feld => neuer Wert. Erlaubte Felder: salutation, first_name, last_name, company_name, job_title, emails, phones, addresses.",
+                        "additionalProperties": true
+                    },
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1000,
+                        "description": "Begründung, z. B. Quelle des Änderungswunsches."
+                    }
+                },
+                "required": [
+                    "id",
+                    "changes"
+                ],
+                "additionalProperties": false
+            },
+            "hub_api": {
+                "method": "PATCH",
+                "path": "/api/v1/contacts/{id}"
+            },
+            "required_scopes": [
+                "contacts:write"
+            ],
+            "implemented": true,
+            "reason": null
+        },
+        {
+            "name": "immoware_change_bank_account",
+            "description": "Nicht implementiert. Bankverbindungen ändert ausschließlich ein Mensch in Immoware24 (08-security.md Abschnitt 8, Schutzstufe hoch).",
+            "class": "never_autonomous",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": [],
+                "required": [],
+                "additionalProperties": false
+            },
+            "hub_api": null,
+            "required_scopes": [],
+            "implemented": false,
+            "reason": "Bankverbindung ist zahlungsrelevant und schutzbedürftig. Kein Tool, kein Endpunkt, keine Freigabe durch Scope möglich."
+        },
+        {
+            "name": "immoware_delete_document",
+            "description": "Nicht implementiert. Löschen ist per WebDAV hart gesperrt und eine DSGVO-Entscheidung eines Menschen.",
+            "class": "never_autonomous",
+            "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": [],
+                "required": [],
+                "additionalProperties": false
+            },
+            "hub_api": null,
+            "required_scopes": [],
+            "implemented": false,
+            "reason": "DELETE, MOVE und Overwrite Richtung Immoware24 sind gesperrt (CLAUDE.md Regel 2). Kein Tool, kein Endpunkt."
+        }
+    ]
+}

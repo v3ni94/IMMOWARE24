@@ -1,0 +1,10 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:mock-eigentuemer-1
+N:Mustermann;Erika;;;
+FN:Erika Mustermann
+TEL;TYPE=HOME:+49 211 000000
+EMAIL;TYPE=HOME:erika.mustermann@example.invalid
+ADR;TYPE=HOME:;;Musterstraße 1;Musterstadt;;12345;Deutschland
+CATEGORIES:Eigentümer
+END:VCARD

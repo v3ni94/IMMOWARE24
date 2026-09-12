@@ -2,7 +2,7 @@
 
 Integrationsschicht der Hausverwaltung Müller GmbH um den Immoware24-Mandanten. Laravel 13, PHP 8.4, MariaDB 10.11+ (Produktion), SQLite in-memory (Tests), Redis 7 (Queue, Cache, Locks), Scheduler.
 
-Stand: 12.09.2026. Projektphase: Anwendungscode der Phasen 1 bis 8 des Implementierungsplans vorhanden und automatisiert getestet, Phase 0 (Zugang und Probe am eigenen Mandanten) nicht begonnen. Siehe Abschnitt Status.
+Stand: 12.09.2026. Projektphase: Anwendungscode der Phasen 1 bis 8 sowie 10 bis 14 des Implementierungsplans vorhanden und automatisiert getestet, Admin-Oberfläche (17 Bereiche), MCP-Tool-Schicht, Mock-Immoware-Server und Betriebsunterlagen vorhanden. Phase 0 (Zugang und Probe am eigenen Mandanten) nicht begonnen, Phase 9 (Pilotbetrieb) offen. Siehe Abschnitt Status und die Statusspalte in `docs/implementation-plan.md`.
 
 ## Status
 
@@ -19,8 +19,13 @@ Stand: 12.09.2026. Projektphase: Anwendungscode der Phasen 1 bis 8 des Implement
 | 8 | Schreibpfad Posteingang (create-only PUT, Idempotenz, Verify), Flags, BootGuard | vorhanden, Modul Documents und Api, Standard deaktiviert |
 | 10, 11, 12 | DATEV-CSV, CAMT.053 (lesend), CalDAV-Terminspiegel | vorhanden (Importer, Parser, Modul Calendar), MT940 nur Stub |
 | 13, 14 | Ausgehende HMAC-Webhooks (Outbox), REST-API v1 mit Scopes, OpenAPI, Directory, Health | vorhanden, Module Webhooks und Api, Webhooks standardmäßig deaktiviert |
+| 9 | Pilotbetrieb Schreibpfad und Abnahme | offen, setzt Phase 0 und Freigabe der Geschäftsführung voraus |
+| Querschnitt | Admin-Oberfläche (Dashboard, Verbindungen, Capabilities, Sync, Mapping, Konflikte, DLQ, Vorschläge, Importe, Webhooks, API-Keys, Benutzer, Rollen, Auditlog, Discovery, Export, System) | vorhanden, Modul Admin, Blade ohne Frontend-Build |
+| Querschnitt | MCP-Tool-Katalog (`/api/v1/mcp/tools`, `/api/v1/mcp/call`), n8n-Beispiel-Workflows | vorhanden, Modul Mcp, `docs/mcp/`, `docs/n8n/workflows/` |
+| Querschnitt | Mock-Immoware-Server (WebDAV, CardDAV, CalDAV, elf Fehlerszenarien), Contract-Tests | vorhanden, `tests/mock-immoware/`, `tests/Contract/`, `hub:mock-immoware:serve` |
+| Querschnitt | Betrieb: Dockerfile, compose.yaml, nginx, supervisord, systemd, Deploy-, Backup- und Restore-Skripte, CI | vorhanden, `deploy/`, `docker/`, `docs/operations/`, nicht gegen einen echten Host geprüft |
 
-Alle Bausteine sind ausschließlich gegen simulierte DAV-Server (`Http::fake()`) und Testdateien geprüft. Kein Baustein wurde bisher am echten Immoware24-Mandanten getestet. Verhalten des DAV-Servers (Auth-Schema, ETag-Stabilität, sync-token, 412 bei If-None-Match) bleibt VERMUTET bis zur Probe in Phase 0. Die Admin-Oberfläche (Modul Admin) ist noch nicht ausgebaut. Die Zahlen der automatisierten Tests stehen in `docs/immoware/10-test-report.md`, Abschnitt 6.
+Alle Bausteine sind ausschließlich gegen simulierte DAV-Server (`Http::fake()`) und Testdateien geprüft. Kein Baustein wurde bisher am echten Immoware24-Mandanten getestet. Verhalten des DAV-Servers (Auth-Schema, ETag-Stabilität, sync-token, 412 bei If-None-Match) bleibt VERMUTET bis zur Probe in Phase 0. Der Mock-Server unter `tests/mock-immoware/` ist eine Simulation auf Basis belegter Aussagen und ersetzt die Probe nicht. Stand 12.09.2026: `php artisan test` 427 Tests, 3.281 Assertions, 420 bestanden, 7 übersprungen (Contract-Tests gegen externen DAV-Server ohne `CONTRACT_DAV_BASE_URL`), Pint und PHPStan (Level 5) ohne Befund. Details in `docs/immoware/10-test-report.md`, Abschnitt 6.
 
 ## Entwicklung
 
@@ -49,6 +54,8 @@ php artisan hub:imports:scan --process              Drop-Ordner erfassen und ver
 php artisan hub:imports:remind                      Überfällige manuelle Exporte auflisten
 php artisan documents:scan {connection}             WebDAV-Ordner scannen
 php artisan hub:openapi:export                      OpenAPI nach docs/api/openapi.json schreiben
+php artisan hub:mcp:export                          MCP-Tool-Katalog nach docs/mcp/tools.json schreiben
+php artisan hub:mock-immoware:serve                 Mock-Immoware-Server starten (nur local/testing)
 php artisan audit:verify, audit:anchor              Audit-Hash-Kette prüfen und verankern
 php artisan hub:webhooks:redeliver                  Fehlgeschlagene Zustellungen erneut versuchen
 php artisan schedule:list                           Alle Zeitpläne (routes/console.php, Modul-Provider)
@@ -117,10 +124,26 @@ Vollständige Herleitung mit Quellen in `docs/immoware/` und in der Architekture
     │   ├── 0001-modularer-monolith.md
     │   ├── 0002-immoware-master.md
     │   └── 0003-dav-first.md
+    ├── api/openapi.json           Generiert durch hub:openapi:export
+    ├── mcp/                       MCP-Tool-Katalog (README.md, tools.json aus hub:mcp:export)
     ├── n8n/
     │   ├── README.md              Anbindung von n8n an den Hub (Hub-Webhooks, nicht Immoware24)
-    │   └── beispiele.md           Webhook-Payload-Beispiele
-    └── immoware/                  Schnittstellenrecherche (01 bis 10)
+    │   ├── beispiele.md           Webhook-Payload-Beispiele
+    │   └── workflows/             Vier importierbare n8n-Workflows (JSON)
+    ├── operations/                Deployment, Backup und Restore, Monitoring, Runbook, Go-live-Checkliste
+    └── immoware/                  Schnittstellenrecherche und Testbericht (01 bis 10)
+```
+
+Betrieb und Tests:
+
+```
+Dockerfile, compose.yaml, .dockerignore   Container-Build und lokaler Verbund (app, web, worker, scheduler, mariadb, redis)
+docker/                                   nginx-, php-fpm- und Entrypoint-Konfiguration für die Container
+deploy/                                   nginx (TLS), supervisord, systemd, deploy.sh, backup.sh, restore-test.sh
+.github/workflows/                        ci.yml (Pint, PHPStan, Tests SQLite und MariaDB), deploy.yml (nur manuell)
+public/css/hub.css, public/js/hub.js      Handgeschriebene Admin-Oberfläche, kein Build
+tests/mock-immoware/                      PHP-Mock-Server für WebDAV, CardDAV, CalDAV mit Fehlerszenarien
+tests/Contract/                           Contract-Tests gegen Mock-Server oder per CONTRACT_DAV_BASE_URL gegen einen DAV-Server
 ```
 
 Anwendungsstruktur (modularer Monolith, siehe ADR 0001 und CLAUDE.md):
@@ -138,7 +161,8 @@ app/Modules/
   Estate       Spiegeltabellen properties, units, contracts, open_items, transactions
   Api          REST v1, OpenAPI, Directory, Health, RFC-7807-Fehler
   Webhooks     Outbox, HMAC-Signatur, Zustellungen, Redelivery
-  Admin        Blade-Oberfläche (im Aufbau)
+  Mcp          Tool-Katalog und Permission Layer für Modellzugriffe, Aufrufe laufen als interne Sub-Requests durch die REST-API
+  Admin        Blade-Oberfläche: Dashboard und 16 weitere Bereiche, Rechte über die Permission-Map, Bestätigungswort für gefährliche Aktionen
 routes/modules/<name>.php, config/hub/<name>.php, resources/views/<name>/, tests/Feature|Unit/<Name>/
 ```
 
@@ -173,3 +197,25 @@ Internes Projekt der Hausverwaltung Müller GmbH. Keine Zugangsdaten, Steuernumm
 ## Betriebsdomain
 
 Der Hub wird unter `https://immoware.muellerhv.de` betrieben (Vorgabe der Geschäftsführung vom 11.09.2026). Admin-Oberfläche, API (`/api/v1`), API-Dokumentation (`/api/docs`) und Health-Endpunkte laufen unter dieser Domain. DNS, TLS-Zertifikat und Reverse Proxy sind Bestandteil von Phase 1.
+
+## Betrieb
+
+Stand 12.09.2026. Betriebsunterlagen unter `docs/operations/`, Konfigurationen unter `deploy/`, `docker/`, `Dockerfile`, `compose.yaml`.
+
+| Thema | Datei |
+|---|---|
+| Deployment (Docker Compose oder Host mit nginx, php-fpm, supervisord oder systemd), CI, manueller Deploy-Workflow | `docs/operations/01-deployment.md` |
+| Backup (mariadb-dump, GPG, Retention, Offsite) und Restore, Wiederherstellungstest | `docs/operations/02-backup-restore.md` |
+| Health-Endpunkte, Metriken, Alarme (stale, DLQ, 429, Circuit open) | `docs/operations/03-monitoring.md` |
+| Runbook Störfälle (401, Passwort-Rotation, Ordnerstruktur, Worker, DLQ, Upload) | `docs/operations/04-runbook.md` |
+| Go-live-Checkliste (Phase 0, Testreihenfolge 1/10/100/1000/alle, Freigabe Schreibpfad) | `docs/operations/05-go-live-checkliste.md` |
+
+Kurzfassung Docker:
+
+```
+docker compose up -d --build
+docker compose run --rm app php artisan migrate --force
+docker compose exec app php artisan hub:doctor
+```
+
+Prozessrollen: `app` (php-fpm), `web` (nginx, Port 127.0.0.1:8080, TLS terminiert ein vorgelagerter Proxy), `worker` (`queue:work redis --queue=high,default,sync,write,documents,low --max-time=3600 --memory=256`), `scheduler` (`schedule:work`), `mariadb` 11.4, `redis` 7 (appendonly). Migrationen laufen nie automatisch beim Containerstart. Keine Secrets in Repository-Dateien, alle Werte über `.env` oder Secret-Store. GitHub Actions: `ci.yml` (validate, audit, Pint, PHPStan, Tests SQLite und MariaDB), `deploy.yml` nur manuell mit Platzhalter-Secrets.

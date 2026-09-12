@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Modules\Documents\Http;
 
+use App\Core\Exceptions\ConnectorException;
 use App\Core\Exceptions\WriteBlockedException;
 use App\Modules\Connector\Http\HttpClientFactory;
 use App\Modules\Connector\Support\ConnectorContext;
@@ -66,6 +67,11 @@ final class WebDavClient
             ->withHeaders(['Depth' => (string) $depth])
             ->withBody(MultistatusParser::propfindBody(), 'application/xml; charset=utf-8')
             ->send('PROPFIND', $this->url($normalized));
+
+        if ($response->status() === 207 && ! $this->parser->isMultistatus($response->body())) {
+            // Datenintegrität: ein 207 ohne auswertbares Multistatus darf nie als leerer Ordner gelten (sonst Sweep).
+            throw new ConnectorException(sprintf('PROPFIND %s: Status 207 ohne gültiges Multistatus-XML.', $normalized));
+        }
 
         $entries = $response->status() === 207 ? $this->parser->parse($response->body(), $this->context->baseUrl) : [];
 

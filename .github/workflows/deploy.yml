@@ -1,0 +1,79 @@
+# Immoware Hub, manueller Deploy (workflow_dispatch). Kein automatischer Deploy bei Push.
+# Voraussetzung: Freigabe der Geschaeftsfuehrung fuer das Release ist im Repository dokumentiert
+# (docs/operations/05-go-live-checkliste.md). Die Secrets sind Platzhalter und im Repository nicht gesetzt:
+#   DEPLOY_SSH_KEY        privater SSH-Schluessel des Deploy-Nutzers (nur Deploy-Rechte)
+#   DEPLOY_HOST           Hostname des Zielservers
+#   DEPLOY_USER           Benutzer auf dem Zielserver (Standard immoware)
+#   DEPLOY_KNOWN_HOSTS    Eintrag fuer ~/.ssh/known_hosts (Host-Key-Pinning)
+
+name: Deploy (manuell)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git-Ref (Tag oder Branch), das ausgerollt wird
+        required: true
+        default: main
+      environment:
+        description: Zielumgebung
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      confirm:
+        description: Zur Bestaetigung "DEPLOY" eingeben
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.ref }} nach ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Bestaetigung pruefen
+        if: ${{ inputs.confirm != 'DEPLOY' }}
+        run: |
+          echo "Bestaetigung fehlt. Abbruch." >&2
+          exit 1
+
+      - name: Checkout (nur fuer die Skripte)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: SSH einrichten
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY" || { echo "Secret DEPLOY_SSH_KEY nicht gesetzt (Platzhalter)." >&2; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo "Secret DEPLOY_KNOWN_HOSTS nicht gesetzt (Platzhalter)." >&2; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+
+      - name: deploy.sh auf dem Zielserver ausfuehren
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'immoware' }}
+          REF: ${{ inputs.ref }}
+        run: |
+          test -n "$DEPLOY_HOST" || { echo "Secret DEPLOY_HOST nicht gesetzt (Platzhalter)." >&2; exit 1; }
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$REF'" < deploy/scripts/deploy.sh
+
+      - name: Health-Check
+        run: |
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://immoware.muellerhv.de/health)"
+          echo "HTTP $code"
+          test "$code" = "200"

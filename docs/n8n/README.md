@@ -1,6 +1,8 @@
 # n8n-Anbindung an den Immoware Hub
 
-Stand: 11.09.2026. Status: Entwurf, nicht umgesetzt. Umsetzung frühestens in Phase 4 des Implementierungsplans, und nur bei benanntem Konsumenten.
+Stand: 12.09.2026. Status: Hub-Seite (Modul Webhooks, Outbox, HMAC-Signatur, Endpunktverwaltung über /api/v1/webhook-endpoints) ist im Code vorhanden und getestet, standardmäßig deaktiviert (HUB_WEBHOOKS_ENABLED=false). Aktivierung nur bei benanntem Konsumenten mit Freigabe der Geschäftsführung. Importierbare Beispiel-Workflows liegen unter `workflows/`.
+
+Änderungsvermerk 12.09.2026: Das Signaturformat wurde an die Implementierung des Moduls Webhooks angepasst. Der Header `X-Hub-Signature` enthält den Zeitstempel als eigenen Bestandteil (`t=<unix>,v1=<hex>`), zusätzlich sendet der Hub weiterhin `X-Hub-Timestamp`. Die frühere Kurzform `v1=<hex>` ohne `t=` in diesem Dokument und in beispiele.md war unvollständig. Bis zur Anpassung von 09-api-documentation.md Abschnitt 5.2 gilt für Konsumenten die Implementierung (`app/Modules/Webhooks/Services/WebhookSigner.php`, `app/Modules/Webhooks/Jobs/DeliverWebhookJob.php`).
 
 ## Einordnung
 
@@ -30,8 +32,8 @@ Was der Hub nicht liefern wird:
 
 ## Sicherheitsanforderungen an einen n8n-Flow
 
-1. Signatur prüfen. Header `X-Hub-Signature` enthält `v1=<hex>` (bei Secret-Rotation für 24 Stunden zwei kommagetrennte Einträge `v1=<alt>,v1=<neu>`, es genügt ein Treffer). Berechnung: HMAC-SHA256 über `"{X-Hub-Timestamp}.{roher Body}"` mit dem Endpunkt-Secret. Vergleich zeitkonstant (09-api-documentation.md Abschnitt 5.2).
-2. Zeitstempel prüfen. `X-Hub-Timestamp` (Unix-Sekunden) darf nicht älter als 300 Sekunden sein.
+1. Signatur prüfen. Header `X-Hub-Signature` hat das Format `t=<unix-sekunden>,v1=<hex>`; bei Secret-Rotation folgt ein weiterer Eintrag `,v1=<hex>` für das vorherige Secret, es genügt ein Treffer. Berechnung: HMAC-SHA256 über `"{t}.{roher Body}"` mit dem Endpunkt-Secret, hex-kodiert. Vergleich zeitkonstant. Der rohe Body muss byteidentisch verwendet werden (Webhook-Node mit Raw Body, Inhalt aus `binary.data`).
+2. Zeitstempel prüfen. `t` aus der Signatur (identisch mit `X-Hub-Timestamp`, Unix-Sekunden) darf höchstens 300 Sekunden von der eigenen Uhr abweichen (`hub.webhooks.replay_window_seconds`).
 3. Ereignis-ID deduplizieren. `event_id` (UUID des Outbox-Eintrags, auch im Header X-Hub-Event-Id) je Ereignis; n8n speichert verarbeitete IDs (z. B. in einer Datenbank-Tabelle oder Static Data) und ignoriert Wiederholungen.
 4. Datenalter beachten. `source.status` kann fresh, stale oder degraded sein. Flows, die Aktionen auslösen (z. B. E-Mail an Mieter), sollen bei stale oder degraded stoppen oder eine Rückfrage erzeugen.
 5. Keine Weitergabe personenbezogener Daten an Dienste ohne AV-Vertrag. Webhook-Payloads enthalten keine personenbezogenen Feldwerte und keine Beträge, nur IDs, Typ, Link, Herkunft und Steuerfelder (09-api-documentation.md Abschnitt 5.3). Namen, Adressen, E-Mails, Telefonnummern und Beträge holt der Flow bei Bedarf über die lesende Hub-API mit eigenem Key und passenden Scopes (Phase 4).
@@ -39,14 +41,19 @@ Was der Hub nicht liefern wird:
 
 ## Header jeder Zustellung
 
+Stand der Implementierung (DeliverWebhookJob, 12.09.2026):
+
 | Header | Inhalt |
 |---|---|
-| Content-Type | application/json; charset=utf-8 |
-| X-Hub-Event | Ereignisname, z. B. contact_role.created |
-| X-Hub-Event-Id | UUID des Outbox-Eintrags |
-| X-Hub-Timestamp | Unix-Sekunden |
-| X-Hub-Signature | v1=<hex HMAC-SHA256>, bei Rotation zwei Einträge kommagetrennt |
-| X-Hub-Delivery-Attempt | Zählung ab 1 |
+| Content-Type | application/json |
+| User-Agent | ImmowareHub-Webhooks/1.0 |
+| X-Hub-Event | Ereignisname, z. B. contract.created |
+| X-Hub-Event-Id | UUID des Outbox-Eintrags (event_id, Grundlage der Deduplizierung) |
+| X-Hub-Delivery | UUID der Zustellung (je Endpunkt und Versuch stabil) |
+| X-Hub-Timestamp | Unix-Sekunden, identisch mit t in der Signatur |
+| X-Hub-Signature | t=<unix>,v1=<hex HMAC-SHA256>, bei Rotation zusätzlich ,v1=<hex alt> |
+
+Ein Header für die Versuchszählung wird derzeit nicht gesendet; die Zahl der Versuche steht nur in webhook_deliveries.
 
 ## Gemeinsamer Nutzlast-Rahmen
 
@@ -80,7 +87,26 @@ Feldbedeutungen:
 - `source.data_age_seconds`: Sekunden seit dem letzten erfolgreichen Sync bzw. Import dieser Connection.
 - `data.sync_version`: Version des Datensatzes im Hub; Versionen entstehen nur bei Checksum-Änderung.
 
-Beispiele für die vier Kernflows stehen in `beispiele.md`.
+Beispiele für die vier Kernflows stehen in `beispiele.md`. Importierbare Workflows liegen unter `workflows/`.
+
+## Importierbare Workflows
+
+Verzeichnis `docs/n8n/workflows/`, Import in n8n über Workflows, Import from File. Jeder Workflow hat denselben Aufbau: Webhook-Node (POST, Raw Body), Code-Node HMAC-Prüfung (Format t=..,v1=.., Replay-Fenster 300 s), Code-Node Deduplizierung über event_id, IF-Node source.status = fresh, HTTP-Request-Node zum Nachladen über data.href mit API-Key-Credential, danach vier Platzhalter-Ziele (NoOp-Nodes): Google Workspace, Google Drive, Telefonbuch/CRM, Reporting.
+
+| Datei | Ereignis | Zusatz |
+|---|---|---|
+| 01-neuer-mieter-contract-created.json | contract.created | Vertrag über GET /api/v1/contracts/{id} (contracts:read) |
+| 02-neues-dokument-document-created.json | document.created | Metadaten über GET /api/v1/documents/{id} (documents:read) |
+| 03-neuer-eigentuemer-contact-updated.json | contact.updated | IF-Node data.role = owner, Kontakt über GET /api/v1/contacts/{id} (contacts:read) |
+| 04-offener-posten-open-item-created.json | open_item.created | Posten über GET /api/v1/open-items/{id} (finance:read) |
+
+Voraussetzungen im n8n: Umgebungsvariablen oder Credentials `HUB_WEBHOOK_SECRET` (Endpunkt-Secret aus der Registrierung) und `HUB_BASE_URL` (https://immoware.muellerhv.de), ein Header-Auth-Credential `Authorization: Bearer <API-Key>` mit den genannten Scopes. Die Platzhalter-Ziele sind durch echte Nodes zu ersetzen, sobald AV-Verträge und Freigaben vorliegen. Alle Ereignisnamen entsprechen `config/hub/webhooks.php` (events).
+
+Hinweis zum Ereignis Neuer Eigentümer: Die Ereignisliste des Moduls Webhooks kennt derzeit `contact.updated`, nicht `contact_role.created`. Der Workflow filtert deshalb auf `data.role = owner`. Ob der Sync dieses Steuerfeld bei Kontaktänderungen aus CSV-Importen setzt, ist bei Aktivierung zu prüfen.
+
+## Späterer Community-Node
+
+Ein n8n-Community-Node "n8n-nodes-immoware-hub" ist vorgesehen, aber nicht gebaut. Er würde den Webhook-Trigger (inklusive HMAC-Prüfung und Deduplizierung) und die Hub-API-Aufrufe (Credential mit API-Key, Ressourcen properties, units, contacts, contracts, documents, cases) kapseln, so dass die Code-Nodes aus den Beispielen entfallen. Bis dahin sind die Beispiel-Workflows die Referenz. Der Node spricht ausschließlich mit dem Hub, nie mit Immoware24; ein Community-Node für Immoware24 selbst existiert nicht (NICHT VERFÜGBAR).
 
 ## Geplante Ereignisnamen (Phase 4, Entwurf)
 
