@@ -11,6 +11,8 @@ use App\Modules\Security\Console\AuditVerifyCommand;
 use App\Modules\Security\Console\CreateApiKeyCommand;
 use App\Modules\Security\Console\CreateUserCommand;
 use App\Modules\Security\Http\Middleware\AuthenticateApiKey;
+use App\Modules\Security\Http\Middleware\EnforceAbsoluteSessionLifetime;
+use App\Modules\Security\Http\Middleware\RequireFreshTwoFactor;
 use App\Modules\Security\Http\Middleware\RequireScope;
 use App\Modules\Security\Http\Middleware\RequireTwoFactor;
 use App\Modules\Security\Http\Middleware\ThrottleApiKey;
@@ -51,7 +53,7 @@ class SecurityServiceProvider extends ServiceProvider
         $this->app->singleton(AuditLogger::class);
         $this->app->bind(AuditLoggerInterface::class, AuditLogger::class);
         $this->app->bind(Totp::class, static fn (): Totp => Totp::fromConfig());
-        $this->app->when(LoginService::class)
+        $this->app->when([LoginService::class, EnforceAbsoluteSessionLifetime::class])
             ->needs(StatefulGuard::class)
             ->give(static function (Application $app): StatefulGuard {
                 $guard = $app->make(AuthFactory::class)->guard('web');
@@ -83,6 +85,9 @@ class SecurityServiceProvider extends ServiceProvider
         $router->aliasMiddleware('scope', RequireScope::class);
         $router->aliasMiddleware('throttle.apikey', ThrottleApiKey::class);
         $router->aliasMiddleware('2fa', RequireTwoFactor::class);
+        $router->aliasMiddleware('2fa.fresh', RequireFreshTwoFactor::class);
+        // Absolute Sitzungsdauer für alle Web-Routen (08-security.md Abschnitt 3.1).
+        $router->pushMiddlewareToGroup('web', EnforceAbsoluteSessionLifetime::class);
 
         $this->registerGates();
 
@@ -99,8 +104,10 @@ class SecurityServiceProvider extends ServiceProvider
             ]);
 
             $this->callAfterResolving(Schedule::class, static function (Schedule $schedule): void {
-                $schedule->command('audit:verify')->dailyAt('02:00');
-                $schedule->command('audit:anchor')->dailyAt('02:30');
+                // withoutOverlapping und onOneServer wie in SyncSchedule: keine doppelte Verankerung bei zwei
+                // Scheduler-Instanzen, kein audit:anchor parallel zu einem noch laufenden audit:verify.
+                $schedule->command('audit:verify')->dailyAt('02:00')->withoutOverlapping(120)->onOneServer();
+                $schedule->command('audit:anchor')->dailyAt('02:30')->withoutOverlapping(60)->onOneServer();
             });
         }
     }

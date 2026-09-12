@@ -17,7 +17,13 @@ use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request as PsrRequest;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use App\Core\Enums\Role;
+use App\Modules\Documents\Jobs\ResolveUnknownWriteOperationJob;
+use App\Modules\Documents\Services\UploadContentStore;
+use App\Modules\Security\Models\User;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 final class PosteingangUploadTest extends TestCase
@@ -101,6 +107,7 @@ final class PosteingangUploadTest extends TestCase
 
     public function test_timeout_leads_to_unknown_and_is_resolved_only_via_propfind_without_second_put(): void
     {
+        Queue::fake();
         $connection = $this->writeConnection();
         $this->putTimesOut = true;
         $this->fakeServer($connection);
@@ -113,6 +120,7 @@ final class PosteingangUploadTest extends TestCase
         $this->assertSame(1, $result->operation->getAttribute('put_attempts'));
         $this->assertSame(1, $this->countSent('PUT'));
         $this->assertStringNotContainsString('write-secret', (string) $result->operation->getAttribute('last_error'));
+        Queue::assertPushed(ResolveUnknownWriteOperationJob::class, fn (ResolveUnknownWriteOperationJob $job): bool => $job->operationId === (int) $result->operation->getKey() && $job->delay !== null);
 
         // Retry über upload() mit gleicher Nutzlast: kein zweites PUT.
         $retry = $service->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-2'));
@@ -137,6 +145,7 @@ final class PosteingangUploadTest extends TestCase
 
     public function test_unknown_becomes_failed_after_configured_propfind_attempts_and_never_puts_again(): void
     {
+        Queue::fake();
         config()->set('hub.core.write.unknown_propfind_attempts', 3);
         $connection = $this->writeConnection();
         $this->putTimesOut = true;
@@ -238,6 +247,8 @@ final class PosteingangUploadTest extends TestCase
         $this->assertSame(WriteOperationStatus::Pending, $denied->status());
         $this->assertSame('write_disabled_global', $denied->operation->getAttribute('precheck_result')['denied_reason']);
         $this->assertSame(1, AuditLog::query()->where('action', 'write.denied_global')->count());
+        $this->assertNotNull($denied->operation->getAttribute('source_storage_key'), 'Inhalt eines pending-Antrags liegt im Blob-Speicher (05 3.3)');
+        $this->assertSame('inhalt', $this->app->make(UploadContentStore::class)->retrieve($denied->operation));
 
         config()->set('hub.core.write.enabled', true);
         $read = ImmowareConnection::query()->findOrFail($connection->getAttribute('paired_read_connection_id'));
@@ -262,6 +273,118 @@ final class PosteingangUploadTest extends TestCase
         $this->assertSame(0, $result->operation->getAttribute('put_attempts'));
         $this->assertSame(1, $this->countSent('PROPFIND'));
         $this->assertSame(0, $this->countSent('PUT'));
+    }
+
+    public function test_api_key_request_stays_pending_until_human_approval_and_then_puts_once(): void
+    {
+        $connection = $this->writeConnection();
+        $this->fakeServer($connection);
+        $service = $this->service();
+
+        $result = $service->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-api', 'application/pdf', null, 'api_key'));
+
+        $this->assertSame(UploadResult::OUTCOME_PENDING_APPROVAL, $result->outcome);
+        $this->assertSame(WriteOperationStatus::Pending, $result->status());
+        $this->assertTrue($result->operation->getAttribute('precheck_result')['approval_required']);
+        Http::assertNothingSent();
+        $this->assertSame(1, AuditLog::query()->where('action', 'write.approval_required')->count());
+
+        // Read-only darf nicht freigeben.
+        $viewer = User::factory()->role(Role::ReadOnly)->for($connection->organization)->create();
+
+        try {
+            $service->approve($result->operation->fresh() ?? $result->operation, $viewer);
+            $this->fail('WriteBlockedException erwartet');
+        } catch (\App\Core\Exceptions\WriteBlockedException) {
+            Http::assertNothingSent();
+        }
+
+        $operator = User::factory()->role(Role::Operator)->for($connection->organization)->create();
+        $approved = $service->approve($result->operation->fresh() ?? $result->operation, $operator);
+
+        $this->assertSame(UploadResult::OUTCOME_UPLOADED, $approved->outcome);
+        $this->assertSame(WriteOperationStatus::Verified, $approved->status());
+        $this->assertSame(1, $this->countSent('PUT'));
+        $approval = AuditLog::query()->where('action', 'write.approved')->firstOrFail();
+        $this->assertSame((int) $operator->getKey(), $approval->getAttribute('after_json')['approved_by']);
+
+        // Zweite Freigabe: kein zweites PUT.
+        $again = $service->approve($approved->operation->fresh() ?? $approved->operation, $operator);
+        $this->assertSame(UploadResult::OUTCOME_IDEMPOTENT_REPLAY, $again->outcome);
+        $this->assertSame(1, $this->countSent('PUT'));
+    }
+
+    public function test_incomplete_four_eyes_approval_denies_upload_without_network(): void
+    {
+        $connection = $this->writeConnection();
+        $this->fakeServer($connection);
+        $service = $this->service();
+
+        // write_enabled=1 ohne Bestätiger (z. B. per SQL, Seeder, Restore): keine Freigabe.
+        $connection->forceFill(['write_confirmed_by' => null])->save();
+        $denied = $service->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-4a'));
+        $this->assertSame(UploadResult::OUTCOME_DENIED, $denied->outcome);
+        $this->assertSame('write_approval_incomplete', $denied->operation->getAttribute('precheck_result')['denied_reason']);
+
+        // Beantragender und Bestätigender identisch.
+        $connection->forceFill(['write_confirmed_by' => $connection->getAttribute('write_enabled_by')])->save();
+        $same = $service->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-4b'));
+        $this->assertSame('write_approval_same_person', $same->operation->getAttribute('precheck_result')['denied_reason']);
+
+        // Bestätigender ohne Rolle Owner.
+        $operator = User::factory()->role(Role::Operator)->for($connection->organization)->create();
+        $connection->forceFill(['write_confirmed_by' => $operator->getKey()])->save();
+        $roles = $service->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-4c'));
+        $this->assertSame('write_approval_roles_invalid', $roles->operation->getAttribute('precheck_result')['denied_reason']);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_resume_continues_sent_and_unknown_only_via_propfind(): void
+    {
+        Queue::fake();
+        $connection = $this->writeConnection();
+        $this->putTimesOut = true;
+        $this->fakeServer($connection);
+        $service = $this->service();
+
+        $result = $service->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-resume'));
+        $this->assertSame(WriteOperationStatus::Unknown, $result->status());
+
+        // Datei ist angekommen: resume löst per PROPFIND und GET auf, nie ein zweites PUT.
+        $this->remote[(string) $result->operation->getAttribute('target_path')] = 'inhalt';
+        $this->artisan('hub:write:resume')->assertSuccessful();
+
+        $operation = $result->operation->fresh();
+        $this->assertNotNull($operation);
+        $this->assertSame(WriteOperationStatus::Verified, $operation->getAttribute('status'));
+        $this->assertSame(1, $this->countSent('PUT'));
+
+        // sent ohne Abschluss (Worker-Abbruch): resume behandelt wie unknown.
+        $stale = new WriteOperation;
+        $stale->fill([
+            'connection_id' => $connection->getKey(),
+            'idempotency_key' => hash('sha256', 'stale'),
+            'intent_key' => hash('sha256', 'stale'),
+            'payload_hash' => hash('sha256', 'x'),
+            'operation' => WriteOperation::OPERATION_WEBDAV_CREATE,
+            'target_path' => '/Posteingang/stale.pdf',
+            'target_path_hash' => Document::hashPath('/Posteingang/stale.pdf'),
+            'original_filename' => 'stale.pdf',
+            'sanitized_filename' => 'stale.pdf',
+            'content_hash' => hash('sha256', 'x'),
+            'size_bytes' => 1,
+            'status' => WriteOperationStatus::Sent,
+            'precheck_attempts' => 1,
+            'verify_attempts' => 0,
+            'put_attempts' => 1,
+            'requested_via' => 'ui',
+        ]);
+        $stale->save();
+
+        $resumed = $service->resume($stale);
+        $this->assertSame(WriteOperationStatus::Unknown, $resumed->status());
+        $this->assertSame(1, $this->countSent('PUT'), 'resume sendet nie ein PUT');
     }
 
     private function service(): PosteingangUploadService

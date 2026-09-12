@@ -23,7 +23,7 @@ class User extends Authenticatable
 
     /** @var array<int, string> */
     protected $fillable = [
-        'organization_id', 'name', 'email', 'password', 'role', 'totp_secret', 'totp_confirmed_at',
+        'organization_id', 'name', 'email', 'password', 'role', 'totp_secret', 'totp_confirmed_at', 'totp_last_counter',
         'recovery_codes', 'locked_until', 'failed_login_count', 'last_login_at', 'disabled_at',
     ];
 
@@ -41,6 +41,7 @@ class User extends Authenticatable
             'role' => Role::class,
             'totp_secret' => 'encrypted',
             'totp_confirmed_at' => 'immutable_datetime',
+            'totp_last_counter' => 'integer',
             'recovery_codes' => 'encrypted:array',
             'locked_until' => 'immutable_datetime',
             'failed_login_count' => 'integer',

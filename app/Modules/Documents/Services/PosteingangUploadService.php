@@ -17,12 +17,15 @@ use App\Modules\Documents\DTO\UploadRequest;
 use App\Modules\Documents\DTO\UploadResult;
 use App\Modules\Documents\Http\WebDavClient;
 use App\Modules\Documents\Http\WebDavClientFactory;
+use App\Modules\Documents\Jobs\ResolveUnknownWriteOperationJob;
 use App\Modules\Documents\Models\Document;
 use App\Modules\Documents\Support\DavEntry;
 use App\Modules\Documents\Support\FilenameSanitizer;
 use App\Modules\Documents\Support\WebDavPath;
+use App\Modules\Security\Models\User;
 use App\Modules\Sync\Models\WriteOperation;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Log;
@@ -35,6 +38,12 @@ use Throwable;
  * allowed_write_prefix, Dateiname sanitizen, write_operations mit operation_uuid und idempotency_key,
  * PROPFIND-Precheck, PUT mit If-None-Match: *, Verifikation per PROPFIND und optional GET plus SHA-256.
  * Status unknown wird ausschließlich über PROPFIND aufgelöst. Ein Retry erzeugt nie ein zweites PUT.
+ *
+ * Änderungsvermerk 12.09.2026: Anträge mit requested_via aus einem API-Key-Kontext (api_key, mcp, n8n) bleiben
+ * pending, bis ein Mensch (Rolle operator oder höher) sie über approve() freigibt (09-api-documentation.md 3.5,
+ * 08-security.md Abschnitt 8). Der Inhalt eines pending-Antrags liegt im Blob-Speicher (source_storage_key).
+ * Nach Status unknown wird ResolveUnknownWriteOperationJob eingeplant; resume() führt sent, unknown und
+ * verifying ausschließlich per PROPFIND weiter (05 3.4).
  */
 final class PosteingangUploadService
 {
@@ -51,6 +60,8 @@ final class PosteingangUploadService
         private readonly ConfigRepository $config,
         private readonly CorrelationId $correlation,
         private readonly SecretMasker $masker,
+        private readonly UploadContentStore $contents,
+        private readonly Dispatcher $bus,
     ) {}
 
     /**
@@ -115,18 +126,107 @@ final class PosteingangUploadService
             return new UploadResult($operation, UploadResult::OUTCOME_REJECTED);
         }
 
-        // Freigaben (Flags, Capability, Connection): Antrag bleibt pending, kein Verlust.
+        // Freigaben (Flags, Capability, Connection, Vier-Augen): Antrag bleibt pending, Inhalt im Blob-Speicher, kein Verlust.
         $denial = $this->denialReason($connection);
 
         if ($denial !== null) {
-            $operation->setAttribute('precheck_result', ['denied_reason' => $denial]);
-            $operation->save();
+            $this->keepPending($operation, $request, ['denied_reason' => $denial]);
             $this->audit($denial === 'write_disabled_global' ? 'write.denied_global' : 'write.denied', $operation, [], ['denied_reason' => $denial], $request->requestedVia);
 
             return new UploadResult($operation, UploadResult::OUTCOME_DENIED);
         }
 
+        // Anträge aus einem API-Key-Kontext führt erst ein Mensch aus (approve), nie der Request selbst.
+        if ($this->requiresHumanApproval($request->requestedVia)) {
+            $this->keepPending($operation, $request, ['approval_required' => true, 'requested_via' => $request->requestedVia]);
+            $this->audit('write.approval_required', $operation, [], ['requested_via' => $request->requestedVia], $request->requestedVia);
+
+            return new UploadResult($operation, UploadResult::OUTCOME_PENDING_APPROVAL);
+        }
+
         return $this->execute($operation, $connection, $request);
+    }
+
+    /**
+     * Menschliche Freigabe eines pending-Antrags (Rolle operator oder höher). Der Inhalt kommt aus dem Blob-Speicher,
+     * die Flag- und Connection-Guards werden erneut geprüft. Ein Antrag in sent, unknown oder verified löst nie ein PUT aus.
+     */
+    public function approve(WriteOperation $operation, User $approver, ?string $content = null, bool $dryRun = false): UploadResult
+    {
+        if (! $approver->role->canLogin() || $approver->role === \App\Core\Enums\Role::ReadOnly) {
+            throw new WriteBlockedException('Freigabe eines Uploads erfordert die Rolle operator oder höher.', 'PUT');
+        }
+
+        if ($this->status($operation) !== WriteOperationStatus::Pending) {
+            return new UploadResult($operation, UploadResult::OUTCOME_IDEMPOTENT_REPLAY);
+        }
+
+        $content ??= $this->contents->retrieve($operation);
+
+        if ($content === null) {
+            throw new WriteBlockedException('Für diesen Antrag liegt kein Inhalt im Blob-Speicher vor, Freigabe nicht möglich.', 'PUT');
+        }
+
+        $precheck = (array) ($operation->getAttribute('precheck_result') ?? []);
+        $operation->setAttribute('precheck_result', [...$precheck, 'approved_by' => (int) $approver->getKey(), 'approved_at' => CarbonImmutable::now()->toIso8601String()]);
+        $operation->save();
+        $this->audit('write.approved', $operation, [], ['approved_by' => (int) $approver->getKey()], 'ui');
+
+        $result = $this->process($operation, $content, $dryRun);
+
+        if ($result->status()->mayHaveReachedRemote() || in_array($result->status(), [WriteOperationStatus::Failed, WriteOperationStatus::Rejected], true)) {
+            $this->contents->forget($operation);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Neustartverhalten (05 3.4): Anträge in sent, unknown und verifying werden ausschließlich per PROPFIND
+     * weitergeführt. Ein erneutes PUT ist ausgeschlossen (put_attempts, Statusmaschine).
+     */
+    public function resume(WriteOperation $operation): UploadResult
+    {
+        $status = $this->status($operation);
+
+        if ($status === WriteOperationStatus::Unknown) {
+            return $this->resolveUnknown($operation);
+        }
+
+        if ($status !== WriteOperationStatus::Sent) {
+            return new UploadResult($operation, UploadResult::OUTCOME_IDEMPOTENT_REPLAY);
+        }
+
+        // sent ohne Abschluss (z. B. Worker-Abbruch nach dem PUT): wie unknown behandeln, nur PROPFIND.
+        $this->transition($operation, WriteOperationStatus::Unknown, ['last_error' => 'resume: Antrag ohne Abschluss nach PUT, Prüfung nur per PROPFIND.'], (string) $operation->getAttribute('requested_via'));
+
+        return $this->resolveUnknown($operation);
+    }
+
+    private function requiresHumanApproval(string $requestedVia): bool
+    {
+        $required = array_map('strval', (array) $this->config->get('hub.core.write.approval_required_via', ['api_key', 'api', 'mcp', 'n8n']));
+
+        return in_array($requestedVia, $required, true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $precheck
+     */
+    private function keepPending(WriteOperation $operation, UploadRequest $request, array $precheck): void
+    {
+        if ($operation->getAttribute('source_storage_key') === null) {
+            try {
+                $operation->setAttribute('source_storage_key', $this->contents->store($operation, $request->content));
+            } catch (Throwable $e) {
+                Log::error('Inhalt des Upload-Antrags konnte nicht im Blob-Speicher abgelegt werden.', ['operation_id' => $operation->getKey(), 'error' => $this->masker->maskString($e->getMessage())]);
+                $precheck['content_stored'] = false;
+            }
+        }
+
+        $existing = (array) ($operation->getAttribute('precheck_result') ?? []);
+        $operation->setAttribute('precheck_result', [...$existing, ...$precheck]);
+        $operation->save();
     }
 
     /**
@@ -144,6 +244,8 @@ final class PosteingangUploadService
         if ($status !== WriteOperationStatus::Pending) {
             return new UploadResult($operation, UploadResult::OUTCOME_IDEMPOTENT_REPLAY);
         }
+
+        $content ??= $this->contents->retrieve($operation);
 
         if ($content === null) {
             throw new WriteBlockedException('Ohne Inhalt kann kein Upload ausgeführt werden.', 'PUT');
@@ -284,6 +386,7 @@ final class PosteingangUploadService
             $this->transition($operation, WriteOperationStatus::Unknown, [
                 'last_error' => 'put: '.$this->masker->maskString(mb_substr($e->getMessage(), 0, 1000)),
             ], $request->requestedVia);
+            $this->scheduleUnknownResolution($operation);
 
             return new UploadResult($operation, UploadResult::OUTCOME_UNKNOWN, true);
         } catch (WriteBlockedException $e) {
@@ -298,6 +401,7 @@ final class PosteingangUploadService
             $this->transition($operation, WriteOperationStatus::Unknown, [
                 'last_error' => 'put: '.$this->masker->maskString(mb_substr($e->getMessage(), 0, 1000)),
             ], $request->requestedVia);
+            $this->scheduleUnknownResolution($operation);
 
             return new UploadResult($operation, UploadResult::OUTCOME_UNKNOWN, true);
         }
@@ -561,8 +665,11 @@ final class PosteingangUploadService
             return 'connection_purpose_not_write';
         }
 
-        if (! (bool) $connection->getAttribute('write_enabled')) {
-            return 'connection_write_not_enabled';
+        // Vier-Augen-Prinzip: write_enabled_by (admin) und write_confirmed_by (release/Owner) verschieden, Freigabedokument gesetzt.
+        $approval = $connection->writeApprovalIncompleteReason();
+
+        if ($approval !== null) {
+            return $approval;
         }
 
         if ((string) $connection->getAttribute('status') !== 'active') {
@@ -570,6 +677,18 @@ final class PosteingangUploadService
         }
 
         return null;
+    }
+
+    /**
+     * Plant die PROPFIND-Auflösung eines unknown-Antrags im konfigurierten Intervall ein (05 3.3).
+     */
+    private function scheduleUnknownResolution(WriteOperation $operation): void
+    {
+        try {
+            $this->bus->dispatch((new ResolveUnknownWriteOperationJob((int) $operation->getKey(), $this->correlation->current()))->delay($this->unknownRetryIntervalSeconds()));
+        } catch (Throwable $e) {
+            Log::error('ResolveUnknownWriteOperationJob konnte nicht eingeplant werden.', ['operation_id' => $operation->getKey(), 'error' => $this->masker->maskString($e->getMessage())]);
+        }
     }
 
     private function allowedPrefix(ImmowareConnection $connection): string
@@ -671,7 +790,7 @@ final class PosteingangUploadService
     private function audit(string $action, WriteOperation $operation, array $before, array $after, string $requestedVia): void
     {
         $source = match ($requestedVia) {
-            'api' => AuditSource::Api,
+            'api', 'api_key' => AuditSource::Api,
             'ui' => AuditSource::User,
             'n8n' => AuditSource::N8n,
             'mcp' => AuditSource::Mcp,

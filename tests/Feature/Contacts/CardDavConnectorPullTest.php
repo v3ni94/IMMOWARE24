@@ -265,7 +265,8 @@ final class CardDavConnectorPullTest extends TestCase
         $this->server->put(self::PATH.'c2.vcf', 'e2', $this->fixture('quoted-printable.vcf'));
         $this->server->install();
         $first = $this->pull();
-        $this->assertSame('tok-1', $first->cursor);
+        $this->assertNull($first->cursor, 'sync-token ist kein Fortsetzungscursor (RunSyncJob würde sonst endlos weiterlaufen)');
+        $this->assertSame('tok-1', $first->tokens['sync_token']);
 
         // Delta: c2 geändert, c1 gelöscht laut Server
         $this->server->syncToken = 'tok-2';
@@ -278,7 +279,8 @@ final class CardDavConnectorPullTest extends TestCase
 
         $result = $this->pull();
 
-        $this->assertSame('tok-2', $result->cursor);
+        $this->assertNull($result->cursor);
+        $this->assertSame('tok-2', $result->tokens['sync_token']);
         $this->assertSame(1, $result->updated);
         $this->assertSame(0, $this->requestCount('REPORT', 'addressbook-query'), 'kein Depth-1-Vergleich bei sync-collection');
         $this->assertSame(1, $this->requestCount('REPORT', 'sync-collection'));

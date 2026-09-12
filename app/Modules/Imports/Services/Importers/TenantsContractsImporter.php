@@ -11,6 +11,8 @@ use App\Modules\Estate\Models\ContractParty;
 use App\Modules\Imports\DTO\ImportContext;
 use App\Modules\Imports\DTO\ImportOutcome;
 use App\Modules\Imports\Enums\ExportType;
+use App\Modules\Estate\Models\Unit;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Belegungsliste: Mieter, Verwaltungseinheit, Mietbeginn, Mietende, Mietbeträge.
@@ -56,6 +58,8 @@ final class TenantsContractsImporter extends AbstractCsvImporter
             return false;
         }
 
+        $this->markPropertySeen((int) $unit->property_id);
+
         $contract = $this->upsertByExternalId(Contract::class, $context, $this->externalId(self::PREFIX, $key), [
             'unit_id' => $unit->getKey(),
             'contract_number' => $context->value($row, 'contract_number'),
@@ -86,6 +90,18 @@ final class TenantsContractsImporter extends AbstractCsvImporter
         }
 
         return true;
+    }
+
+    /**
+     * Objektbezogener Export: Sweep nur für Datensätze von Einheiten der im Lauf gesehenen Objekte.
+     */
+    protected function scopeSweep(Builder $query, ImportContext $context, array $propertyIds): ?Builder
+    {
+        if ($propertyIds === []) {
+            return null;
+        }
+
+        return $query->whereIn('unit_id', Unit::query()->withoutGlobalScope('organization')->select('id')->whereIn('property_id', $propertyIds));
     }
 
     protected function sweepModel(): string

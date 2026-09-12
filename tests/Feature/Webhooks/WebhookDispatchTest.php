@@ -140,6 +140,11 @@ final class WebhookDispatchTest extends TestCase
             $this->assertSame(512, strlen((string) $delivery->getAttribute('response_excerpt')));
         }
 
+        // Vor Fälligkeit (next_attempt_at) unternimmt der Job keinen Versuch (Schutz vor Doppelzustellung).
+        $job->handle($signer);
+        $this->assertSame(4, $delivery->fresh()->getAttribute('attempts'));
+
+        $this->travelTo(now()->addMinutes(40));
         $job->handle($signer);
 
         $delivery->refresh();

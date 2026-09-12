@@ -12,7 +12,8 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Admin-Routen verlangen eine in dieser Sitzung bestätigte 2FA, sofern die Rolle nicht ausgenommen ist (read_only).
+ * Admin-Routen verlangen eine in dieser Sitzung bestätigte 2FA für alle Rollen (08-security.md 3.1). Die Liste
+ * hub.security.totp.exempt_roles ist standardmäßig leer (Änderungsvermerk 12.09.2026).
  * Ohne eingerichtete 2FA wird auf die Einrichtungsseite geleitet, mit eingerichteter 2FA auf die Code-Abfrage.
  */
 final class RequireTwoFactor

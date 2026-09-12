@@ -8,7 +8,7 @@ use RuntimeException;
 
 /**
  * HMAC-SHA256 mit geheimem Pepper für ip_address_hash, iban_hash und base_url_hash (08-security.md 2.2).
- * Pepper aus HUB_HASH_PEPPER; ohne Wert wird der APP_KEY verwendet (nur Entwicklung und Test).
+ * Pepper aus HUB_HASH_PEPPER; ohne Wert wird der APP_KEY verwendet (nur Entwicklung und Test, in Produktion Exception).
  */
 final class PepperedHasher
 {
@@ -19,6 +19,12 @@ final class PepperedHasher
         $pepper ??= (string) config('hub.security.hashing.pepper', '');
 
         if ($pepper === '') {
+            if ((string) config('app.env') === 'production') {
+                // Kein Fallback auf APP_KEY in Produktion: Der Verschlüsselungsschlüssel darf nicht zusätzlich als
+                // HMAC-Schlüssel dienen, und ein APP_KEY-Wechsel würde alle Hashes still entwerten.
+                throw new RuntimeException('HUB_HASH_PEPPER ist in Produktion Pflicht (kein Fallback auf APP_KEY).');
+            }
+
             $appKey = (string) config('app.key', '');
 
             if (str_starts_with($appKey, 'base64:')) {

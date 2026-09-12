@@ -95,10 +95,35 @@ log "hub:doctor (Vorpruefung)"
 # ---------------------------------------------------------------------------
 # 5. Wartungsmodus des laufenden Releases, Migration, Caches
 # ---------------------------------------------------------------------------
+# Bypass-Token fuer den Wartungsmodus zufaellig erzeugen (nicht aus dem Release-Zeitstempel ableitbar).
+MAINTENANCE_SECRET="$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
 if [[ -L "$CURRENT_LINK" ]]; then
-    log "Wartungsmodus an (aktuelles Release)"
-    (cd "$CURRENT_LINK" && "$PHP_BIN" artisan down --retry=30 --secret="deploy-$STAMP" || true)
+    log "Wartungsmodus an (aktuelles Release), Bypass ueber /$MAINTENANCE_SECRET"
+    (cd "$CURRENT_LINK" && "$PHP_BIN" artisan down --retry=30 --secret="$MAINTENANCE_SECRET" || true)
 fi
+
+# Worker vor der Migration anhalten: Jobs mit altem Code duerfen nicht gegen das migrierte Schema laufen.
+# queue:restart signalisiert den laufenden Workern das Ende nach dem aktuellen Job; anschliessend wird auf
+# das Ende der queue:work-Prozesse gewartet (supervisor oder systemd), danach migriert.
+if [[ -L "$CURRENT_LINK" ]]; then
+    log "queue:restart (aktuelles Release) und auf Worker-Ende warten"
+    (cd "$CURRENT_LINK" && "$PHP_BIN" artisan queue:restart || true)
+fi
+if command -v supervisorctl >/dev/null 2>&1 && sudo -n supervisorctl status "${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}" >/dev/null 2>&1; then
+    sudo -n supervisorctl stop "${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}" >/dev/null 2>&1 || true
+elif command -v systemctl >/dev/null 2>&1 && sudo -n systemctl list-units --type=service --all "${WORKER_SYSTEMD_PATTERN:-immoware-hub-worker@*}" 2>/dev/null | grep -q immoware-hub-worker; then
+    sudo -n systemctl stop "${WORKER_SYSTEMD_PATTERN:-immoware-hub-worker@*}" >/dev/null 2>&1 || true
+fi
+for attempt in $(seq 1 60); do
+    if ! pgrep -f "artisan queue:work" >/dev/null 2>&1; then
+        break
+    fi
+    if [[ "$attempt" -eq 60 ]]; then
+        log "Warnung: queue:work-Prozesse laufen nach 5 Minuten noch. Migration wird trotzdem gestartet."
+    fi
+    sleep 5
+done
 
 log "migrate --force"
 "$PHP_BIN" artisan migrate --force --no-interaction
@@ -122,21 +147,32 @@ else
 fi
 
 "$PHP_BIN" artisan queue:restart
+if command -v supervisorctl >/dev/null 2>&1 && sudo -n supervisorctl status "${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}" >/dev/null 2>&1; then
+    sudo -n supervisorctl start "${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}" >/dev/null 2>&1 || log "Hinweis: Worker konnten nicht ueber supervisorctl gestartet werden."
+elif command -v systemctl >/dev/null 2>&1; then
+    sudo -n systemctl start "${WORKER_SYSTEMD_PATTERN:-immoware-hub-worker@*}" >/dev/null 2>&1 || true
+fi
 "$PHP_BIN" artisan up
 
 # ---------------------------------------------------------------------------
 # 7. Health-Check gegen die Betriebsdomain
 # ---------------------------------------------------------------------------
-log "Health-Check $HEALTH_URL"
+# Deploy-Kriterium sind ausschliesslich Anwendung, Datenbank und Queue (/health/database, /health/queue).
+# Der Gesamtstatus /health enthaelt auch den Immoware24-Spiegel (stale = 503) und wird nur informativ
+# ausgegeben: Eine Immoware24-Stoerung oder eine neue Connection ohne Sync-Stand ist kein Deploy-Fehler.
+HEALTH_BASE="${HEALTH_URL%/health}"
+log "Health-Check $HEALTH_BASE/health/database und $HEALTH_BASE/health/queue"
 for attempt in 1 2 3 4 5 6; do
-    http_code="$(curl -sS -o /tmp/immoware-health.json -w '%{http_code}' --max-time 15 "$HEALTH_URL" || echo 000)"
-    if [[ "$http_code" == "200" ]]; then
-        # 200 bedeutet ok oder degraded (z. B. Breaker offen, DLQ > 0). Das Deploy ist dann korrekt,
-        # der Zustand der Immoware24-Anbindung wird ueber das Monitoring behandelt. 503 bedeutet down.
-        if grep -q '"status":"ok"' /tmp/immoware-health.json; then
-            log "Health ok."
+    db_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_BASE/health/database" || echo 000)"
+    queue_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_BASE/health/queue" || echo 000)"
+    http_code="$db_code/$queue_code"
+    if [[ "$db_code" == "200" && "$queue_code" == "200" ]]; then
+        log "Health database und queue ok."
+        overall="$(curl -sS -o /tmp/immoware-health.json -w '%{http_code}' --max-time 15 "$HEALTH_URL" || echo 000)"
+        if [[ "$overall" == "200" ]] && grep -q '"status":"ok"' /tmp/immoware-health.json; then
+            log "Gesamtstatus /health ok."
         else
-            log "Health antwortet 200 mit Status degraded. Deploy gueltig, Ursache im Monitoring pruefen (docs/operations/03-monitoring.md)."
+            log "Gesamtstatus /health: HTTP $overall. Deploy gueltig, Zustand der Immoware24-Anbindung im Monitoring pruefen (docs/operations/03-monitoring.md)."
         fi
         break
     fi

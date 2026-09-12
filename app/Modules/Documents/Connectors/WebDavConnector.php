@@ -118,9 +118,13 @@ final class WebDavConnector implements ImmowareConnectorInterface
         $runId = $cursor['run_id'] ?? null;
         $ownRun = false;
 
-        if ($runId === null) {
+        if ($runId === null && $request->runId !== null) {
+            // Lauf des Orchestrators (RunSyncJob, Bootstrap, Replay): nur befüllen, nie schließen.
+            $runId = $request->runId;
+            $ownRun = false;
+        } elseif ($runId === null) {
             $runId = $this->resolveRunId($request->mode);
-            $ownRun = $cursor['own_run'] = true;
+            $ownRun = true;
         } else {
             $ownRun = (bool) ($cursor['own_run'] ?? false);
         }
@@ -238,12 +242,16 @@ final class WebDavConnector implements ImmowareConnectorInterface
     }
 
     /**
-     * Nutzt einen laufenden sync_run der Connection oder legt einen eigenen an.
+     * Ohne runId im SyncRequest (eigenständiger Scan über ScanDocumentFoldersJob): einen noch laufenden
+     * eigenen Scan-Run (run_type documents_scan) fortsetzen oder einen eigenen anlegen. Läufe anderer
+     * Orchestratoren oder Entitäten werden nie übernommen und daher auch nie von hier geschlossen.
      */
     private function resolveRunId(SyncMode $mode): int
     {
         $running = SyncRun::query()
             ->where('connection_id', $this->context->connectionId)
+            ->where('run_type', self::RUN_TYPE)
+            ->where('trigger_source', 'connector')
             ->where('status', SyncStatus::Running->value)
             ->orderByDesc('id')
             ->value('id');
@@ -254,6 +262,7 @@ final class WebDavConnector implements ImmowareConnectorInterface
 
         $run = SyncRun::query()->create([
             'connection_id' => $this->context->connectionId,
+            'entity_type' => self::ENTITY_TYPE,
             'run_type' => self::RUN_TYPE,
             'mode' => $mode->value,
             'trigger_source' => 'connector',

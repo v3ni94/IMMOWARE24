@@ -26,13 +26,18 @@ return [
         // Toleranz in Perioden vor und nach dem aktuellen Zeitfenster.
         'window' => 1,
         'recovery_codes' => 10,
-        // Rollen, die ohne bestätigte 2FA auf Admin-Routen zugreifen dürfen.
-        'exempt_roles' => ['read_only'],
+        // Rollen, die ohne bestätigte 2FA auf Admin-Routen zugreifen dürfen. 08-security.md Abschnitt 3.1 verlangt
+        // 2FA für alle Rollen; read_only besitzt exports.run und audit.view. Leer, Änderungsvermerk 12.09.2026.
+        'exempt_roles' => [],
+        // Sicherheitskritische Aktionen (Middleware 2fa.fresh) verlangen eine TOTP-Bestätigung, die höchstens so alt ist.
+        'fresh_minutes' => (int) env('HUB_TOTP_FRESH_MINUTES', 5),
     ],
 
     'sessions' => [
         // Tabelle des Session-Treibers database; nur damit lassen sich aktive Sitzungen anzeigen.
         'table' => 'sessions',
+        // Absolute Obergrenze einer Sitzung ab Anmeldung, unabhängig von Aktivität (08-security.md: 8 Stunden).
+        'absolute_minutes' => (int) env('HUB_SESSION_ABSOLUTE_MINUTES', 480),
     ],
 
     'api_keys' => [

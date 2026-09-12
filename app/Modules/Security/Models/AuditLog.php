@@ -44,7 +44,9 @@ class AuditLog extends Model
                 $log->setAttribute('occurred_at', now()->toImmutable());
             }
 
-            $previous = self::query()->orderByDesc('id')->value('row_hash');
+            // Letzte Zeile innerhalb der umschließenden Transaktion sperren, damit zwei parallele
+            // Schreiber (Web-Request, Queue-Worker) nicht denselben Vorgänger verketten.
+            $previous = self::query()->orderByDesc('id')->lockForUpdate()->value('row_hash');
             $log->setAttribute('prev_hash', is_string($previous) ? $previous : self::GENESIS_HASH);
             $log->setAttribute('row_hash', $log->computeRowHash());
         });

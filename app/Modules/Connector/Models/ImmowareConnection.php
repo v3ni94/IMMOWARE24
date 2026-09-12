@@ -59,6 +59,63 @@ class ImmowareConnection extends Model
         return $this->getAttribute('purpose') === 'write';
     }
 
+    /** @var array<int, string> Felder, deren Änderung die Schreibfreigabe aufhebt (Freigabe gilt nur für den freigegebenen Zustand). */
+    public const array WRITE_APPROVAL_SCOPE_FIELDS = ['purpose', 'connector_type', 'base_url', 'allowed_write_prefix'];
+
+    /**
+     * Vier-Augen-Prinzip (05-write-capabilities.md 2.2 Nr. 2, 08-security.md Abschnitt 4): write_enabled genügt nicht.
+     * Liefert den Grund, warum die Freigabe unvollständig ist, sonst null.
+     */
+    public function writeApprovalIncompleteReason(): ?string
+    {
+        if (! (bool) $this->getAttribute('write_enabled')) {
+            return 'connection_write_not_enabled';
+        }
+
+        $enabledBy = $this->getAttribute('write_enabled_by');
+        $confirmedBy = $this->getAttribute('write_confirmed_by');
+
+        if ($enabledBy === null || $confirmedBy === null || $this->getAttribute('write_approval_document_id') === null) {
+            return 'write_approval_incomplete';
+        }
+
+        if ((int) $enabledBy === (int) $confirmedBy) {
+            return 'write_approval_same_person';
+        }
+
+        $requester = User::query()->allOrganizations()->find((int) $enabledBy);
+        $confirmer = User::query()->allOrganizations()->find((int) $confirmedBy);
+
+        if (! $requester instanceof User || ! $confirmer instanceof User) {
+            return 'write_approval_incomplete';
+        }
+
+        if (! $requester->role->canRequestWriteEnable() || ! $confirmer->role->canConfirmWriteEnable()) {
+            return 'write_approval_roles_invalid';
+        }
+
+        return null;
+    }
+
+    public function hasCompleteWriteApproval(): bool
+    {
+        return $this->writeApprovalIncompleteReason() === null;
+    }
+
+    /**
+     * Hebt die Schreibfreigabe auf (z. B. nach Änderung von Zweck, Typ, URL oder Schreibpräfix).
+     */
+    public function resetWriteApproval(): void
+    {
+        $this->forceFill([
+            'write_enabled' => false,
+            'write_enabled_by' => null,
+            'write_confirmed_by' => null,
+            'write_approval_document_id' => null,
+            'write_enabled_at' => null,
+        ]);
+    }
+
     /**
      * @return BelongsTo<ImmowareTechnicalUser, $this>
      */

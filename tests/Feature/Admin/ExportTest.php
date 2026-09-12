@@ -43,9 +43,9 @@ final class ExportTest extends TestCase
     {
         Queue::fake();
         $organization = Organization::factory()->create();
-        $user = User::factory()->role(Role::ReadOnly)->withoutTotp()->for($organization)->create();
+        $user = User::factory()->role(Role::ReadOnly)->for($organization)->create();
 
-        $this->actingAs($user)->post('/admin/export', ['entity' => 'properties', 'format' => 'csv', 'filter_column' => 'city', 'filter_value' => 'Hilden', 'include_deleted' => '1'])->assertRedirect('/admin/export');
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->post('/admin/export', ['entity' => 'properties', 'format' => 'csv', 'filter_column' => 'city', 'filter_value' => 'Hilden', 'include_deleted' => '1'])->assertRedirect('/admin/export');
 
         $export = HubExport::query()->firstOrFail();
         $this->assertSame('properties', $export->entity);

@@ -54,7 +54,7 @@ final class DiscoveryTest extends TestCase
     public function test_operator_and_read_only_are_forbidden(): void
     {
         $this->login(User::factory()->role(Role::Operator)->create())->get('/admin/discovery')->assertForbidden();
-        $this->actingAs(User::factory()->role(Role::ReadOnly)->withoutTotp()->create())->get('/admin/discovery')->assertForbidden();
+        $this->login(User::factory()->role(Role::ReadOnly)->create())->get('/admin/discovery')->assertForbidden();
         $this->login(User::factory()->role(Role::Owner)->create())->get('/admin/discovery')->assertOk();
         $this->login(User::factory()->role(Role::Administrator)->create())->get('/admin/discovery')->assertOk();
     }

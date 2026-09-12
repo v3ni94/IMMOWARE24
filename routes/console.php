@@ -29,3 +29,10 @@ ScheduleFacade::command('hub:imports:scan --process')
     ->withoutOverlapping()
     ->onOneServer()
     ->description('hub:imports drop folder scan');
+
+// 05-write-capabilities.md 3.3 und 3.4: Anträge in sent oder unknown ausschließlich per PROPFIND weiterführen.
+ScheduleFacade::command('hub:write:resume')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->description('hub:write resume sent/unknown via PROPFIND');

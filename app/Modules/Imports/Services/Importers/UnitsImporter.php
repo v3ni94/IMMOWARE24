@@ -9,6 +9,7 @@ use App\Modules\Estate\Models\Unit;
 use App\Modules\Imports\DTO\ImportContext;
 use App\Modules\Imports\DTO\ImportOutcome;
 use App\Modules\Imports\Enums\ExportType;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Verwaltungseinheiten mit Objektbezug über die externe Objektnummer (immoware_object_number).
@@ -48,6 +49,8 @@ final class UnitsImporter extends AbstractCsvImporter
             return false;
         }
 
+        $this->markPropertySeen((int) $property->getKey());
+
         $this->upsertByExternalId(Unit::class, $context, $this->externalId(self::PREFIX, $key), [
             'property_id' => $property->getKey(),
             'unit_number' => mb_substr($unitNumber, 0, 64),
@@ -59,6 +62,14 @@ final class UnitsImporter extends AbstractCsvImporter
         ], ['external_parent_id' => $property->external_id]);
 
         return true;
+    }
+
+    /**
+     * Objektbezogener Export: Sweep nur für Einheiten der im Lauf gesehenen Objekte.
+     */
+    protected function scopeSweep(Builder $query, ImportContext $context, array $propertyIds): ?Builder
+    {
+        return $propertyIds === [] ? null : $query->whereIn('property_id', $propertyIds);
     }
 
     protected function sweepModel(): string

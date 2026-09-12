@@ -91,7 +91,9 @@ final class DocumentUploadController
             'status' => $status instanceof \BackedEnum ? $status->value : (string) $status,
             'outcome' => $result->outcome,
             'target_path' => $operation->getAttribute('target_path'),
-            'effect' => 'immoware24',
+            // Anträge aus API-Key-Kontext wirken erst nach menschlicher Freigabe im Livesystem (09 §3.5).
+            'effect' => $result->outcome === 'pending_approval' || $result->outcome === 'denied' ? 'immoware24_after_approval' : 'immoware24',
+            'approval_required' => $result->outcome === 'pending_approval',
         ], [], 202);
     }
 }

@@ -65,11 +65,20 @@ final class DashboardTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_read_only_role_without_totp_is_admitted_and_sees_reduced_navigation(): void
+    public function test_read_only_role_without_totp_is_redirected_to_setup(): void
     {
+        // 08-security.md 3.1: 2FA-Pflicht für alle Rollen, auch read_only (exports.run, audit.view).
         $user = User::factory()->role(Role::ReadOnly)->withoutTotp()->create();
 
+        $this->actingAs($user)->get('/admin')->assertRedirect(route('security.two-factor.setup'));
+    }
+
+    public function test_read_only_role_with_totp_sees_reduced_navigation(): void
+    {
+        $user = User::factory()->role(Role::ReadOnly)->create();
+
         $this->actingAs($user)
+            ->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])
             ->get('/admin')
             ->assertOk()
             ->assertSee('Auditlog')

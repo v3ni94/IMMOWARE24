@@ -43,7 +43,7 @@ final class Totp
      */
     public function code(string $secretBase32, ?int $timestamp = null): string
     {
-        $counter = intdiv($timestamp ?? time(), $this->period);
+        $counter = intdiv($timestamp ?? now()->getTimestamp(), $this->period);
 
         return $this->hotp(Base32::decode($secretBase32), $counter);
     }
@@ -53,23 +53,32 @@ final class Totp
      */
     public function verify(string $secretBase32, string $code, ?int $timestamp = null): bool
     {
+        return $this->matchCounter($secretBase32, $code, $timestamp) !== null;
+    }
+
+    /**
+     * Liefert den Zeitfenster-Zähler, für den der Code gültig ist (±window Perioden), sonst null.
+     * Alle Fenster werden immer vollständig geprüft (Konstantzeit), der Zähler dient der Replay-Sperre.
+     */
+    public function matchCounter(string $secretBase32, string $code, ?int $timestamp = null): ?int
+    {
         $code = preg_replace('/\s+/', '', $code) ?? '';
 
         if (strlen($code) !== $this->digits || ! ctype_digit($code)) {
-            return false;
+            return null;
         }
 
         $secret = Base32::decode($secretBase32);
-        $counter = intdiv($timestamp ?? time(), $this->period);
-        $valid = false;
+        $counter = intdiv($timestamp ?? now()->getTimestamp(), $this->period);
+        $matched = null;
 
         for ($offset = -$this->window; $offset <= $this->window; $offset++) {
             if (hash_equals($this->hotp($secret, $counter + $offset), $code)) {
-                $valid = true;
+                $matched = $counter + $offset;
             }
         }
 
-        return $valid;
+        return $matched;
     }
 
     /**

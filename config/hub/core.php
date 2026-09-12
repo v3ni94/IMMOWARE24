@@ -41,6 +41,11 @@ return [
         'unknown_propfind_interval_seconds' => (int) env('IMMOWARE_WRITE_UNKNOWN_PROPFIND_INTERVAL_SECONDS', 300),
         'max_concurrency' => (int) env('IMMOWARE_WRITE_MAX_CONCURRENCY', 1),
         'dry_run' => (bool) env('IMMOWARE_WRITE_DRY_RUN', false),
+        // Blob-Ablage des Quellinhalts für Anträge, die pending bleiben (Freigabe ausstehend oder Flags gesperrt).
+        'storage_disk' => env('IMMOWARE_WRITE_STORAGE_DISK', env('FILESYSTEM_DISK', 'local')),
+        'storage_prefix' => 'write-operations',
+        // Anträge mit requested_via api_key (REST, MCP, n8n) werden erst nach menschlicher Freigabe ausgeführt (09 §3.5, 08 §8).
+        'approval_required_via' => ['api_key', 'api', 'mcp', 'n8n'],
     ],
 
     'imports' => [

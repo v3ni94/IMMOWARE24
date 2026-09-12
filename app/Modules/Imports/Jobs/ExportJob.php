@@ -98,7 +98,7 @@ final class ExportJob implements ShouldQueue
                 }
 
                 if ($format === HubExportFormat::Csv) {
-                    fputcsv($handle, array_map(static fn ($v): string => (string) ($v ?? ''), $data), ';', '"', '\\', "\r\n");
+                    fputcsv($handle, array_map(self::csvCell(...), $data), ';', '"', '\\', "\r\n");
                 } else {
                     fwrite($handle, ($rows > 0 ? ',' : '').json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
                 }
@@ -142,6 +142,33 @@ final class ExportJob implements ShouldQueue
                 unlink($temp);
             }
         }
+    }
+
+    /**
+     * CSV-Zelle für Tabellenkalkulationen entschärfen: Strings, die mit =, +, -, @, Tab oder CR beginnen,
+     * würden in Excel als Formel ausgewertet (CSV-Injection über Verwendungszwecke, Namen, Notizen).
+     * Numerische Werte (z. B. negative amount_cents) bleiben unverändert.
+     */
+    public static function csvCell(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (string) $value;
+        }
+
+        $string = (string) $value;
+
+        if ($string !== '' && (str_starts_with($string, '=') || str_starts_with($string, '+') || str_starts_with($string, '-') || str_starts_with($string, '@') || str_starts_with($string, "\t") || str_starts_with($string, "\r"))) {
+            // Numerische Strings (z. B. "-12,50") nicht verändern, nur Text.
+            if (! is_numeric(str_replace(',', '.', $string))) {
+                return "'".$string;
+            }
+        }
+
+        return $string;
     }
 
     public function failed(?Throwable $exception): void

@@ -62,7 +62,8 @@ final class DoctorCommand extends Command
         $this->add('hub.read.enabled', (bool) $config->get('hub.core.read.enabled') ? 'ok' : 'warn', $this->bool($config->get('hub.core.read.enabled')));
         $this->add('hub.api_keys.enabled', 'ok', $this->bool($config->get('hub.core.api_keys.enabled')));
         $this->add('hub.webhooks.enabled', 'ok', $this->bool($config->get('hub.webhooks.enabled')));
-        $this->add('hub.hash_pepper', $config->get('hub.security.hashing.pepper') !== null ? 'ok' : 'warn', $config->get('hub.security.hashing.pepper') !== null ? 'gesetzt' : 'HUB_HASH_PEPPER fehlt, Fallback APP_KEY');
+        $pepperSet = (string) $config->get('hub.security.hashing.pepper', '') !== '';
+        $this->add('hub.hash_pepper', $pepperSet ? 'ok' : ((string) $config->get('app.env') === 'production' ? 'fail' : 'warn'), $pepperSet ? 'gesetzt' : 'HUB_HASH_PEPPER fehlt'.((string) $config->get('app.env') === 'production' ? ', in Produktion Pflicht (PepperedHasher bricht ab)' : ', Fallback APP_KEY'));
     }
 
     private function checkWriteFlags(ConfigRepository $config, BootGuard $guard): void

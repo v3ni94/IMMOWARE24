@@ -90,10 +90,18 @@ trait DocumentsTestHelpers
     {
         $paired ??= $this->readConnection();
 
+        $requester = \App\Modules\Security\Models\User::factory()->role(\App\Core\Enums\Role::Administrator)->for($paired->organization)->create();
+        $confirmer = \App\Modules\Security\Models\User::factory()->role(\App\Core\Enums\Role::Owner)->for($paired->organization)->create();
+
         $connection = $this->createConnection($paired->organization, [
             'name' => 'WebDAV Schreib-Connection',
             'purpose' => 'write',
             'write_enabled' => true,
+            // Vier-Augen-Prinzip: Beantragung durch admin, Bestätigung durch Owner (release), Freigabedokument hinterlegt.
+            'write_enabled_by' => $requester->getKey(),
+            'write_confirmed_by' => $confirmer->getKey(),
+            'write_approval_document_id' => 1,
+            'write_enabled_at' => now(),
             'status' => 'active',
             'allowed_write_prefix' => '/Posteingang/',
             'paired_read_connection_id' => $paired->getKey(),

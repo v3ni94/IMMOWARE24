@@ -22,6 +22,9 @@ final class LoginService
 {
     public const string SESSION_TWO_FACTOR_VERIFIED = 'security.two_factor_verified_at';
 
+    /** Anmeldezeitpunkt der Sitzung, Grundlage der absoluten Sitzungsdauer (EnforceAbsoluteSessionLifetime). */
+    public const string SESSION_LOGIN_AT = 'security.login_at';
+
     public function __construct(
         private readonly StatefulGuard $guard,
         private readonly Hasher $hasher,
@@ -65,6 +68,7 @@ final class LoginService
         $this->guard->login($user, $remember);
         $request->session()->regenerate();
         $request->session()->forget(self::SESSION_TWO_FACTOR_VERIFIED);
+        $request->session()->put(self::SESSION_LOGIN_AT, now()->toIso8601String());
 
         $user->forceFill([
             'failed_login_count' => 0,

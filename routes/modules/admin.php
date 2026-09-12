@@ -27,6 +27,8 @@ use Illuminate\Support\Facades\Route;
  * Prefix /admin, Namensraum admin. und der Middleware-Gruppe admin (web, auth, admin.access, 2fa)
  * umschlossen. Weitere Admin-Seiten registrieren hier ihre Routen als admin.<bereich>.<aktion>.
  * Rechte je Aktion prüfen die Controller über requirePermission() oder Route::can('<recht>').
+ * Sicherheitskritische Aktionen (API-Key anlegen, Rolle ändern, Connection-Status, Webhook anlegen) tragen
+ * zusätzlich 2fa.fresh: TOTP-Bestätigung höchstens hub.security.totp.fresh_minutes alt (08-security.md 3.1).
  */
 Route::get('/', DashboardController::class)->name('dashboard');
 
@@ -46,7 +48,7 @@ Route::prefix('imports')->name('imports.')->group(static function (): void {
 Route::prefix('webhooks')->name('webhooks.')->group(static function (): void {
     Route::get('/', [WebhooksController::class, 'index'])->name('index');
     Route::get('create', [WebhooksController::class, 'create'])->name('create');
-    Route::post('/', [WebhooksController::class, 'store'])->name('store');
+    Route::post('/', [WebhooksController::class, 'store'])->middleware('2fa.fresh')->name('store');
     Route::get('deliveries', [WebhooksController::class, 'deliveries'])->name('deliveries.index');
     Route::get('dlq', [WebhooksController::class, 'dlq'])->name('dlq.index');
     Route::post('deliveries/{delivery}/redeliver', [WebhooksController::class, 'redeliver'])->whereNumber('delivery')->name('deliveries.redeliver');
@@ -59,7 +61,7 @@ Route::prefix('webhooks')->name('webhooks.')->group(static function (): void {
 Route::prefix('api')->name('api.')->group(static function (): void {
     Route::get('/', [ApiKeysController::class, 'index'])->name('index');
     Route::get('create', [ApiKeysController::class, 'create'])->name('create');
-    Route::post('/', [ApiKeysController::class, 'store'])->name('store');
+    Route::post('/', [ApiKeysController::class, 'store'])->middleware('2fa.fresh')->name('store');
     Route::post('{key}/revoke', [ApiKeysController::class, 'revoke'])->whereNumber('key')->name('revoke');
 });
 
@@ -68,7 +70,7 @@ Route::prefix('users')->name('users.')->group(static function (): void {
     Route::get('create', [UsersController::class, 'create'])->name('create');
     Route::post('/', [UsersController::class, 'store'])->name('store');
     Route::get('{user}/edit', [UsersController::class, 'edit'])->whereNumber('user')->name('edit');
-    Route::put('{user}', [UsersController::class, 'update'])->whereNumber('user')->name('update');
+    Route::put('{user}', [UsersController::class, 'update'])->whereNumber('user')->middleware('2fa.fresh')->name('update');
     Route::post('{user}/reset-two-factor', [UsersController::class, 'resetTwoFactor'])->whereNumber('user')->name('reset-two-factor');
     Route::post('{user}/unlock', [UsersController::class, 'unlock'])->whereNumber('user')->name('unlock');
 });
@@ -109,7 +111,7 @@ Route::prefix('connections')->name('connections.')->group(function (): void {
     Route::get('/{id}/edit', [ConnectionsController::class, 'edit'])->whereNumber('id')->name('edit');
     Route::put('/{id}', [ConnectionsController::class, 'update'])->whereNumber('id')->name('update');
     Route::post('/{id}/probe', [ConnectionsController::class, 'probe'])->whereNumber('id')->name('probe');
-    Route::post('/{id}/status', [ConnectionsController::class, 'status'])->whereNumber('id')->name('status');
+    Route::post('/{id}/status', [ConnectionsController::class, 'status'])->whereNumber('id')->middleware('2fa.fresh')->name('status');
 });
 
 Route::get('/capabilities', [CapabilitiesController::class, 'index'])->name('capabilities.index');

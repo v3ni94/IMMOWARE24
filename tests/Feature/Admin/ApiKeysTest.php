@@ -43,10 +43,10 @@ final class ApiKeysTest extends TestCase
 
     public function test_read_only_is_forbidden(): void
     {
-        $user = User::factory()->role(Role::ReadOnly)->withoutTotp()->create();
+        $user = User::factory()->role(Role::ReadOnly)->create();
 
-        $this->actingAs($user)->get('/admin/api')->assertForbidden();
-        $this->actingAs($user)->post('/admin/api', ['name' => 'x', 'scopes' => ['properties:read'], 'expires_at' => now()->addMonth()->format('Y-m-d')])->assertForbidden();
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->get('/admin/api')->assertForbidden();
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->post('/admin/api', ['name' => 'x', 'scopes' => ['properties:read'], 'expires_at' => now()->addMonth()->format('Y-m-d')])->assertForbidden();
     }
 
     public function test_store_reveals_plain_key_once_and_audits(): void

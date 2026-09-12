@@ -15,6 +15,7 @@ use App\Modules\Security\Models\AuditLog;
 use App\Modules\Security\Models\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -23,6 +24,9 @@ use Illuminate\Support\Facades\DB;
  */
 final class AuditLogger implements AuditLoggerInterface
 {
+    /** Cache-Lock, der das Anhängen an die Hash-Kette über alle Prozesse serialisiert. */
+    public const string CHAIN_LOCK = 'audit:chain';
+
     private ?AuditActor $actorOverride = null;
 
     public function __construct(
@@ -102,8 +106,12 @@ final class AuditLogger implements AuditLoggerInterface
             $attributes['after_json']['_user_agent'] = mb_substr($userAgent, 0, 255);
         }
 
-        // Kette serialisieren: prev_hash wird beim creating aus der letzten Zeile gelesen.
-        return DB::transaction(fn (): AuditLog => AuditLog::query()->create($attributes));
+        // Kette serialisieren: prozessübergreifender Sequenz-Lock plus lockForUpdate() auf die letzte Zeile
+        // (AuditLog::booted). prev_hash wird beim creating aus der letzten Zeile gelesen; der Unique-Index
+        // auf prev_hash fängt eine trotzdem entstandene Verzweigung ab.
+        return Cache::lock(self::CHAIN_LOCK, 10)->block(5, static fn (): AuditLog => DB::transaction(
+            static fn (): AuditLog => AuditLog::query()->create($attributes),
+        ));
     }
 
     private function currentRequest(): ?Request

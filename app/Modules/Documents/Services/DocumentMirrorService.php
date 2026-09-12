@@ -14,6 +14,9 @@ use App\Modules\Documents\Support\DavEntry;
 use App\Modules\Documents\Support\DocumentAssignmentResolver;
 use App\Modules\Documents\Support\DocumentTypeClassifier;
 use App\Modules\Documents\Support\WebDavPath;
+use App\Modules\Connector\Models\ImmowareConnection;
+use App\Core\Enums\ConflictState;
+use App\Modules\Sync\Models\Conflict;
 use App\Modules\Sync\Models\SyncEvent;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
@@ -35,6 +38,12 @@ final class DocumentMirrorService
     public const string DELETION_REMOTE_DELETED = 'remote_deleted';
 
     public const string DELETION_FOLDER_REMOVED = 'folder_removed';
+
+    /** degraded_reason der Connection bei 404 auf Ordner-Ebene (07-sync-strategy.md Abschnitt 6.1). */
+    public const string DEGRADED_FOLDER_MISSING = 'folder_missing';
+
+    /** conflict_type für einen per 404 nicht mehr erreichbaren Ordner. */
+    public const string CONFLICT_FOLDER_MISSING = 'folder_missing';
 
     public function __construct(
         private readonly DocumentTypeClassifier $classifier,
@@ -387,16 +396,54 @@ final class DocumentMirrorService
         return false;
     }
 
+    /**
+     * LIKE-Muster für einen Pfadpräfix mit explizitem, portablem ESCAPE-Zeichen (!). Ohne ESCAPE-Klausel wirkt
+     * der Backslash unter SQLite nicht als Escape, unter MariaDB nur im Standard-SQL-Mode.
+     */
+    public static function likePrefix(string $prefix): string
+    {
+        return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $prefix).'%';
+    }
+
+    /**
+     * Anzahl aktiver Dokumente unterhalb eines Ordnerpfads (Schutzgrenze vor Teilbaum-Löschungen).
+     */
+    private function countDocumentsBelow(string $prefix, ScanContext $context): int
+    {
+        return Document::query()
+            ->withoutGlobalScopes()
+            ->where('connection_id', $context->connectionId)
+            ->whereNull('deleted_at')
+            ->whereRaw("path like ? escape '!'", [self::likePrefix($prefix)])
+            ->count();
+    }
+
     private function softDeleteFolderTree(DocumentFolder $folder, CarbonImmutable $at, ScanContext $context): int
     {
         $deleted = 0;
         $prefix = (string) $folder->getAttribute('path');
 
+        // Schutzgrenze wie im regulären Sweep: ein verschwundener Ordner mit mehr als sweep_max_missing_count
+        // Dokumenten wird nur als fehlend markiert, nicht gelöscht (07-sync-strategy.md Abschnitt 4 Punkt 6).
+        $below = $this->countDocumentsBelow($prefix, $context);
+
+        if ($below > $context->sweepMaxMissingCount) {
+            DocumentFolder::query()->withoutGlobalScopes()->whereKey($folder->getKey())->whereNull('missing_since')->update(['missing_since' => $at]);
+            Log::warning('Teilbaum-Löschung blockiert: Schutzgrenze überschritten.', [
+                'connection_id' => $context->connectionId,
+                'folder' => $prefix,
+                'documents_below' => $below,
+                'limit' => $context->sweepMaxMissingCount,
+            ]);
+
+            return 0;
+        }
+
         $documents = Document::query()
             ->withoutGlobalScopes()
             ->where('connection_id', $context->connectionId)
             ->whereNull('deleted_at')
-            ->where('path', 'like', str_replace(['%', '_'], ['\\%', '\\_'], $prefix).'%')
+            ->whereRaw("path like ? escape '!'", [self::likePrefix($prefix)])
             ->orderBy('id')
             ->lazyById(200);
 
@@ -411,7 +458,7 @@ final class DocumentMirrorService
             ->withoutGlobalScopes()
             ->where('connection_id', $context->connectionId)
             ->whereNull('deleted_at')
-            ->where('path', 'like', str_replace(['%', '_'], ['\\%', '\\_'], $prefix).'%')
+            ->whereRaw("path like ? escape '!'", [self::likePrefix($prefix)])
             ->update(['deleted_at' => $at, 'missing_since' => $at]);
 
         return $deleted;
@@ -439,17 +486,71 @@ final class DocumentMirrorService
             return;
         }
 
-        if ($status === 404) {
-            if ($folder->getAttribute('missing_since') === null) {
-                // Erstes Fehlen: nur markieren, kein Soft Delete (07-sync-strategy.md Abschnitt 4).
-                $folder->setAttribute('missing_since', $at);
-                $folder->save();
-
-                return;
-            }
-
-            $this->softDeleteFolderTree($folder, $at, $context);
+        if ($status !== 404) {
+            return;
         }
+
+        // 404 auf Collection-Ebene bedeutet geänderte oder entzogene Freigabe, nicht gelöschte Dokumente
+        // (07-sync-strategy.md Abschnitt 4 Punkt 5 und Abschnitt 6.1): Ordner als fehlend markieren, Connection
+        // auf degraded setzen, Konflikt für die manuelle Prüfung anlegen. Kein Sweep, kein Soft Delete des Teilbaums.
+        if ($folder->getAttribute('missing_since') === null) {
+            $folder->setAttribute('missing_since', $at);
+            $folder->save();
+        }
+
+        ImmowareConnection::query()
+            ->withoutGlobalScopes()
+            ->whereKey($context->connectionId)
+            ->where('status', 'active')
+            ->update(['status' => 'degraded', 'degraded_reason' => self::DEGRADED_FOLDER_MISSING]);
+
+        $this->recordFolderMissingConflict($folder, $context, $at);
+
+        Log::warning('Ordner per 404 nicht erreichbar: Connection degraded, kein Sweep.', [
+            'connection_id' => $context->connectionId,
+            'folder' => $path,
+            'reason' => self::DEGRADED_FOLDER_MISSING,
+        ]);
+    }
+
+    /**
+     * Höchstens ein offener Konflikt folder_missing je Ordner; Wiederholungen erhöhen occurrences.
+     */
+    private function recordFolderMissingConflict(DocumentFolder $folder, ScanContext $context, CarbonImmutable $at): void
+    {
+        $existing = Conflict::query()
+            ->where('entity_type', 'document_folder')
+            ->where('entity_id', $folder->getKey())
+            ->where('conflict_type', self::CONFLICT_FOLDER_MISSING)
+            ->where('open_key', true)
+            ->first();
+
+        if ($existing instanceof Conflict) {
+            $existing->forceFill([
+                'occurrences' => (int) $existing->getAttribute('occurrences') + 1,
+                'last_seen_run_id' => $context->syncRunId,
+                'last_seen_at' => $at,
+            ])->save();
+
+            return;
+        }
+
+        $conflict = new Conflict;
+        $conflict->forceFill([
+            'connection_id' => $context->connectionId,
+            'sync_run_id' => $context->syncRunId,
+            'entity_type' => 'document_folder',
+            'entity_id' => $folder->getKey(),
+            'conflict_type' => self::CONFLICT_FOLDER_MISSING,
+            'conflict_state' => ConflictState::RemoteNewer,
+            'local_snapshot_json' => ['path' => $folder->getAttribute('path'), 'missing_since' => $at->toIso8601String(), 'http_status' => 404],
+            'status' => 'open',
+            'open_key' => true,
+            'occurrences' => 1,
+            'last_seen_run_id' => $context->syncRunId,
+            'last_seen_at' => $at,
+        ]);
+        $conflict->save();
     }
 
     private function metadataChanged(ScanContext $context, DavEntry $entry, mixed $oldEtag, ?CarbonImmutable $oldModified, ?int $oldSize): bool

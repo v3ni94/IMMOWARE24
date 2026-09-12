@@ -128,6 +128,16 @@ class RunSyncJob implements ShouldQueue
 
                 return;
             }
+        } elseif ($this->mode === SyncMode::Full && $lockOwner !== null && $this->attempts() > 1) {
+            // Retry eines Fortsetzungsjobs: Der Lock wird bei transienten Fehlern nicht freigegeben, kann aber
+            // abgelaufen sein. restore()->get() erneuert ihn nur, wenn ihn niemand anderes hält.
+            if (! $locks->restore($this->connectionId, $this->entityType, $lockOwner)->get()) {
+                $runs->skipped($this->connectionId, $this->entityType, $this->mode, 'Fortsetzung übersprungen: Full-Sync-Lock inzwischen von einem anderen Lauf gehalten.', $this->triggerSource);
+                $metrics->increment(SyncMetrics::SKIPPED_LOCKED, 1, $this->labels());
+                Log::warning('RunSyncJob: Fortsetzung übersprungen, Lock von anderem Lauf gehalten.', [...$this->labels(), 'run_id' => $this->runId]);
+
+                return;
+            }
         }
 
         $state = $states->forEntity($this->connectionId, $this->entityType);
@@ -161,13 +171,27 @@ class RunSyncJob implements ShouldQueue
             $chunks = 0;
 
             while ($chunks < $maxChunks) {
-                $request = new SyncRequest($this->connectionId, $this->entityType, $this->mode, $since, $cursor, $limit);
+                $request = new SyncRequest($this->connectionId, $this->entityType, $this->mode, $since, $cursor, $limit, (int) $run->getKey());
                 $result = $connector->pull($request);
                 $chunks++;
 
                 $runs->accumulate($run, $result);
                 $this->recordMetrics($metrics, $result);
                 $this->recordRecordFailures($dlq, $result);
+
+                if ($result->cursor !== null && $result->cursor === $cursor) {
+                    // Cursor-Vertrag verletzt: Ein Adapter, der denselben Cursor zurückgibt, würde die Collection
+                    // endlos neu enumerieren (Änderungsvermerk 12.09.2026). Lauf abbrechen, Eintrag in die DLQ.
+                    $exception = new \RuntimeException(sprintf('Adapter lieferte unveränderten Cursor "%s", Chunk-Schleife abgebrochen.', mb_substr($cursor, 0, 80)));
+                    $runs->fail($run, $exception);
+                    $states->recordFailure($state, $run, $runs->describe($exception));
+                    $dlq->store(static::class, $this->dlqArguments(), $exception, $this->connectionId, $this->entityType, (string) $this->queue);
+                    $metrics->increment(SyncMetrics::SYNC_ERRORS, 1, $this->labels());
+                    $locks->release($this->connectionId, $this->entityType, $lockOwner);
+                    Log::error('RunSyncJob: unveränderter Cursor, Lauf abgebrochen.', [...$this->labels(), 'run_id' => $run->getKey()]);
+
+                    return;
+                }
 
                 $cursor = $result->cursor;
 
@@ -183,8 +207,15 @@ class RunSyncJob implements ShouldQueue
                 return;
             }
 
-            $runs->finish($run, null);
-            $states->commitSuccess($state, $run, null);
+            $run = $runs->finish($run, null);
+
+            if ($run->getAttribute('status') === SyncStatus::Succeeded) {
+                $states->commitSuccess($state, $run, null);
+            } else {
+                // Alle Datensätze fehlgeschlagen: kein frischer Datenstand, stale_since bleibt bestehen (04-runbook.md).
+                $states->recordFailure($state, $run, (string) ($run->getAttribute('error_summary') ?? 'Lauf ohne erfolgreich verarbeitete Datensätze.'));
+            }
+
             $metrics->observeDuration((int) ((hrtime(true) - $started) / 1_000_000), $this->labels());
             $locks->release($this->connectionId, $this->entityType, $lockOwner);
         } catch (Throwable $exception) {
@@ -197,13 +228,12 @@ class RunSyncJob implements ShouldQueue
             $run->forceFill(['error_summary' => $runs->describe($exception)]);
             $run->save();
 
-            if ($this->attempts() >= $this->tries) {
-                $runs->fail($run, $exception);
-                $this->notifyFailure($run, (int) $connection->getAttribute('organization_id'), $runs->describe($exception));
+            // Endgültiges Scheitern (fail(), sync.failed, DLQ) behandelt ausschließlich failed(), damit je Lauf genau
+            // ein Ereignis entsteht. Der Lock bleibt bei einem Fortsetzungsjob (lockOwner im Payload) für den Retry
+            // bestehen; ein Erstjob ohne lockOwner im Payload erwirbt ihn beim Retry neu und gibt ihn daher frei.
+            if ($this->attempts() >= $this->tries || $this->lockOwner === null) {
+                $locks->release($this->connectionId, $this->entityType, $lockOwner);
             }
-
-            // Lock in jedem Fall freigeben: Der Retry erwirbt ihn neu, ein DLQ-Fall blockiert keine Folgeläufe.
-            $locks->release($this->connectionId, $this->entityType, $lockOwner);
 
             throw $exception;
         }
@@ -221,14 +251,21 @@ class RunSyncJob implements ShouldQueue
             app(SyncLockManager::class)->release($this->connectionId, $this->entityType, $this->lockOwner);
         }
 
+        // Nur der eigene Lauf wird geschlossen: über runId (Fortsetzungsjobs) oder, beim Erstjob ohne runId,
+        // der jüngste noch laufende Lauf dieser Connection, Entität, Modus und Auslösequelle. Fremde Läufe
+        // (anderer Modus oder Auslöser) bleiben unberührt.
         $run = $this->runId !== null
             ? SyncRun::query()->find($this->runId)
-            : SyncRun::query()
-                ->where('connection_id', $this->connectionId)
-                ->where('entity_type', $this->entityType)
-                ->where('status', SyncStatus::Running->value)
-                ->orderByDesc('id')
-                ->first();
+            : ($this->cursor === null
+                ? SyncRun::query()
+                    ->where('connection_id', $this->connectionId)
+                    ->where('entity_type', $this->entityType)
+                    ->where('mode', $this->mode->value)
+                    ->where('trigger_source', $this->triggerSource)
+                    ->where('status', SyncStatus::Running->value)
+                    ->orderByDesc('id')
+                    ->first()
+                : null);
 
         if ($run instanceof SyncRun) {
             app(SyncRunService::class)->fail($run, $exception);

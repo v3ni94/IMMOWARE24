@@ -44,6 +44,11 @@ final class WriteGuard
             throw ApiProblemException::forbidden('write_disabled', 'Die Connection ist nicht für Schreibvorgänge freigegeben.');
         }
 
+        // Vier-Augen-Prinzip (05 2.2 Nr. 2): write_enabled allein genügt nicht.
+        if (! $connection->hasCompleteWriteApproval()) {
+            throw ApiProblemException::forbidden('write_approval_incomplete', 'Die Schreibfreigabe der Connection ist unvollständig (Vier-Augen-Prinzip, Freigabedokument).');
+        }
+
         if ((string) $connection->getAttribute('status') !== 'active') {
             throw ApiProblemException::forbidden('connection_degraded', 'Die Connection ist nicht aktiv.');
         }

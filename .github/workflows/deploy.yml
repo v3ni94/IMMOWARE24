@@ -74,6 +74,8 @@ jobs:
 
       - name: Health-Check
         run: |
-          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://immoware.muellerhv.de/health)"
-          echo "HTTP $code"
-          test "$code" = "200"
+          # Deploy-Kriterium: Datenbank und Queue. /health gesamt enthaelt den Immoware24-Spiegel (stale = 503) und ist kein Deploy-Fehler.
+          db="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://immoware.muellerhv.de/health/database)"
+          queue="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://immoware.muellerhv.de/health/queue)"
+          echo "HTTP database=$db queue=$queue"
+          test "$db" = "200" && test "$queue" = "200"

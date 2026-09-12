@@ -47,10 +47,16 @@ final class BootstrapService
 
             try {
                 do {
-                    $result = $connector->pull(new SyncRequest($connectionId, $entityType, SyncMode::Full, null, $cursor, $limit));
+                    $result = $connector->pull(new SyncRequest($connectionId, $entityType, SyncMode::Full, null, $cursor, $limit, (int) $run->getKey()));
                     $this->runs->accumulate($run, $result);
                     $processed += $result->processed;
                     $failed += $result->failed;
+
+                    if ($result->cursor !== null && $result->cursor === $cursor) {
+                        // Schutz gegen Endlosschleife bei verletztem Cursor-Vertrag (Änderungsvermerk 12.09.2026).
+                        throw new \RuntimeException(sprintf('Adapter lieferte unveränderten Cursor "%s", Stufe abgebrochen.', mb_substr($cursor, 0, 80)));
+                    }
+
                     $cursor = $result->cursor;
                     // Stufen mit Limit verarbeiten genau einen Chunk, "alle" folgt dem Cursor bis zum Ende.
                 } while ($stage === null && $cursor !== null);

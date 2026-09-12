@@ -65,6 +65,7 @@ final class DavClientFactory
             userAgent: 'ImmowareHub/'.(string) $this->config->get('hub.connector.version', '0.1.0'),
             timeoutSeconds: (int) $this->config->get($configPrefix.'.timeout_seconds', 60),
             connectTimeoutSeconds: (int) $this->config->get($configPrefix.'.connect_timeout_seconds', 10),
+            authScheme: (string) ($connection->getAttribute('auth_scheme') ?? 'unknown'),
         );
     }
 

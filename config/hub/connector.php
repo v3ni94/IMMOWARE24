@@ -19,6 +19,15 @@ return [
         'blocked_methods' => ['DELETE', 'MOVE', 'COPY', 'PROPPATCH', 'LOCK', 'UNLOCK', 'MKCOL'],
     ],
 
+    /*
+     * Zulässige Ziel-Hosts für base_url einer Connection (08-security.md Abschnitt 9, Egress-Allowlist auf
+     * Code-Ebene). Muster mit * als Platzhalter, kommagetrennt in HUB_CONNECTION_ALLOWED_HOSTS. Private,
+     * lokale und reservierte Adressen werden unabhängig von der Liste abgelehnt.
+     */
+    'connections' => [
+        'allowed_hosts' => array_values(array_filter(array_map('trim', explode(',', (string) env('HUB_CONNECTION_ALLOWED_HOSTS', '*.immoware24.de'))))),
+    ],
+
     'rate_limit' => [
         'default_rps' => (float) env('IMMOWARE_RATE_LIMIT_RPS', 2),
         'default_concurrency' => (int) env('IMMOWARE_MAX_CONCURRENCY_READ', 2),

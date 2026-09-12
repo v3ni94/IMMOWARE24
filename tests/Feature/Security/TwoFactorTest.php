@@ -45,9 +45,27 @@ final class TwoFactorTest extends TestCase
         $this->get('/security/sessions')->assertRedirect(route('security.two-factor.challenge'));
 
         $this->post('/two-factor/challenge', ['code' => '123456'])->assertSessionHasErrors('code');
+        // Der bei der Einrichtung verbrauchte Code ist im selben Zeitfenster nicht erneut gültig (Replay-Sperre).
+        $this->post('/two-factor/challenge', ['code' => $totp->code($secret)])->assertSessionHasErrors('code');
+        $this->travel(2 * $totp->period())->seconds();
         $this->post('/two-factor/challenge', ['code' => $totp->code($secret)])->assertRedirect(route('security.sessions.index'));
         $this->assertTrue(session()->has(LoginService::SESSION_TWO_FACTOR_VERIFIED));
         $this->get('/security/sessions')->assertOk();
+    }
+
+    public function test_totp_code_is_accepted_only_once_per_time_window(): void
+    {
+        $totp = new Totp;
+        $secret = $totp->generateSecret();
+        $user = User::factory()->role(Role::Operator)->create(['totp_secret' => $secret, 'totp_confirmed_at' => now()]);
+        $service = $this->app->make(TwoFactorService::class);
+        $code = $totp->code($secret);
+
+        $this->assertTrue($service->verifyCode($user, $code));
+        $this->assertFalse($service->verifyCode($user->fresh(), $code), 'Ein verbrauchter Code darf nicht erneut akzeptiert werden.');
+
+        $this->travel(2 * $totp->period())->seconds();
+        $this->assertTrue($service->verifyCode($user->fresh(), $totp->code($secret)));
     }
 
     public function test_recovery_code_can_only_be_used_once(): void
@@ -77,13 +95,14 @@ final class TwoFactorTest extends TestCase
         $this->assertSame(8, $service->remainingRecoveryCodes($user->fresh()));
     }
 
-    public function test_read_only_role_is_exempt_from_two_factor_requirement(): void
+    public function test_read_only_role_is_not_exempt_from_two_factor_requirement(): void
     {
+        // 08-security.md 3.1: Pflicht für alle Rollen; read_only kann Exporte laden und Audit lesen.
         $user = User::factory()->withoutTotp()->role(Role::ReadOnly)->create();
 
         $this->actingAs($user);
 
-        $this->get('/security/sessions')->assertOk();
+        $this->get('/security/sessions')->assertRedirect(route('security.two-factor.setup'));
     }
 
     public function test_totp_secret_and_recovery_codes_are_stored_encrypted_and_hidden(): void

@@ -25,6 +25,25 @@ final class ConnectionsTest extends TestCase
     {
         parent::setUp();
         $this->organization = Organization::factory()->create();
+        config()->set('hub.connector.connections.allowed_hosts', ['*.example.test']);
+    }
+
+    public function test_store_rejects_base_url_on_private_or_foreign_hosts(): void
+    {
+        $this->loginAs(Role::Administrator);
+
+        foreach (['https://10.0.0.5/dav', 'https://127.0.0.1/dav', 'https://localhost/dav', 'https://[::1]/dav', 'https://intranet.internal/dav', 'https://dav.fremd.example/share'] as $url) {
+            $this->from('/admin/connections/create')->post('/admin/connections', [
+                'name' => 'SSRF '.$url,
+                'connector_type' => 'webdav_documents',
+                'purpose' => 'read',
+                'base_url' => $url,
+                'poll_interval_seconds' => 300,
+                'rate_limit_rps' => 1,
+            ])->assertRedirect('/admin/connections/create')->assertSessionHasErrors('base_url');
+        }
+
+        $this->assertDatabaseMissing('immoware_connections', ['name' => 'SSRF https://10.0.0.5/dav']);
     }
 
     private function loginAs(Role $role): User

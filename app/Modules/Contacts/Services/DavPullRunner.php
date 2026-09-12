@@ -22,6 +22,11 @@ use Throwable;
  * 4. Sonst ETag-Liste, Diff gegen bekannte ETags, Multiget nur für geänderte oder unbekannte hrefs,
  *    danach Mark-and-Sweep (Soft Delete). Full lädt alle Ressourcen und ignoriert CTag und ETags.
  * Token und CTag werden erst nach erfolgreichem Lauf committet.
+ *
+ * Cursor-Vertrag (Änderungsvermerk 12.09.2026): Jeder Durchlauf verarbeitet die Collection vollständig und
+ * liefert cursor: null. sync-token und CTag sind keine Fortsetzungscursor und werden nur in SyncResult::tokens
+ * gemeldet und über den CollectionStateStore persistiert. Ein Token als Cursor ließ RunSyncJob die Collection
+ * je Lauf max_per_run-fach enumerieren und sich endlos neu einplanen.
  */
 final class DavPullRunner
 {
@@ -60,7 +65,7 @@ final class DavPullRunner
         if ($request->mode !== SyncMode::Full && $info->ctag !== null && $state->ctag === $info->ctag) {
             $this->states->commitCollection($state, ['strategy' => self::STRATEGY_CTAG_ETAG]);
 
-            return new SyncResult(cursor: $request->cursor);
+            return new SyncResult(tokens: ['ctag' => $info->ctag, 'sync_token' => $info->syncToken]);
         }
 
         $remote = $client->listEtags();
@@ -85,12 +90,13 @@ final class DavPullRunner
         $strategy = $request->mode === SyncMode::Full ? self::STRATEGY_FULL : ($info->ctag !== null ? self::STRATEGY_CTAG_ETAG : self::STRATEGY_ETAG_ONLY);
         $this->states->commitCollection($state, ['ctag' => $info->ctag, 'sync_token' => $info->syncToken, 'strategy' => $strategy]);
 
-        return $result->merge(new SyncResult(deleted: $swept['deleted'], cursor: $info->syncToken));
+        return $result->merge(new SyncResult(deleted: $swept['deleted'], tokens: ['ctag' => $info->ctag, 'sync_token' => $info->syncToken]));
     }
 
     private function runSyncCollection(int $connectionId, AbstractDavClient $client, DavMirrorHandlerInterface $handler, SyncRequest $request, SyncState $state): ?SyncResult
     {
-        $token = $request->cursor ?? $state->sync_token;
+        // Der Token stammt ausschließlich aus dem Collection-State, nie aus dem Seiten-Cursor des Orchestrators.
+        $token = $state->sync_token;
         $path = $client->collectionPath();
 
         if ($token === null) {
@@ -114,7 +120,7 @@ final class DavPullRunner
 
         $this->states->commitCollection($state, ['sync_token' => $delta['token'] ?? $token, 'strategy' => self::STRATEGY_SYNC_TOKEN]);
 
-        return $result->merge(new SyncResult(cursor: $delta['token'] ?? $token));
+        return $result->merge(new SyncResult(tokens: ['sync_token' => $delta['token'] ?? $token]));
     }
 
     /**

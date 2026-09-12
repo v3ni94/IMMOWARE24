@@ -21,6 +21,9 @@ final class ImportOutcome
 
     public int $rowsSwept = 0;
 
+    /** Erstes Fehlen im Vollexport (missing_since gesetzt, noch kein Soft Delete). */
+    public int $rowsMarkedMissing = 0;
+
     /** @var array<int, array{line: int|null, reason: string}> */
     public array $errors = [];
 

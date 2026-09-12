@@ -82,11 +82,11 @@ final class ImportsTest extends TestCase
     public function test_read_only_cannot_confirm_mapping(): void
     {
         $organization = Organization::factory()->create();
-        $user = User::factory()->role(Role::ReadOnly)->withoutTotp()->for($organization)->create();
+        $user = User::factory()->role(Role::ReadOnly)->for($organization)->create();
         $file = $this->quarantinedFile($organization);
 
-        $this->actingAs($user)->get('/admin/imports/'.$file->getKey().'/quarantine')->assertForbidden();
-        $this->actingAs($user)->post('/admin/imports/'.$file->getKey().'/confirm-format', [
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->get('/admin/imports/'.$file->getKey().'/quarantine')->assertForbidden();
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->post('/admin/imports/'.$file->getKey().'/confirm-format', [
             'mapping' => ['object_number' => 'objektnummer'],
             'key_schema' => ['object_number'],
             'confirmation' => 'BESTÄTIGEN',
@@ -187,11 +187,11 @@ final class ImportsTest extends TestCase
     public function test_read_only_cannot_create_schedule(): void
     {
         $organization = Organization::factory()->create();
-        $user = User::factory()->role(Role::ReadOnly)->withoutTotp()->for($organization)->create();
+        $user = User::factory()->role(Role::ReadOnly)->for($organization)->create();
         $connection = ImmowareConnection::factory()->for($organization)->create();
 
-        $this->actingAs($user)->get('/admin/imports/schedules')->assertOk();
-        $this->actingAs($user)->post('/admin/imports/schedules', [
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->get('/admin/imports/schedules')->assertOk();
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->post('/admin/imports/schedules', [
             'connection_id' => $connection->getKey(),
             'export_type' => ExportType::Properties->value,
             'interval_days' => 14,

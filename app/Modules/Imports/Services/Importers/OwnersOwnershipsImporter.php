@@ -10,6 +10,8 @@ use App\Modules\Estate\Models\Ownership;
 use App\Modules\Imports\DTO\ImportContext;
 use App\Modules\Imports\DTO\ImportOutcome;
 use App\Modules\Imports\Enums\ExportType;
+use App\Modules\Estate\Models\Unit;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * WEG: Eigentümer und Eigentumsanteile je Verwaltungseinheit.
@@ -55,6 +57,8 @@ final class OwnersOwnershipsImporter extends AbstractCsvImporter
             return false;
         }
 
+        $this->markPropertySeen((int) $unit->property_id);
+
         $kind = strtolower($context->value($row, 'owner_kind') ?? 'person');
         $contact = $this->upsertByExternalId(Contact::class, $context, $this->externalId(self::OWNER_PREFIX, $ownerNumber), [
             'kind' => in_array($kind, ['person', 'company'], true) ? $kind : 'person',
@@ -76,6 +80,18 @@ final class OwnersOwnershipsImporter extends AbstractCsvImporter
         ], ['external_parent_id' => $unit->external_id]);
 
         return true;
+    }
+
+    /**
+     * Objektbezogener Export: Sweep nur für Datensätze von Einheiten der im Lauf gesehenen Objekte.
+     */
+    protected function scopeSweep(Builder $query, ImportContext $context, array $propertyIds): ?Builder
+    {
+        if ($propertyIds === []) {
+            return null;
+        }
+
+        return $query->whereIn('unit_id', Unit::query()->withoutGlobalScope('organization')->select('id')->whereIn('property_id', $propertyIds));
     }
 
     protected function sweepModel(): string

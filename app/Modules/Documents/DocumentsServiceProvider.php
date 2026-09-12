@@ -7,6 +7,8 @@ namespace App\Modules\Documents;
 use App\Modules\Connector\Services\ConnectorManager;
 use App\Modules\Connector\Support\ConnectorContext;
 use App\Modules\Documents\Connectors\WebDavConnector;
+use App\Modules\Documents\Console\ApproveWriteOperationCommand;
+use App\Modules\Documents\Console\ResumeWriteOperationsCommand;
 use App\Modules\Documents\Console\ScanDocumentsCommand;
 use App\Modules\Documents\Http\WebDavClientFactory;
 use App\Modules\Documents\Services\DocumentMirrorService;
@@ -73,7 +75,7 @@ class DocumentsServiceProvider extends ServiceProvider
         }
 
         if ($this->app->runningInConsole()) {
-            $this->commands([ScanDocumentsCommand::class]);
+            $this->commands([ScanDocumentsCommand::class, ResumeWriteOperationsCommand::class, ApproveWriteOperationCommand::class]);
         }
     }
 }

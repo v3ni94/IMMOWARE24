@@ -59,7 +59,7 @@ class WebhooksServiceProvider extends ServiceProvider
             $this->commands([RedeliverWebhooksCommand::class]);
 
             $this->callAfterResolving(Schedule::class, static function (Schedule $schedule): void {
-                $schedule->command('hub:webhooks:redeliver')->everyFiveMinutes();
+                $schedule->command('hub:webhooks:redeliver')->everyFiveMinutes()->withoutOverlapping(10)->onOneServer();
             });
         }
     }

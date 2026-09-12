@@ -16,10 +16,12 @@ final readonly class SyncRequest
         public ?CarbonImmutable $since = null,
         public ?string $cursor = null,
         public int $limit = 500,
+        /** sync_runs.id des Orchestrators (RunSyncJob, Bootstrap, Replay). Adapter legen nur ohne runId eigene Runs an. */
+        public ?int $runId = null,
     ) {}
 
     public function withCursor(?string $cursor): self
     {
-        return new self($this->connectionId, $this->entityType, $this->mode, $this->since, $cursor, $this->limit);
+        return new self($this->connectionId, $this->entityType, $this->mode, $this->since, $cursor, $this->limit, $this->runId);
     }
 }

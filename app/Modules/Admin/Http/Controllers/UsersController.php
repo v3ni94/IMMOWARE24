@@ -38,7 +38,8 @@ final class UsersController extends AdminController
             ->when($state === 'disabled', static fn (Builder $q) => $q->whereNotNull('disabled_at'))
             ->when($state === 'locked', static fn (Builder $q) => $q->where('locked_until', '>', now()))
             ->when($search !== '', static fn (Builder $q) => $q->where(static function (Builder $inner) use ($search): void {
-                $inner->where('name', 'like', '%'.$search.'%')->orWhere('email', 'like', '%'.$search.'%');
+                $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
+                $inner->whereRaw("name like ? escape '!'", [$needle])->orWhereRaw("email like ? escape '!'", [$needle]);
             }))
             ->orderBy('name')
             ->paginate($this->perPage())

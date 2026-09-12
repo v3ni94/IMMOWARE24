@@ -152,4 +152,23 @@ final class RunSyncJobTest extends SyncTestCase
 
         Queue::assertPushed(FetchImmowareContactsJob::class, fn (FetchImmowareContactsJob $next): bool => $next->cursor === 'c1');
     }
+
+    public function test_unchanged_cursor_aborts_run_and_lands_in_dlq(): void
+    {
+        Queue::fake();
+        $connection = $this->activeConnection();
+        $this->connector
+            ->page(null, new SyncResult(processed: 1, cursor: 'same'))
+            ->page('same', new SyncResult(processed: 1, cursor: 'same'));
+
+        $this->runJob(new RunSyncJob((int) $connection->getKey(), SyncEntity::Document->value, SyncMode::Incremental));
+
+        Queue::assertNothingPushed();
+        $this->assertSame(2, $this->connector->requestCount());
+        $run = SyncRun::query()->firstOrFail();
+        $this->assertSame(SyncStatus::Failed, $run->getAttribute('status'));
+        $this->assertStringContainsString('unveränderten Cursor', (string) $run->getAttribute('error_summary'));
+        $this->assertSame(1, DlqItem::query()->count());
+        $this->assertNull(SyncState::query()->firstOrFail()->getAttribute('last_success_at'));
+    }
 }

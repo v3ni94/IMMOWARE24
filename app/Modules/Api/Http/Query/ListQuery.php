@@ -152,7 +152,8 @@ final class ListQuery
 
             $query->where(function (Builder $inner) use ($definition, $needle, $table): void {
                 foreach ($definition->searchable as $column) {
-                    $inner->orWhere($table.'.'.$column, 'like', $needle);
+                    // Explizites ESCAPE: Backslash wirkt unter SQLite nur mit ESCAPE-Klausel, unter MariaDB nur im Standard-SQL-Mode.
+                    $inner->orWhereRaw($table.'.'.$column." like ? escape '!'", [$needle]);
                 }
             });
         }
@@ -203,8 +204,12 @@ final class ListQuery
         }
     }
 
+    /**
+     * LIKE-Sonderzeichen mit dem portablen Escape-Zeichen ! maskieren (ESCAPE '!' in der Abfrage; ein Backslash
+     * wird von SQLite und MariaDB im String-Literal unterschiedlich behandelt).
+     */
     private function escapeLike(string $value): string
     {
-        return str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $value);
+        return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value);
     }
 }

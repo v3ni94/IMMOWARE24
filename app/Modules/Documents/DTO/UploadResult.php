@@ -16,6 +16,9 @@ final readonly class UploadResult
 
     public const string OUTCOME_DENIED = 'denied';
 
+    /** Antrag aus einem API-Key-Kontext: wartet auf menschliche Freigabe (approve), kein Netzwerkzugriff. */
+    public const string OUTCOME_PENDING_APPROVAL = 'pending_approval';
+
     public const string OUTCOME_REJECTED = 'rejected';
 
     public const string OUTCOME_DRY_RUN = 'dry_run';

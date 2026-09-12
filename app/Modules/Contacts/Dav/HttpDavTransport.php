@@ -11,7 +11,9 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 
 /**
- * Lesender DAV-Transport über die Http-Facade mit Basic Auth. Jede nicht lesende Methode
+ * Lesender DAV-Transport über die Http-Facade. Das Auth-Verfahren kommt aus connection.auth_scheme
+ * (Probe-Ergebnis: basic, digest, unknown), analog zu HttpClientFactory; die Annahme "Basic" ist laut
+ * 04-authentication.md nur VERMUTET und darf nicht fest im Code stehen. Jede nicht lesende Methode
  * (PUT, DELETE, MOVE, COPY, PROPPATCH, MKCOL, LOCK, UNLOCK, POST, PATCH) wird vor dem Senden
  * mit WriteBlockedException abgewiesen; CardDAV und CalDAV sind ausschließlich lesend.
  */
@@ -25,6 +27,7 @@ final class HttpDavTransport implements DavTransportInterface
         private readonly string $userAgent = 'ImmowareHub/0.1.0',
         private readonly int $timeoutSeconds = 60,
         private readonly int $connectTimeoutSeconds = 10,
+        private readonly string $authScheme = 'unknown',
     ) {}
 
     public function request(string $method, string $url, array $headers = [], ?string $body = null): DavHttpResponse
@@ -36,11 +39,15 @@ final class HttpDavTransport implements DavTransportInterface
         }
 
         $pending = Http::withUserAgent($this->userAgent)
-            ->withBasicAuth($this->username, $this->password)
             ->connectTimeout($this->connectTimeoutSeconds)
             ->timeout($this->timeoutSeconds)
             ->withOptions(['allow_redirects' => false, 'http_errors' => false])
             ->withHeaders($headers);
+
+        // digest laut Probe: Digest-Auth; basic und unknown: Basic-Auth (Standardvermutung, siehe Klassenkommentar).
+        $pending = strtolower($this->authScheme) === 'digest'
+            ? $pending->withDigestAuth($this->username, $this->password)
+            : $pending->withBasicAuth($this->username, $this->password);
 
         if ($body !== null) {
             $pending = $pending->withBody($body, 'application/xml; charset=utf-8');

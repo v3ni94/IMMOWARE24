@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Modules\Admin\Http\Requests;
 
 use App\Modules\Admin\Http\Controllers\ConnectionsController;
+use App\Modules\Admin\Rules\AllowedConnectionHost;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -31,7 +32,7 @@ final class ConnectionRequest extends FormRequest
             'name' => ['required', 'string', 'max:120'],
             'connector_type' => ['required', 'string', Rule::in(array_keys(ConnectionsController::CONNECTOR_TYPES))],
             'purpose' => ['required', 'string', Rule::in(['read', 'write'])],
-            'base_url' => ['nullable', 'string', 'max:2048', 'url:https', 'required_if:connector_type,webdav_documents,webdav_inbox,carddav_contacts,caldav_calendar'],
+            'base_url' => ['nullable', 'string', 'max:2048', 'url:https', 'required_if:connector_type,webdav_documents,webdav_inbox,carddav_contacts,caldav_calendar', new AllowedConnectionHost],
             'technical_user_id' => ['nullable', 'integer'],
             'username' => ['nullable', 'string', 'max:200'],
             'password' => ['nullable', 'string', 'max:1024'],

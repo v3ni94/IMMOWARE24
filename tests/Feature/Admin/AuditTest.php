@@ -63,11 +63,11 @@ final class AuditTest extends TestCase
     {
         $organization = Organization::factory()->create();
         $admin = User::factory()->role(Role::Administrator)->for($organization)->create();
-        $viewer = User::factory()->role(Role::ReadOnly)->withoutTotp()->for($organization)->create();
+        $viewer = User::factory()->role(Role::ReadOnly)->for($organization)->create();
         $entry = $this->seedEntry($admin, 'security.role_changed');
 
-        $this->actingAs($viewer)->get('/admin/audit')->assertOk()->assertSee('security.role_changed');
-        $this->actingAs($viewer)->get('/admin/audit/'.$entry->getKey())->assertOk()->assertDontSee('Vorher (maskiert)')->assertDontSee('administrator');
+        $this->actingAs($viewer)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->get('/admin/audit')->assertOk()->assertSee('security.role_changed');
+        $this->actingAs($viewer)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])->get('/admin/audit/'.$entry->getKey())->assertOk()->assertDontSee('Vorher (maskiert)')->assertDontSee('administrator');
     }
 
     public function test_operator_without_audit_permission_is_forbidden(): void

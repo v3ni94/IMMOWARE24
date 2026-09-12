@@ -14,6 +14,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Http\Client\Response;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -23,6 +24,10 @@ use Throwable;
 /**
  * Stellt eine Webhook-Zustellung zu: HMAC-SHA256-Signatur, Timeout 10 s, Retry 30 s, 2 min, 10 min, 30 min,
  * danach Status dead (DLQ). Jeder Versuch wird mit Status, Dauer und Antwortcode protokolliert.
+ *
+ * Retry-Pfad ist ausschließlich der Queue-Retry dieses Jobs (Exception plus backoff()). hub:webhooks:redeliver
+ * greift nur Zustellungen auf, deren Fälligkeit um redeliver_grace_seconds überschritten ist (verlorene Jobs).
+ * WithoutOverlapping je delivery_id und die Fälligkeitsprüfung in handle() verhindern Doppelzustellungen.
  */
 final class DeliverWebhookJob implements ShouldQueue
 {
@@ -43,12 +48,29 @@ final class DeliverWebhookJob implements ShouldQueue
         return array_map('intval', (array) config('hub.webhooks.backoff_seconds', [30, 120, 600, 1800]));
     }
 
+    /**
+     * @return array<int, object>
+     */
+    public function middleware(): array
+    {
+        return [
+            (new WithoutOverlapping('webhook:delivery:'.$this->deliveryId))->dontRelease()->expireAfter(120),
+        ];
+    }
+
     public function handle(WebhookSigner $signer): void
     {
         /** @var WebhookDelivery|null $delivery */
         $delivery = WebhookDelivery::query()->find($this->deliveryId);
 
-        if ($delivery === null || in_array($delivery->getAttribute('status'), [WebhookDelivery::STATUS_DELIVERED, WebhookDelivery::STATUS_DEAD, WebhookDelivery::STATUS_SKIPPED], true)) {
+        if ($delivery === null || ! in_array($delivery->getAttribute('status'), [WebhookDelivery::STATUS_PENDING, WebhookDelivery::STATUS_FAILED], true)) {
+            return;
+        }
+
+        $nextAttemptAt = $delivery->getAttribute('next_attempt_at');
+
+        if ($nextAttemptAt instanceof \DateTimeInterface && $nextAttemptAt->getTimestamp() > CarbonImmutable::now()->getTimestamp()) {
+            // Noch nicht fällig: ein anderer Job hat diese Zustellung bereits versucht und neu terminiert.
             return;
         }
 

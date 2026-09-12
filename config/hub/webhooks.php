@@ -19,6 +19,10 @@ return [
     'backoff_seconds' => [30, 120, 600, 1800],
     'max_attempts' => 5,
 
+    // Karenz in Sekunden nach next_attempt_at, bevor hub:webhooks:redeliver eine Zustellung erneut einreiht.
+    // Verhindert Doppelzustellungen neben dem Queue-Retry des DeliverWebhookJob (verlorene Jobs nach Worker-Ausfall).
+    'redeliver_grace_seconds' => (int) env('HUB_WEBHOOK_REDELIVER_GRACE_SECONDS', 300),
+
     // Maximale Länge des gespeicherten Antwortkörpers.
     'response_excerpt_bytes' => 512,
 

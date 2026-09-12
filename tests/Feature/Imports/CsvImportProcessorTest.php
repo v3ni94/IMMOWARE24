@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Imports;
 
+use App\Modules\Contacts\Models\Contact;
 use App\Modules\Estate\Models\Property;
 use App\Modules\Estate\Models\Unit;
 use App\Modules\Imports\Enums\ExportType;
@@ -113,12 +114,14 @@ final class CsvImportProcessorTest extends TestCase
         $service->confirm(HeaderNormalizer::fingerprint(['x']), ['a' => 'x'], ['a']);
     }
 
-    public function test_units_with_bom_link_to_property_by_object_number_and_full_export_sweeps(): void
+    public function test_units_with_bom_link_to_property_by_object_number_and_full_export_sweeps_in_two_stages(): void
     {
         $organization = $this->createOrganization();
         $this->confirmUnitsFormat();
         $property = Property::factory()->for($organization)->create(['immoware_object_number' => 'OBJ-001']);
-        $stale = Unit::factory()->for($property)->create(['organization_id' => $organization->getKey(), 'unit_number' => 'VE-ALT', 'last_synced_at' => now()->subDay()]);
+        $other = Property::factory()->for($organization)->create(['immoware_object_number' => 'OBJ-002']);
+        $stale = Unit::factory()->for($property)->create(['organization_id' => $organization->getKey(), 'unit_number' => 'VE-ALT', 'external_id' => 'unit:OBJ-001|VE-ALT', 'last_synced_at' => now()->subDay()]);
+        $foreign = Unit::factory()->for($other)->create(['organization_id' => $organization->getKey(), 'unit_number' => 'VE-FREMD', 'external_id' => 'unit:OBJ-002|VE-FREMD', 'last_synced_at' => now()->subDay()]);
 
         $this->dropFixture('units_bom.csv', $organization, ExportType::Units, ['is_full_export' => true]);
         $file = $this->scanAndProcess();
@@ -132,10 +135,78 @@ final class CsvImportProcessorTest extends TestCase
         $this->assertSame('65.50', (string) $unit->living_area_sqm);
         $this->assertSame($property->external_id, $unit->external_parent_id);
 
+        // Erstes Fehlen: nur missing_since, kein Soft Delete (07-sync-strategy Abschnitt 4 Punkt 8).
         $stale->refresh();
-        $this->assertNotNull($stale->deleted_at, 'Mark-and-Sweep per Soft Delete');
+        $this->assertNull($stale->deleted_at, 'Soft Delete erst beim zweiten Vollexport ohne Treffer');
+        $this->assertNotNull($stale->missing_since);
         $this->assertSame('missing_in_full_export', $stale->deletion_reason);
-        $this->assertSame(3, Unit::query()->withoutGlobalScope('organization')->withTrashed()->count(), 'Kein Hard Delete');
+
+        // Zweiter Vollexport desselben Objekts ohne VE-ALT: Soft Delete. VE-02 fehlt erstmals: nur missing_since.
+        $this->dropFixture('units_bom_v2.csv', $organization, ExportType::Units, ['is_full_export' => true]);
+        $this->scanAndProcess();
+
+        $stale->refresh();
+        $this->assertNotNull($stale->deleted_at, 'Mark-and-Sweep per Soft Delete nach zwei Vollexporten');
+        $this->assertSame('missing_in_full_export', $stale->deletion_reason);
+        $ve02 = Unit::query()->withoutGlobalScope('organization')->where('unit_number', 'VE-02')->firstOrFail();
+        $this->assertNull($ve02->deleted_at);
+        $this->assertNotNull($ve02->missing_since);
+
+        // Einheiten anderer Objekte bleiben von einem objektbezogenen Vollexport unberührt.
+        $foreign->refresh();
+        $this->assertNull($foreign->deleted_at);
+        $this->assertNull($foreign->missing_since);
+        $this->assertSame(4, Unit::query()->withoutGlobalScope('organization')->withTrashed()->count(), 'Kein Hard Delete');
+    }
+
+    public function test_contacts_full_export_never_sweeps_tenant_and_owner_contacts_of_other_export_types(): void
+    {
+        $organization = $this->createOrganization();
+        $this->app->make(ImportFormatService::class)->registerConfirmed(
+            ExportType::ContactsCsv,
+            ['Kontaktnummer', 'Vorname', 'Nachname', 'E-Mail'],
+            ['contact_number' => 'kontaktnummer', 'first_name' => 'vorname', 'last_name' => 'nachname', 'email' => 'e_mail'],
+            ['contact_number'],
+        );
+        $tenant = Contact::factory()->for($organization)->create(['source_system' => 'immoware24_csv', 'external_id' => 'tenant:M-1']);
+        $owner = Contact::factory()->for($organization)->create(['source_system' => 'immoware24_csv', 'external_id' => 'owner:E-1']);
+        $staleContact = Contact::factory()->for($organization)->create(['source_system' => 'immoware24_csv', 'external_id' => 'contact:K-ALT']);
+
+        $this->dropFixture('contacts_full_1.csv', $organization, ExportType::ContactsCsv, ['is_full_export' => true]);
+        $first = $this->scanAndProcess();
+        $this->assertSame(ImportFileStatus::Imported->value, $first->status);
+        $this->assertSame(2, $first->rows_imported);
+
+        $this->dropFixture('contacts_full_2.csv', $organization, ExportType::ContactsCsv, ['is_full_export' => true]);
+        $this->scanAndProcess();
+
+        $this->assertNull($tenant->refresh()->deleted_at, 'tenant:* stammt aus der Belegungsliste, nicht aus dem Kontakte-Export');
+        $this->assertNull($tenant->missing_since);
+        $this->assertNull($owner->refresh()->deleted_at, 'owner:* stammt aus der Eigentümerliste');
+        $this->assertNotNull($staleContact->refresh()->deleted_at, 'contact:* fehlt in zwei Vollexporten');
+        $k2 = Contact::query()->withoutGlobalScope('organization')->where('external_id', 'contact:K-2')->firstOrFail();
+        $this->assertNull($k2->deleted_at);
+        $this->assertNotNull($k2->missing_since, 'erstes Fehlen nur missing_since');
+    }
+
+    public function test_sweep_guard_blocks_mass_deletion(): void
+    {
+        $organization = $this->createOrganization();
+        $this->confirmUnitsFormat();
+        $property = Property::factory()->for($organization)->create(['immoware_object_number' => 'OBJ-001']);
+        $stale = [];
+
+        for ($i = 0; $i < 12; $i++) {
+            $stale[] = Unit::factory()->for($property)->create(['organization_id' => $organization->getKey(), 'unit_number' => 'VE-ALT-'.$i, 'external_id' => 'unit:OBJ-001|VE-ALT-'.$i, 'missing_since' => now()->subWeek(), 'deletion_reason' => 'missing_in_full_export']);
+        }
+
+        // 12 von 14 fehlen (86 Prozent): Schutzgrenze, kein Soft Delete trotz zweitem Fehlen.
+        $this->dropFixture('units_bom.csv', $organization, ExportType::Units, ['is_full_export' => true]);
+        $file = $this->scanAndProcess();
+
+        $this->assertSame(ImportFileStatus::Imported->value, $file->status);
+        $this->assertSame(0, Unit::query()->withoutGlobalScope('organization')->onlyTrashed()->count());
+        $this->assertStringContainsString('Schutzgrenze', json_encode($file->errors, JSON_THROW_ON_ERROR));
     }
 
     public function test_partial_export_does_not_sweep(): void

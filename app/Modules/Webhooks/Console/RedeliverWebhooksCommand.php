@@ -43,9 +43,13 @@ final class RedeliverWebhooksCommand extends Command
 
         $count = 0;
 
+        // Nur Zustellungen, deren Fälligkeit um die Karenz überschritten ist: Der reguläre Retry läuft über den
+        // Queue-Backoff des DeliverWebhookJob, hier werden ausschließlich verlorene Jobs (Worker-Ausfall) aufgegriffen.
+        $grace = max(0, (int) config('hub.webhooks.redeliver_grace_seconds', 300));
+
         $ids = WebhookDelivery::query()
             ->whereIn('status', [WebhookDelivery::STATUS_PENDING, WebhookDelivery::STATUS_FAILED])
-            ->where('next_attempt_at', '<=', CarbonImmutable::now())
+            ->where('next_attempt_at', '<=', CarbonImmutable::now()->subSeconds($grace))
             ->orderBy('id')
             ->limit((int) $this->option('limit'))
             ->pluck('id');

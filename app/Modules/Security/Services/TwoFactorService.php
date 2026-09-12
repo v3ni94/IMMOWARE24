@@ -49,7 +49,13 @@ final class TwoFactorService
     {
         $secret = $user->getAttribute('totp_secret');
 
-        if (! is_string($secret) || $secret === '' || ! $this->totp->verify($secret, $code)) {
+        if (! is_string($secret) || $secret === '') {
+            return null;
+        }
+
+        $counter = $this->acceptCounter($user, $secret, $code);
+
+        if ($counter === null) {
             return null;
         }
 
@@ -57,6 +63,7 @@ final class TwoFactorService
 
         $user->forceFill([
             'totp_confirmed_at' => now()->toImmutable(),
+            'totp_last_counter' => $counter,
             'recovery_codes' => $this->recoveryCodes->hashAll($codes),
         ])->save();
 
@@ -84,6 +91,7 @@ final class TwoFactorService
         $user->forceFill([
             'totp_secret' => null,
             'totp_confirmed_at' => null,
+            'totp_last_counter' => null,
             'recovery_codes' => null,
         ])->save();
 
@@ -91,13 +99,46 @@ final class TwoFactorService
     }
 
     /**
-     * Prüft einen TOTP-Code gegen das bestätigte Secret.
+     * Prüft einen TOTP-Code gegen das bestätigte Secret. Ein Code gilt je Zeitfenster genau einmal:
+     * der akzeptierte Zähler wird am Nutzer gespeichert, kleinere oder gleiche Zähler werden abgelehnt.
      */
     public function verifyCode(User $user, string $code): bool
     {
         $secret = $user->getAttribute('totp_secret');
 
-        return $user->hasConfirmedTotp() && is_string($secret) && $secret !== '' && $this->totp->verify($secret, $code);
+        if (! $user->hasConfirmedTotp() || ! is_string($secret) || $secret === '') {
+            return false;
+        }
+
+        $counter = $this->acceptCounter($user, $secret, $code);
+
+        if ($counter === null) {
+            return false;
+        }
+
+        $user->forceFill(['totp_last_counter' => $counter])->save();
+
+        return true;
+    }
+
+    /**
+     * Ermittelt den passenden Zähler und lehnt bereits verbrauchte Zeitfenster ab (Replay-Sperre).
+     */
+    private function acceptCounter(User $user, string $secret, string $code): ?int
+    {
+        $counter = $this->totp->matchCounter($secret, $code);
+
+        if ($counter === null) {
+            return null;
+        }
+
+        $last = $user->getAttribute('totp_last_counter');
+
+        if ($last !== null && $counter <= (int) $last) {
+            return null;
+        }
+
+        return $counter;
     }
 
     /**
@@ -137,7 +178,7 @@ final class TwoFactorService
      */
     public function isRequiredFor(Role $role): bool
     {
-        $exempt = (array) config('hub.security.totp.exempt_roles', ['read_only']);
+        $exempt = (array) config('hub.security.totp.exempt_roles', []);
 
         return ! in_array($role->value, $exempt, true);
     }

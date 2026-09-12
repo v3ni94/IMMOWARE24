@@ -34,10 +34,10 @@ final class UsersTest extends TestCase
 
     public function test_read_only_is_forbidden(): void
     {
-        $user = User::factory()->role(Role::ReadOnly)->withoutTotp()->create();
+        $user = User::factory()->role(Role::ReadOnly)->create();
 
-        $this->actingAs($user)->get('/admin/users')->assertForbidden();
-        $this->actingAs($user)->post('/admin/users', ['name' => 'x', 'email' => 'x@example.test', 'role' => 'operator', 'password' => 'Sicher12345678', 'password_confirmation' => 'Sicher12345678'])->assertForbidden();
+        $this->login($user)->get('/admin/users')->assertForbidden();
+        $this->login($user)->post('/admin/users', ['name' => 'x', 'email' => 'x@example.test', 'role' => 'operator', 'password' => 'Sicher12345678', 'password_confirmation' => 'Sicher12345678'])->assertForbidden();
     }
 
     public function test_administrator_creates_operator_but_not_administrator(): void
@@ -124,6 +124,6 @@ final class UsersTest extends TestCase
         $this->assertMatchesRegularExpression('/data-cell="read_only:users\.manage">\s*<span class="hub-muted">nein/', $html);
         $this->assertMatchesRegularExpression('/data-cell="owner:users\.manage">\s*<span class="hub-badge hub-badge-ok">ja/', $html);
 
-        $this->actingAs(User::factory()->role(Role::ReadOnly)->withoutTotp()->create())->get('/admin/roles')->assertForbidden();
+        $this->login(User::factory()->role(Role::ReadOnly)->create())->get('/admin/roles')->assertForbidden();
     }
 }
