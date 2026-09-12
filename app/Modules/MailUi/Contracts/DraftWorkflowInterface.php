@@ -8,6 +8,7 @@ use App\Modules\Cases\Models\MailCase;
 use App\Modules\Gmail\Models\MailDraft;
 use App\Modules\MailUi\DTO\WorkflowResult;
 use App\Modules\Security\Models\User;
+use Carbon\CarbonImmutable;
 
 /**
  * Dünne Schnittstelle der Oberfläche zum Modul Gmail (Entwürfe, Prüfung, Versand). Die Live-Implementierung
@@ -25,12 +26,15 @@ interface DraftWorkflowInterface
     /**
      * Freigabe eines Entwurfs durch eine zweite Person (Vier-Augen, docs/mail/05 Abschnitt 5). Der Autor darf den
      * eigenen Entwurf nicht freigeben; die Freigabe gilt für den aktuellen Inhalt und verfällt bei jeder Änderung.
+     * $reauthConfirmedAt ist der Zeitpunkt der letzten Re-Authentifizierung aus der Sitzung; ohne aktuellen Wert
+     * lehnt die Implementierung ab (reauth_missing), kein Rückfall auf now().
      */
-    public function approve(MailDraft $draft, User $approver): WorkflowResult;
+    public function approve(MailDraft $draft, User $approver, ?CarbonImmutable $reauthConfirmedAt = null): WorkflowResult;
 
     /**
      * Versand nur mit Flag gmail_send, Recht mail.send und Postfachrecht can_send. Ein HTTP-Erfolg ist kein Versand:
-     * die Implementierung darf erst nach verifiziertem Abgleich (Label SENT) ok liefern.
+     * die Implementierung darf erst nach verifiziertem Abgleich (Label SENT) ok liefern. $reauthConfirmedAt wie bei
+     * approve; ohne aktuellen Nachweis kein Versand.
      */
-    public function send(MailDraft $draft, User $actor): WorkflowResult;
+    public function send(MailDraft $draft, User $actor, ?CarbonImmutable $reauthConfirmedAt = null): WorkflowResult;
 }

@@ -167,7 +167,7 @@ Schwere: Die Fix-Berichte überliefern die Einstufung des Reviews nur für ein F
 | U21 | Mail | Push-Rate-Limit nur je IP | sicherheitsrelevant | behoben (je Postfach 600/min, global 3000/min); Dashboard-Kennzahl vorhanden |
 | U22 | Datenmodell | Kaskadenlöschung auf Mail-Tabellen | datenverlustrelevant | behoben (Migration `2026_09_13_110001`, `restrictOnDelete`, No-op auf SQLite) |
 
-### 11.2 Offene Punkte nach dem Fix-Lauf (Stand nach Abschlusslauf 2, 13.09.2026)
+### 11.2 Offene Punkte nach dem Fix-Lauf (Stand nach Abschlusslauf 3, 12.09.2026, alle Punkte erledigt)
 
 | Nr. | Punkt | Status |
 |---|---|---|
@@ -178,6 +178,6 @@ Schwere: Die Fix-Berichte überliefern die Einstufung des Reviews nur für ein F
 | 5 | `CloseConditionChecker` fragt Aktionspläne direkt ab (U4) | erledigt: `effectiveBusinessStatus()` liest `status_business`, `mail_action_plans` und `mail_executions`, strengster Status gewinnt. Tests `CloseConditionPlanSourceTest` |
 | 6 | Kennzahl Push 429 im Dashboard (U21) | erledigt: Zähler `mail_push_429` in `SyncMetrics` über `CountPushRateLimit`, Kachel und Abschnitt "Betrieb: Push und Watch" (inklusive Watch-Ablauf je Postfach). Tests `DashboardOpsMetricsTest` |
 | 7 | `mail:retention:apply` und Auskunftsexport (Abschnitt 6 und 7) | erledigt: `RetentionService` mit Legal Hold (`mail_cases.legal_hold_at`), Dry-Run als Standard, Zeitplan `mail-retention-apply` nur bei `MAIL_RETENTION_ENABLED`; Auskunftsexport `mail:subject-access-export` und Admin-Seite `mail.admin.exports.*` (Bankdaten maskiert, JSON oder CSV plus manifest.json). Tests `RetentionApplyTest`, `SubjectAccessExportTest` |
-| 8 | Test der Entwurfsfreigabe ohne frische Zwei-Faktor-Sitzung | offen: Route trägt `2fa.fresh`, für Aktionspläne geprüft (`ApprovalCenterTest::test_approval_requires_fresh_reauthentication`), für `DraftService::approve` fehlt ein eigener Test |
+| 8 | Test der Entwurfsfreigabe ohne frische Zwei-Faktor-Sitzung | erledigt: Prüfung in drei Schichten. Middleware `2fa.fresh` auf `drafts.approve` und `drafts.send`; `DraftController` verlangt zusätzlich den Reauth-Zeitstempel aus der Sitzung (`MailUiController::requireFreshReauth`, sonst 403 mit Audit `mail.draft.reauth_missing`); `DraftService::approve` und `SendService::send` nehmen `$reauthConfirmedAt` entgegen und verweigern ohne aktuellen Wert mit `reauth_missing` (`DraftApprovalRefusedException` bzw. `SendRefusedException`, Audit `mail.draft.approval_reauth_missing` bzw. `mail.draft.send_refused`), kein Rückfall auf now(). Nachweis in `mail_drafts.approval_reauth_confirmed_at` (Migration `2026_09_14_000003`). Tests `DraftReauthTest` (Umleitung zur Bestätigung, 403 ohne Middleware, positiver Fall mit frischer Sitzung), `SendServiceTest::test_approve_and_send_refuse_without_fresh_reauthentication` |
 
 Weitere Ergänzungen im Abschlusslauf 2: Alias-Sync als Job (`AliasSyncJob`, täglich 03:45, nur akzeptierte sendAs-Aliasse, nicht mehr gelieferte auf `missing`), Drive-OAuth-Anmeldefluss nur mit `drive.readonly` (`DriveOAuthService`, weiter gehende Scopes werden verworfen und widerrufen, Audit `mail.drive.oauth.granted/revoked`), Push-Prune als Kommando `mail:push:prune` mit `withoutOverlapping`.

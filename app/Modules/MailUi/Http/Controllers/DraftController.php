@@ -72,7 +72,10 @@ final class DraftController extends MailUiController
             abort(403, 'Der Autor kann den eigenen Entwurf nicht freigeben (Vier-Augen-Prinzip).');
         }
 
-        $result = $this->drafts->approve($draft, $user);
+        // Reauth-Nachweis kommt ausschließlich aus der Sitzung; ohne aktuellen Wert 403, unabhängig von 2fa.fresh.
+        $reauth = $this->requireFreshReauth($request, 'draft.reauth_missing', $draft);
+
+        $result = $this->drafts->approve($draft, $user, $reauth);
         $this->audit('draft.approved', $draft, [], ['outcome' => $result->outcome, 'revision' => $draft->getAttribute('revision')]);
 
         return $this->redirectWithResult('mail.cases.show', $result, ['case' => $case->getKey()]);
@@ -93,8 +96,9 @@ final class DraftController extends MailUiController
         }
 
         $this->assertFourEyes($draft, $user);
+        $reauth = $this->requireFreshReauth($request, 'draft.reauth_missing', $draft);
 
-        $result = $this->drafts->send($draft, $user);
+        $result = $this->drafts->send($draft, $user, $reauth);
         $this->audit('draft.send_requested', $draft, [], ['outcome' => $result->outcome]);
 
         return $this->redirectWithResult('mail.cases.show', $result, ['case' => $case->getKey()]);

@@ -15,10 +15,7 @@ use App\Modules\MailUi\Contracts\ApprovalWorkflowInterface;
 use App\Modules\MailUi\DTO\WorkflowResult;
 use App\Modules\MailUi\Http\Requests\RejectRequest;
 use App\Modules\MailUi\Support\BankDataMasker;
-use App\Modules\Security\Http\Middleware\RequireFreshTwoFactor;
 use App\Modules\Security\Models\User;
-use App\Modules\Security\Services\LoginService;
-use Carbon\CarbonImmutable;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -95,12 +92,7 @@ final class ApprovalController extends MailUiController
 
         // Reauth-Nachweis kommt ausschließlich aus der Sitzung. Fehlt er, gibt es keinen Ersatzwert: die Freigabe
         // wird abgelehnt, unabhängig davon, ob die Route in der Gruppe 2fa.fresh liegt.
-        $reauth = $this->reauthTimestamp($request);
-
-        if ($reauth === null || ! RequireFreshTwoFactor::isFresh($request)) {
-            $this->audit('approval.reauth_missing', $plan);
-            abort(403, 'Freigabe ohne aktuelle Re-Authentifizierung ist nicht zulässig.');
-        }
+        $reauth = $this->requireFreshReauth($request, 'approval.reauth_missing', $plan);
 
         $comment = trim((string) $request->input('comment', ''));
         $result = $this->approvals->approve($plan, $user, $comment !== '' ? mb_substr($comment, 0, 500) : null, $reauth);
@@ -243,27 +235,6 @@ final class ApprovalController extends MailUiController
         }
 
         return $case;
-    }
-
-    /**
-     * Zeitpunkt der letzten Re-Authentifizierung aus der Sitzung; null, wenn kein Marker vorliegt. Kein Rückfall auf
-     * now(), sonst wäre approvals.reauth_confirmed_at immer gefüllt und reauth_missing nie auslösbar.
-     */
-    private function reauthTimestamp(Request $request): ?CarbonImmutable
-    {
-        foreach ([LoginService::SESSION_REAUTHENTICATED_AT, LoginService::SESSION_TWO_FACTOR_VERIFIED] as $key) {
-            $value = $request->session()->get($key);
-
-            if (is_string($value)) {
-                try {
-                    return CarbonImmutable::parse($value)->utc();
-                } catch (\Throwable) {
-                    continue;
-                }
-            }
-        }
-
-        return null;
     }
 
     /**

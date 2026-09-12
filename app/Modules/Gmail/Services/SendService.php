@@ -17,6 +17,7 @@ use App\Modules\Mail\Services\MailFeatureFlags;
 use App\Modules\Security\Models\User;
 use App\Modules\Security\Services\AuditLogger;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Config\Repository;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -25,7 +26,9 @@ use Throwable;
  * (gehört zum Postfach, Gesellschaft passt, verifiziert), Freigabe durch eine zweite Person (Vier-Augen: approved_by
  * gesetzt und ungleich Autor, DraftService::approve, docs/mail/05 Abschnitt Versand), Entwurf in Gmail vorhanden und
  * unverändert (Hash), keine neue Threadnachricht seit der letzten Änderung, kein früherer Versand mit unklarem
- * Ergebnis. Der Statuswechsel nach sent_requested erfolgt als bedingtes Update (nur aus einem versandfähigen Status),
+ * Ergebnis. Zusätzlich muss die sendende Person eine aktuelle Re-Authentifizierung nachweisen (Zeitstempel aus der
+ * Sitzung, sonst reauth_missing); der Service verlässt sich nicht auf die Middleware 2fa.fresh. Der Statuswechsel
+ * nach sent_requested erfolgt als bedingtes Update (nur aus einem versandfähigen Status),
  * damit zwei gleichzeitige Anfragen nicht beide drafts.send auslösen. Erst danach drafts.send. Die Antwort ist kein
  * Versandnachweis: SendReconciliationService prüft SENT und Message-ID. Ein Fehler der Gegenstelle setzt nie sent,
  * der Abgleich entscheidet (sent_unverified bis unclear).
@@ -44,15 +47,22 @@ final class SendService
         private readonly MailFeatureFlags $flags,
         private readonly MailAccess $access,
         private readonly AuditLogger $audit,
+        private readonly Repository $config,
     ) {}
 
     /**
      * @throws SendRefusedException
      */
-    public function send(MailDraft $draft, User $user): MailDraft
+    public function send(MailDraft $draft, User $user, ?CarbonImmutable $reauthConfirmedAt = null): MailDraft
     {
         if (! $this->flags->gmailSendEnabled()) {
             throw new SendRefusedException('send_disabled', 'Versand ist deaktiviert (MAIL_GMAIL_SEND_ENABLED=false).');
+        }
+
+        if (! DraftService::reauthIsFresh($reauthConfirmedAt, $this->config)) {
+            $this->audit->record('mail.draft.send_refused', $draft, [], ['reason' => 'reauth_missing'], AuditSource::Mail);
+
+            throw new SendRefusedException('reauth_missing', 'Versand ohne aktuelle Re-Authentifizierung ist nicht zulässig.');
         }
 
         $mailbox = $draft->mailbox()->withoutGlobalScopes()->first();

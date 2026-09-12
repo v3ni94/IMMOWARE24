@@ -40,6 +40,7 @@ class MailDraft extends Model
             'bcc_json' => 'array',
             'attachments_json' => 'array',
             'approved_at' => 'immutable_datetime',
+            'approval_reauth_confirmed_at' => 'immutable_datetime',
             'sent_requested_at' => 'immutable_datetime',
         ];
     }

@@ -6,6 +6,7 @@ namespace App\Modules\Gmail\Services;
 
 use App\Core\Enums\AuditSource;
 use App\Modules\Gmail\Contracts\GmailProviderInterface;
+use App\Modules\Gmail\Exceptions\DraftApprovalRefusedException;
 use App\Modules\Gmail\Exceptions\DraftConflictException;
 use App\Modules\Gmail\Mime\MimeBuilder;
 use App\Modules\Gmail\Mime\MimeParser;
@@ -181,36 +182,65 @@ final class DraftService
 
     /**
      * Freigabe durch eine zweite Person (Vier-Augen): Freigebende braucht mail.approve.standard im Team des
-     * Postfachs und darf nicht Autor des Entwurfs sein. Die Freigabe bezieht sich auf die aktuelle Revision;
-     * updateDraft setzt sie zurück. Der Status bleibt unverändert (pushed_to_gmail bleibt versandfähig).
+     * Postfachs, darf nicht Autor des Entwurfs sein und muss eine aktuelle Re-Authentifizierung nachweisen
+     * (Zeitstempel aus der Sitzung, Fenster hub.security.totp.fresh_minutes). Ohne Nachweis gibt es keinen
+     * Ersatzwert: die Freigabe wird mit reauth_missing abgelehnt, unabhängig von der Middleware 2fa.fresh
+     * (analog ApprovalService). Die Freigabe bezieht sich auf die aktuelle Revision; updateDraft setzt sie zurück.
+     * Der Status bleibt unverändert (pushed_to_gmail bleibt versandfähig).
      *
-     * @throws InvalidArgumentException
+     * @throws DraftApprovalRefusedException
      */
-    public function approve(MailDraft $draft, User $approver): MailDraft
+    public function approve(MailDraft $draft, User $approver, ?CarbonImmutable $reauthConfirmedAt = null): MailDraft
     {
         $draft->refresh();
 
         if (! in_array((string) $draft->getAttribute('status'), [self::STATUS_PUSHED, 'pending_approval', 'approved'], true)) {
-            throw new InvalidArgumentException('Nur in Gmail hinterlegte oder zur Prüfung gegebene Entwürfe können freigegeben werden (Status '.$draft->getAttribute('status').').');
+            throw new DraftApprovalRefusedException('status', 'Nur in Gmail hinterlegte oder zur Prüfung gegebene Entwürfe können freigegeben werden (Status '.$draft->getAttribute('status').').');
         }
 
         $author = $draft->getAttribute('created_by');
 
         if ($author !== null && (int) $author === (int) $approver->getKey()) {
-            throw new InvalidArgumentException('Der Autor kann den eigenen Entwurf nicht freigeben (Vier-Augen-Prinzip).');
+            throw new DraftApprovalRefusedException('approval_self', 'Der Autor kann den eigenen Entwurf nicht freigeben (Vier-Augen-Prinzip).');
         }
 
         $mailbox = $draft->mailbox()->withoutGlobalScopes()->firstOrFail();
         $teamId = $mailbox->getAttribute('team_id');
 
         if (! $this->access->can($approver, 'mail.approve.standard', $teamId === null ? null : (int) $teamId)) {
-            throw new InvalidArgumentException('Kein Recht mail.approve.standard für dieses Postfach.');
+            throw new DraftApprovalRefusedException('permission_denied', 'Kein Recht mail.approve.standard für dieses Postfach.');
         }
 
-        $draft->forceFill(['approved_by' => $approver->getKey(), 'approved_at' => CarbonImmutable::now()])->save();
-        $this->audit->record('mail.draft.approved', $draft, [], ['revision' => $draft->getAttribute('revision'), 'content_hash' => $draft->getAttribute('content_hash')], AuditSource::Mail);
+        if (! self::reauthIsFresh($reauthConfirmedAt, $this->config)) {
+            $this->audit->record('mail.draft.approval_reauth_missing', $draft, [], ['revision' => $draft->getAttribute('revision')], AuditSource::Mail);
+
+            throw new DraftApprovalRefusedException('reauth_missing', 'Freigabe ohne aktuelle Re-Authentifizierung ist nicht zulässig.');
+        }
+
+        $draft->forceFill([
+            'approved_by' => $approver->getKey(),
+            'approved_at' => CarbonImmutable::now(),
+            'approval_reauth_confirmed_at' => $reauthConfirmedAt,
+        ])->save();
+        $this->audit->record('mail.draft.approved', $draft, [], ['revision' => $draft->getAttribute('revision'), 'content_hash' => $draft->getAttribute('content_hash'), 'reauth_confirmed_at' => $reauthConfirmedAt?->toIso8601String()], AuditSource::Mail);
 
         return $draft;
+    }
+
+    /**
+     * Re-Authentifizierung gilt als aktuell, wenn ein Zeitstempel vorliegt, nicht in der Zukunft liegt und nicht
+     * älter als hub.security.totp.fresh_minutes (Standard 15) ist. Gemeinsame Regel für Freigabe und Versand.
+     */
+    public static function reauthIsFresh(?CarbonImmutable $reauthConfirmedAt, Repository $config): bool
+    {
+        if ($reauthConfirmedAt === null) {
+            return false;
+        }
+
+        $maxAge = max(1, (int) $config->get('hub.security.totp.fresh_minutes', 15));
+        $now = CarbonImmutable::now();
+
+        return $reauthConfirmedAt->lessThanOrEqualTo($now->addMinute()) && $reauthConfirmedAt->addMinutes($maxAge)->isFuture();
     }
 
     /**

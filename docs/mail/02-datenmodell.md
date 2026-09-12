@@ -477,6 +477,7 @@ Index(execution_id).
 | status | string(24): local, pending_approval, approved, pushed_to_gmail, sent_requested, sent_verified, send_failed, discarded | |
 | gmail_draft_id | string(64) nullable | |
 | approved_by, approved_at | FK users nullable, timestamp nullable | |
+| approval_reauth_confirmed_at | timestamp nullable | Re-Authentifizierung der freigebenden Person aus der Sitzung, analog approvals.reauth_confirmed_at, Migration 2026_09_14_000003 |
 | sent_requested_by, sent_requested_at | | |
 | sent_message_id | FK mail_messages nullable | nach Abgleich |
 | created_by | FK users nullable | |

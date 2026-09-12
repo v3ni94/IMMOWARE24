@@ -9,9 +9,12 @@ use App\Modules\Cases\Models\MailCase;
 use App\Modules\Mail\Services\MailAccess;
 use App\Modules\MailUi\DTO\WorkflowResult;
 use App\Modules\MailUi\Services\CaseVisibility;
+use App\Modules\Security\Http\Middleware\RequireFreshTwoFactor;
 use App\Modules\Security\Models\AuditLog;
 use App\Modules\Security\Models\User;
 use App\Modules\Security\Services\AuditLogger;
+use App\Modules\Security\Services\LoginService;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -82,6 +85,43 @@ abstract class MailUiController extends Controller
     protected function redirectWithResult(string $route, WorkflowResult $result, array $parameters = []): RedirectResponse
     {
         return redirect()->route($route, $parameters)->with($result->flashKey(), $result->message);
+    }
+
+    /**
+     * Zeitpunkt der letzten Re-Authentifizierung aus der Sitzung; null, wenn kein Marker vorliegt. Kein Rückfall auf
+     * now(), sonst wäre der Nachweis immer gefüllt und reauth_missing nie auslösbar.
+     */
+    protected function reauthTimestamp(Request $request): ?CarbonImmutable
+    {
+        foreach ([LoginService::SESSION_REAUTHENTICATED_AT, LoginService::SESSION_TWO_FACTOR_VERIFIED] as $key) {
+            $value = $request->session()->get($key);
+
+            if (is_string($value)) {
+                try {
+                    return CarbonImmutable::parse($value)->utc();
+                } catch (\Throwable) {
+                    continue;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Aktuelle Re-Authentifizierung aus der Sitzung, sonst 403 mit Auditeintrag mail.<auditAction>. Die Prüfung
+     * greift unabhängig davon, ob die Route in der Gruppe 2fa.fresh liegt (Verteidigung in der Tiefe).
+     */
+    protected function requireFreshReauth(Request $request, string $auditAction, ?Model $entity = null): CarbonImmutable
+    {
+        $reauth = $this->reauthTimestamp($request);
+
+        if ($reauth === null || ! RequireFreshTwoFactor::isFresh($request)) {
+            $this->audit($auditAction, $entity);
+            abort(403, 'Diese Aktion ist ohne aktuelle Re-Authentifizierung nicht zulässig.');
+        }
+
+        return $reauth;
     }
 
     protected function perPage(): int

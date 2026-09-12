@@ -24,6 +24,7 @@ use App\Modules\MailUi\Contracts\DraftWorkflowInterface;
 use App\Modules\MailUi\DTO\WorkflowResult;
 use App\Modules\MailUi\Services\NullDraftWorkflow;
 use App\Modules\Security\Models\User;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use Throwable;
@@ -130,14 +131,14 @@ final class LiveDraftWorkflow implements DraftWorkflowInterface
         return $result;
     }
 
-    public function approve(MailDraft $draft, User $approver): WorkflowResult
+    public function approve(MailDraft $draft, User $approver, ?CarbonImmutable $reauthConfirmedAt = null): WorkflowResult
     {
         if ((string) $draft->getAttribute('status') === 'pending_approval' && ! $this->flags->gmailDraftsEnabled()) {
-            return $this->local->approve($draft, $approver);
+            return $this->local->approve($draft, $approver, $reauthConfirmedAt);
         }
 
         try {
-            $draft = $this->drafts->approve($draft, $approver);
+            $draft = $this->drafts->approve($draft, $approver, $reauthConfirmedAt);
         } catch (InvalidArgumentException $e) {
             return WorkflowResult::failed($e->getMessage());
         }
@@ -145,7 +146,7 @@ final class LiveDraftWorkflow implements DraftWorkflowInterface
         return WorkflowResult::ok('Entwurf freigegeben (Revision '.$draft->getAttribute('revision').'). Versand bleibt ein eigener Schritt mit Reauth.', (int) $draft->getKey());
     }
 
-    public function send(MailDraft $draft, User $actor): WorkflowResult
+    public function send(MailDraft $draft, User $actor, ?CarbonImmutable $reauthConfirmedAt = null): WorkflowResult
     {
         if (! $this->flags->gmailSendEnabled()) {
             return WorkflowResult::unavailable('Versand gesperrt: MAIL_GMAIL_SEND_ENABLED=false.');
@@ -156,7 +157,7 @@ final class LiveDraftWorkflow implements DraftWorkflowInterface
         }
 
         try {
-            $draft = $this->send->send($draft, $actor);
+            $draft = $this->send->send($draft, $actor, $reauthConfirmedAt);
         } catch (SendRefusedException $e) {
             return WorkflowResult::failed('Versand abgelehnt ('.$e->reason.'): '.$e->getMessage());
         } catch (Throwable $e) {
