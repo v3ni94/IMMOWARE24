@@ -20,6 +20,8 @@ final readonly class ResourceDefinition
      * @param  array<int, string>  $searchable  Spalten für ?q=
      * @param  array<int, string>  $methods
      * @param  array<int, string>  $with  Eager Loading für Ausgabe
+     * @param  string|null  $organizationColumn  Mandantenspalte, falls das Modell keinen Global Scope organization trägt
+     * @param  string|null  $organizationVia  Relation, über deren organization_id der Mandant geprüft wird (z. B. connection)
      */
     public function __construct(
         public string $name,
@@ -38,7 +40,14 @@ final readonly class ResourceDefinition
         public string $description = '',
         public int $phase = 1,
         public ?string $statusColumn = 'status',
+        public ?string $organizationColumn = null,
+        public ?string $organizationVia = null,
     ) {}
+
+    public function needsOrganizationScope(): bool
+    {
+        return $this->organizationColumn !== null || $this->organizationVia !== null;
+    }
 
     public function singular(): string
     {

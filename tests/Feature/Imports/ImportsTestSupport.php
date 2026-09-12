@@ -61,6 +61,20 @@ trait ImportsTestSupport
         return $target;
     }
 
+    /**
+     * Legt eine Fixture mit gleichem Inhalt, aber abweichendem Content-Hash ab (angehängte Leerzeilen, die der
+     * CsvReader überspringt), damit der Duplikatschutz des Scanners einen fachlich gleichen Re-Import zulässt.
+     *
+     * @param  array<string, mixed>|null  $sidecar
+     */
+    protected function dropFixtureVariant(string $fixture, Organization $organization, ?ExportType $exportType, ?array $sidecar, string $as, int $variant = 1): string
+    {
+        $target = $this->dropFixture($fixture, $organization, $exportType, $sidecar, $as);
+        file_put_contents($this->dropPath.'/'.$target, str_repeat("\r\n", $variant), FILE_APPEND);
+
+        return $target;
+    }
+
     protected function scanAndProcess(): ImportFile
     {
         $result = $this->app->make(DropFolderScanner::class)->scan();

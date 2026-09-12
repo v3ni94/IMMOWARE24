@@ -19,6 +19,9 @@ final readonly class UploadResult
     /** Antrag aus einem API-Key-Kontext: wartet auf menschliche Freigabe (approve), kein Netzwerkzugriff. */
     public const string OUTCOME_PENDING_APPROVAL = 'pending_approval';
 
+    /** Antrag angenommen, Inhalt gesichert, Ausführung über ExecuteWriteOperationJob auf der Queue write. */
+    public const string OUTCOME_QUEUED = 'queued';
+
     public const string OUTCOME_REJECTED = 'rejected';
 
     public const string OUTCOME_DRY_RUN = 'dry_run';
@@ -36,6 +39,11 @@ final readonly class UploadResult
         public string $outcome,
         public bool $putSent = false,
     ) {}
+
+    public function operationUuid(): string
+    {
+        return (string) $this->operation->getAttribute('operation_uuid');
+    }
 
     public function status(): WriteOperationStatus
     {

@@ -10,11 +10,15 @@ use App\Modules\Estate\Models\OpenItem;
 use App\Modules\Imports\DTO\ImportContext;
 use App\Modules\Imports\DTO\ImportOutcome;
 use App\Modules\Imports\Enums\ExportType;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Offene Posten als Snapshot mit Stichtag (as_of_date aus dem Sidecar bzw. exported_at).
- * Jeder Import ist ein vollständiger Snapshot: OP, die nicht mehr enthalten sind, gelten zum Stichtag
- * als erledigt (settled_at = Stichtag). OP werden nie gelöscht, auch nicht per Soft Delete.
+ * Nur ein als Vollexport gekennzeichneter Import (is_full_export) ist ein vollständiger Snapshot: OP derselben
+ * Quelle (source_system, connection_id) und desselben Objektbereichs (im Lauf gesehene Objekte), die nicht mehr
+ * enthalten sind, gelten zum Stichtag als erledigt (settled_at = Stichtag). Teilexporte erledigen nichts.
+ * OP werden nie gelöscht, auch nicht per Soft Delete. Je external_id wird genau eine Zeile mit dem jüngsten
+ * Stichtag geführt (Änderungsvermerk 12.09.2026, siehe Antwort an Docs-Agent zu 02-data-model).
  * Schlüssel typischerweise op_number oder object_number, unit_number, due_date, kind.
  */
 final class OpenItemsImporter extends AbstractCsvImporter
@@ -63,6 +67,10 @@ final class OpenItemsImporter extends AbstractCsvImporter
             $contact = $contactQuery->first();
         }
 
+        if ($property !== null) {
+            $this->markPropertySeen((int) $property->getKey());
+        }
+
         $externalId = $this->externalId(self::PREFIX, $key);
 
         /** @var OpenItem|null $item */
@@ -96,24 +104,51 @@ final class OpenItemsImporter extends AbstractCsvImporter
             ]);
         }
 
+        $wasNew = ! $item->exists;
+        $openBefore = $item->exists ? (int) $item->getOriginal('open_cents') : null;
         $item->forceFill($attributes);
         $item->forceFill(['last_synced_at' => $context->startedAt, 'external_updated_at' => $context->file->exported_at ?? $context->startedAt]);
         $item->applyChecksum($attributes);
         $item->save();
         $this->markSeen($externalId);
 
+        if ($wasNew) {
+            $this->dispatchHubEvent('open_item', 'created', $item, $context, 'open-items');
+        } elseif ($openBefore !== null && $openBefore !== 0 && $openCents === 0) {
+            $this->dispatchHubEvent('open_item', 'paid', $item, $context, 'open-items', ['as_of_date' => $context->asOfDate->toDateString()]);
+        }
+
         return true;
     }
 
     /**
-     * Snapshot-Abgleich: alle zuvor offenen OP, die in diesem Snapshot nicht enthalten sind, werden zum Stichtag erledigt.
+     * Snapshot-Abgleich nur bei Vollexport: zuvor offene OP derselben Quelle und der im Lauf gesehenen Objekte,
+     * die in diesem Snapshot nicht enthalten sind, werden zum Stichtag erledigt. Ohne bestimmbaren Objektumfang
+     * (keine Zeile mit auflösbarer Objektnummer) findet kein Abgleich statt.
      */
     protected function afterRows(ImportContext $context, ImportOutcome $outcome): void
     {
+        if (! $context->isFullExport) {
+            return;
+        }
+
+        $propertyIds = array_keys($this->seenPropertyIds);
+
+        if ($propertyIds === []) {
+            Log::info('OP-Snapshot-Abgleich übersprungen: Datei ohne bestimmbaren Objektumfang.', ['import_file_id' => $context->file->getKey()]);
+
+            return;
+        }
+
         $query = OpenItem::query()->withoutGlobalScope('organization')
             ->where('organization_id', $context->organizationId)
             ->where('source_system', $this->sourceSystem());
+        $query->whereIn('property_id', $propertyIds);
         $query->whereNull('settled_at');
+
+        if ($context->connectionId !== null) {
+            $query->where('connection_id', $context->connectionId);
+        }
 
         $query->lazyById(500)
             ->each(function (OpenItem $item) use ($context, $outcome): void {
@@ -123,6 +158,7 @@ final class OpenItemsImporter extends AbstractCsvImporter
 
                 $item->forceFill(['settled_at' => $context->asOfDate, 'open_cents' => 0])->save();
                 $outcome->rowsSwept++;
+                $this->dispatchHubEvent('open_item', 'paid', $item, $context, 'open-items', ['as_of_date' => $context->asOfDate->toDateString(), 'settled_by' => 'snapshot']);
             });
     }
 

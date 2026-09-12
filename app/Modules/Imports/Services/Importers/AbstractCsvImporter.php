@@ -4,10 +4,17 @@ declare(strict_types=1);
 
 namespace App\Modules\Imports\Services\Importers;
 
+use App\Modules\Contacts\Models\Contact;
+use App\Modules\Estate\Models\Contract;
+use App\Modules\Estate\Models\Property;
+use App\Modules\Estate\Models\Unit;
+use App\Modules\Imports\Connectors\FileImportConnector;
 use App\Modules\Imports\Contracts\RowImporterInterface;
 use App\Modules\Imports\DTO\ImportContext;
 use App\Modules\Imports\DTO\ImportOutcome;
+use App\Modules\Webhooks\Events\HubEvent;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Events\Dispatcher as EventDispatcher;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Log;
@@ -18,10 +25,15 @@ use Throwable;
  * Upsert über externe IDs (nie über Namen), Checksumme, Mark-and-Sweep (Soft Delete) nur bei Vollexport.
  *
  * Sweep-Regeln (07-sync-strategy.md Abschnitt 4 Punkt 8, data-ownership.md Delete Rules, Änderungsvermerk 12.09.2026):
- * Die Sweep-Menge ist auf den Exporttyp (Präfix der external_id) und, wo der Export objektbezogen ist, auf die
- * im Lauf gesehenen Objekte begrenzt. Erstes Fehlen setzt nur missing_since, Soft Delete erst beim zweiten
- * Vollexport ohne Treffer. Schutzgrenze analog Dokumentenspiegel: Fehlen mehr als 20 Prozent oder mehr als 500
- * Datensätze, wird nicht gelöscht, sondern nur missing_since gesetzt und gewarnt.
+ * Die Sweep-Menge ist auf den Exporttyp (Präfix der external_id), auf dieselbe Quelle (source_system und, sofern
+ * die Datei einer Connection zugeordnet ist, dieselbe connection_id) und, wo der Export objektbezogen ist, auf die
+ * im Lauf gesehenen Objekte begrenzt. Erstes Fehlen setzt missing_since und missing_count = 1, Soft Delete erst beim
+ * zweiten aufeinanderfolgenden Vollexport ohne Treffer (missing_count >= 2). Ein Treffer setzt beide zurück.
+ * Schutzgrenze analog Dokumentenspiegel: Fehlen mehr als 20 Prozent oder mehr als 500 Datensätze, wird nicht
+ * gelöscht, sondern nur missing_since und missing_count fortgeschrieben und gewarnt.
+ *
+ * Fachliche Ereignisse (Webhook-Katalog config/hub/webhooks.php) werden nach dem Upsert als HubEvent ausgelöst;
+ * die Payload enthält nur id, type, href und Steuerfelder, keine personenbezogenen Feldwerte.
  */
 abstract class AbstractCsvImporter implements RowImporterInterface
 {
@@ -34,6 +46,11 @@ abstract class AbstractCsvImporter implements RowImporterInterface
     public const int SWEEP_GUARD_ABSOLUTE = 500;
 
     public const int SWEEP_GUARD_MIN_TOTAL = 10;
+
+    /** Anzahl aufeinanderfolgender Vollexporte ohne Treffer, ab der soft-gelöscht wird. */
+    public const int SWEEP_REQUIRED_MISSES = 2;
+
+    public function __construct(protected readonly EventDispatcher $events) {}
 
     /** @var array<string, true> external_id_hash aller in diesem Lauf berührten Datensätze (für Sweep und Snapshot) */
     protected array $seenHashes = [];
@@ -153,13 +170,75 @@ abstract class AbstractCsvImporter implements RowImporterInterface
             'external_updated_at' => $context->file->exported_at ?? $now,
             'deleted_at' => null,
             'missing_since' => null,
+            'missing_count' => 0,
             'deletion_reason' => null,
         ]);
         $model->applyChecksum($attributes);
+        $wasNew = ! $model->exists;
+        $endDateBefore = $model->exists ? $model->getOriginal('end_date') : null;
         $model->save();
         $this->markSeen($externalId);
+        $this->emitEntityEvents($model, $context, $wasNew, $endDateBefore);
 
         return $model;
+    }
+
+    /**
+     * Löst die fachlichen Ereignisse des Webhook-Katalogs aus (nur bei Anlage oder tatsächlicher Änderung).
+     */
+    protected function emitEntityEvents(Model $model, ImportContext $context, bool $wasNew, mixed $endDateBefore): void
+    {
+        $technical = ['last_synced_at', 'external_updated_at', 'updated_at', 'sync_version', 'missing_since', 'missing_count', 'deletion_reason', 'deleted_at', 'checksum', 'last_payload_id'];
+        $changed = $wasNew || array_diff(array_keys($model->getChanges()), $technical) !== [];
+
+        if (! $changed) {
+            return;
+        }
+
+        $events = [];
+
+        if ($model instanceof Property) {
+            $events[] = ['property', 'updated', 'properties'];
+        } elseif ($model instanceof Unit) {
+            $events[] = ['unit', 'updated', 'units'];
+        } elseif ($model instanceof Contact) {
+            $events[] = ['contact', $wasNew ? 'created' : 'updated', 'contacts'];
+        } elseif ($model instanceof Contract) {
+            if ($wasNew) {
+                $events[] = ['contract', 'created', 'contracts'];
+            }
+
+            $endDate = $model->getAttribute('end_date');
+
+            if ($endDate !== null && ($wasNew || $endDateBefore === null)) {
+                $events[] = ['contract', 'terminated', 'contracts'];
+            }
+        }
+
+        foreach ($events as [$type, $action, $resource]) {
+            $this->dispatchHubEvent($type, $action, $model, $context, $resource);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $extra
+     */
+    protected function dispatchHubEvent(string $type, string $action, Model $model, ImportContext $context, string $resource, array $extra = []): void
+    {
+        $this->events->dispatch(HubEvent::forEntity(
+            $type,
+            $action,
+            (int) $model->getKey(),
+            $context->organizationId,
+            '/api/'.config('hub.api.version', 'v1').'/'.$resource.'/'.(int) $model->getKey(),
+            [
+                'connector' => FileImportConnector::NAME,
+                'export_type' => $this->exportType()->value,
+                'import_file_id' => (int) $context->file->getKey(),
+                'connection_id' => $context->connectionId,
+            ],
+            $extra,
+        ));
     }
 
     protected function markSeen(string $externalId): void
@@ -218,6 +297,11 @@ abstract class AbstractCsvImporter implements RowImporterInterface
             ->where('organization_id', $context->organizationId)
             ->where('source_system', $this->sourceSystem());
 
+        // Dieselbe Quelle: Ist die Datei einer Connection zugeordnet, bleiben Datensätze anderer Connections unberührt.
+        if ($context->connectionId !== null) {
+            $query->where('connection_id', $context->connectionId);
+        }
+
         $prefix = $this->sweepPrefix();
 
         if ($prefix !== null) {
@@ -261,22 +345,26 @@ abstract class AbstractCsvImporter implements RowImporterInterface
         }
 
         foreach ($missing as $model) {
-            $missingSince = $model->getAttribute('missing_since');
+            $missingCount = (int) $model->getAttribute('missing_count') + 1;
 
-            if ($missingSince === null || $guard) {
-                if ($missingSince === null) {
-                    $model->forceFill([
-                        'missing_since' => $context->startedAt,
-                        'deletion_reason' => self::DELETION_REASON_MISSING,
-                    ])->save();
-                    $outcome->rowsMarkedMissing++;
-                }
+            if ($model->getAttribute('missing_since') !== null && $missingCount < 2) {
+                // Altbestand vor Einführung von missing_count: missing_since zählt als erstes Fehlen.
+                $missingCount = 2;
+            }
+
+            if ($missingCount < self::SWEEP_REQUIRED_MISSES || $guard) {
+                $model->forceFill([
+                    'missing_since' => $model->getAttribute('missing_since') ?? $context->startedAt,
+                    'missing_count' => $missingCount,
+                    'deletion_reason' => self::DELETION_REASON_MISSING,
+                ])->save();
+                $outcome->rowsMarkedMissing++;
 
                 continue;
             }
 
-            // Zweites Fehlen in einem Folge-Vollexport: Soft Delete.
-            $model->forceFill(['deletion_reason' => self::DELETION_REASON_MISSING])->save();
+            // Zweites aufeinanderfolgendes Fehlen in einem Folge-Vollexport: Soft Delete.
+            $model->forceFill(['missing_count' => $missingCount, 'deletion_reason' => self::DELETION_REASON_MISSING])->save();
             $model->delete();
             $outcome->rowsSwept++;
         }

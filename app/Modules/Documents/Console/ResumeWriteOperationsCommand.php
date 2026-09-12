@@ -25,12 +25,19 @@ final class ResumeWriteOperationsCommand extends Command
         $limit = max(1, (int) $this->option('limit'));
         $processed = 0;
 
-        $query = WriteOperation::query()
+        $operations = WriteOperation::query()
             ->whereIn('status', [WriteOperationStatus::Sent->value, WriteOperationStatus::Unknown->value])
-            ->orderBy('id')
-            ->limit($limit);
+            ->lazyById(min(100, $limit));
 
-        foreach ($query->get() as $operation) {
+        foreach ($operations as $operation) {
+            if (! $operation instanceof WriteOperation) {
+                continue;
+            }
+
+            if ($processed >= $limit) {
+                break;
+            }
+
             try {
                 $result = $service->resume($operation);
                 $this->line(sprintf('write_operation %d: %s -> %s', (int) $operation->getKey(), $result->outcome, $result->status()->value));

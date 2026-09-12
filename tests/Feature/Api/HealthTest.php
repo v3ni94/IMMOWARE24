@@ -6,6 +6,7 @@ namespace Tests\Feature\Api;
 
 use App\Modules\Sync\Models\SyncState;
 use App\Modules\Sync\Services\SyncStateService;
+use App\Modules\Sync\Support\Heartbeat;
 use Carbon\CarbonImmutable;
 
 final class HealthTest extends ApiTestCase
@@ -20,6 +21,28 @@ final class HealthTest extends ApiTestCase
 
         $this->getJson('/health/database')->assertOk()->assertExactJson(['status' => 'ok']);
         $this->getJson('/health/queue')->assertOk()->assertJsonPath('status', 'ok');
+    }
+
+    public function test_queue_check_reports_down_when_redis_queue_is_unreachable(): void
+    {
+        // Vor dem Fix zählte /health/queue bei Redis-Queue die (leere) Tabelle jobs und meldete ok.
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.connection', 'health-test');
+        config()->set('database.redis.health-test', ['host' => '127.0.0.1', 'port' => 1, 'database' => 0, 'timeout' => 0.2]);
+
+        $this->getJson('/health/queue')->assertStatus(503)->assertJsonPath('status', 'down');
+    }
+
+    public function test_queue_check_is_degraded_when_worker_heartbeat_is_stale(): void
+    {
+        $heartbeat = $this->app->make(Heartbeat::class);
+        $heartbeat->beat(Heartbeat::WORKER, CarbonImmutable::now('UTC')->subSeconds(600));
+
+        try {
+            $this->getJson('/health/queue')->assertStatus(200)->assertJsonPath('status', 'degraded');
+        } finally {
+            @unlink(Heartbeat::path(Heartbeat::WORKER));
+        }
     }
 
     public function test_health_returns_503_when_mirror_is_stale_and_details_for_admin(): void

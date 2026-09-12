@@ -5,10 +5,17 @@ declare(strict_types=1);
 namespace Tests\Feature\Webhooks;
 
 use App\Modules\Webhooks\Models\WebhookEndpoint;
+use App\Modules\Webhooks\Services\WebhookUrlGuard;
 use Tests\Feature\Api\ApiTestCase;
 
 final class WebhookEndpointApiTest extends ApiTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->app->instance(WebhookUrlGuard::class, new WebhookUrlGuard(static fn (string $host): array => ['93.184.216.34']));
+    }
+
     public function test_endpoint_management_requires_admin_and_returns_secret_once(): void
     {
         $this->issueKey(['properties:read']);

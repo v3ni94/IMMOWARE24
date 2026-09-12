@@ -25,6 +25,9 @@ final class LoginService
     /** Anmeldezeitpunkt der Sitzung, Grundlage der absoluten Sitzungsdauer (EnforceAbsoluteSessionLifetime). */
     public const string SESSION_LOGIN_AT = 'security.login_at';
 
+    /** Zeitpunkt der letzten erneuten Authentifizierung per Passwort oder Code (Middleware 2fa.fresh). */
+    public const string SESSION_REAUTHENTICATED_AT = 'security.reauthenticated_at';
+
     public function __construct(
         private readonly StatefulGuard $guard,
         private readonly Hasher $hasher,
@@ -67,7 +70,7 @@ final class LoginService
 
         $this->guard->login($user, $remember);
         $request->session()->regenerate();
-        $request->session()->forget(self::SESSION_TWO_FACTOR_VERIFIED);
+        $request->session()->forget([self::SESSION_TWO_FACTOR_VERIFIED, self::SESSION_REAUTHENTICATED_AT]);
         $request->session()->put(self::SESSION_LOGIN_AT, now()->toIso8601String());
 
         $user->forceFill([

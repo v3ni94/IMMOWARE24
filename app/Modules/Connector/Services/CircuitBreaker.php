@@ -56,9 +56,17 @@ final class CircuitBreaker
             return;
         }
 
+        if ($state === CircuitState::HalfOpen && $this->trialExpired($data)) {
+            // Abgebrochener oder verlorener Testrequest (Timeout, Worker-Abbruch, Rate-Limit vor dem Senden):
+            // die Reservierung verfällt nach trial_timeout_seconds, sonst bliebe der Breaker dauerhaft blockiert.
+            $data['trial_in_flight'] = false;
+            $data['trial_started_at'] = null;
+        }
+
         if ($state === CircuitState::HalfOpen && ! $data['trial_in_flight']) {
             $data['state'] = CircuitState::HalfOpen->value;
             $data['trial_in_flight'] = true;
+            $data['trial_started_at'] = $this->now();
             $this->store($key, $data);
 
             return;
@@ -72,6 +80,22 @@ final class CircuitBreaker
             $state === CircuitState::HalfOpen ? 'halb offen (Testrequest läuft)' : 'offen',
             $retryIn !== null ? sprintf(', nächster Versuch in %d s', $retryIn) : '',
         ), $key);
+    }
+
+    /**
+     * Gibt einen reservierten Testrequest frei, der nie gesendet wurde (z. B. RateLimitedException vor dem Senden).
+     */
+    public function abortTrial(string $key): void
+    {
+        $data = $this->load($key);
+
+        if (! $data['trial_in_flight']) {
+            return;
+        }
+
+        $data['trial_in_flight'] = false;
+        $data['trial_started_at'] = null;
+        $this->store($key, $data);
     }
 
     public function recordSuccess(string $key): void
@@ -88,6 +112,7 @@ final class CircuitBreaker
             'open_until' => null,
             'open_cycles' => 0,
             'trial_in_flight' => false,
+            'trial_started_at' => null,
         ]);
     }
 
@@ -150,19 +175,33 @@ final class CircuitBreaker
             return;
         }
 
-        if ($status < 400 || $status === 403 || $status === 404 || $status === 412) {
-            // 403 und 404 sind fachliche Signale, kein Breaker-Fehler.
-            $data = $this->load($key);
+        // Jeder übrige Status (2xx, 3xx, alle 4xx außer 401 und 429 ohne Retry-After) beendet einen laufenden
+        // Testrequest; 403, 404, 412 und sonstige 4xx sind fachliche Signale, kein Breaker-Fehler.
+        $data = $this->load($key);
 
-            if ($data['trial_in_flight'] || $data['state'] !== CircuitState::Closed->value) {
-                if ($status < 400) {
-                    $this->recordSuccess($key);
-                } else {
-                    $data['trial_in_flight'] = false;
-                    $this->store($key, $data);
-                }
+        if ($data['trial_in_flight'] || $data['state'] !== CircuitState::Closed->value) {
+            if ($status < 400) {
+                $this->recordSuccess($key);
+            } else {
+                $data['trial_in_flight'] = false;
+                $data['trial_started_at'] = null;
+                $this->store($key, $data);
             }
         }
+    }
+
+    /**
+     * @param  array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool, trial_started_at: int|null}  $data
+     */
+    private function trialExpired(array $data): bool
+    {
+        if (! $data['trial_in_flight']) {
+            return false;
+        }
+
+        $timeout = max(1, (int) ($this->config['trial_timeout_seconds'] ?? 90));
+
+        return $data['trial_started_at'] === null || $this->now() - $data['trial_started_at'] >= $timeout;
     }
 
     public function reset(string $key): void
@@ -171,7 +210,7 @@ final class CircuitBreaker
     }
 
     /**
-     * @return array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool}
+     * @return array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool, trial_started_at: int|null}
      */
     public function snapshot(string $key): array
     {
@@ -182,7 +221,7 @@ final class CircuitBreaker
     }
 
     /**
-     * @param  array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool}  $data
+     * @param  array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool, trial_started_at: int|null}  $data
      */
     private function open(string $key, array $data, string $reason): void
     {
@@ -196,6 +235,7 @@ final class CircuitBreaker
         $data['open_until'] = $this->now() + $seconds;
         $data['open_cycles'] = $cycles;
         $data['trial_in_flight'] = false;
+        $data['trial_started_at'] = null;
         $data['failures'] = [];
 
         $this->store($key, $data);
@@ -209,24 +249,28 @@ final class CircuitBreaker
     }
 
     /**
-     * @return array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool}
+     * @return array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool, trial_started_at: int|null}
      */
     private function load(string $key): array
     {
-        /** @var array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool}|null $data */
+        /** @var array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool, trial_started_at: int|null}|null $data */
         $data = $this->cache->get(self::PREFIX.$key);
 
-        return $data ?? [
+        $data ??= [
             'state' => CircuitState::Closed->value,
             'failures' => [],
             'open_until' => null,
             'open_cycles' => 0,
             'trial_in_flight' => false,
+            'trial_started_at' => null,
         ];
+        $data['trial_started_at'] ??= null;
+
+        return $data;
     }
 
     /**
-     * @param  array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool}  $data
+     * @param  array{state: string, failures: array<int, int>, open_until: int|null, open_cycles: int, trial_in_flight: bool, trial_started_at: int|null}  $data
      */
     private function store(string $key, array $data): void
     {

@@ -10,6 +10,7 @@ use App\Modules\Webhooks\Jobs\DeliverWebhookJob;
 use App\Modules\Webhooks\Models\WebhookDelivery;
 use App\Modules\Webhooks\Models\WebhookEndpoint;
 use App\Modules\Webhooks\Services\WebhookSigner;
+use App\Modules\Webhooks\Services\WebhookUrlGuard;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Bus;
@@ -26,6 +27,8 @@ final class WebhookDispatchTest extends TestCase
         parent::setUp();
 
         config()->set('hub.webhooks.enabled', true);
+        // Testziele *.example.test sind nicht auflösbar: fester Resolver auf eine öffentliche Adresse.
+        $this->app->instance(WebhookUrlGuard::class, new WebhookUrlGuard(static fn (string $host): array => [$host === '203.0.113.0' ? '10.0.0.1' : '93.184.216.34']));
     }
 
     public function test_dispatcher_is_noop_when_feature_flag_is_disabled(): void
@@ -71,7 +74,7 @@ final class WebhookDispatchTest extends TestCase
         $this->app->make(WebhookDispatcherInterface::class)->dispatch('contact.updated', ['id' => 5, 'type' => 'contact', 'href' => '/api/v1/contacts/5'], (int) $organization->getKey());
 
         $delivery = WebhookDelivery::query()->firstOrFail();
-        (new DeliverWebhookJob((int) $delivery->getKey()))->handle($this->app->make(WebhookSigner::class));
+        (new DeliverWebhookJob((int) $delivery->getKey()))->handle($this->app->make(WebhookSigner::class), $this->app->make(WebhookUrlGuard::class));
 
         $signer = $this->app->make(WebhookSigner::class);
 
@@ -126,7 +129,7 @@ final class WebhookDispatchTest extends TestCase
             $before = now()->toImmutable();
 
             try {
-                $job->handle($signer);
+                $job->handle($signer, $this->app->make(WebhookUrlGuard::class));
                 $this->fail('Fehlgeschlagene Zustellung muss eine Exception für den Queue-Retry werfen.');
             } catch (RuntimeException) {
                 // erwartet
@@ -141,11 +144,11 @@ final class WebhookDispatchTest extends TestCase
         }
 
         // Vor Fälligkeit (next_attempt_at) unternimmt der Job keinen Versuch (Schutz vor Doppelzustellung).
-        $job->handle($signer);
+        $job->handle($signer, $this->app->make(WebhookUrlGuard::class));
         $this->assertSame(4, $delivery->fresh()->getAttribute('attempts'));
 
         $this->travelTo(now()->addMinutes(40));
-        $job->handle($signer);
+        $job->handle($signer, $this->app->make(WebhookUrlGuard::class));
 
         $delivery->refresh();
         $this->assertSame('dead', $delivery->getAttribute('status'));
@@ -168,7 +171,7 @@ final class WebhookDispatchTest extends TestCase
         $endpoint->forceFill(['active' => false])->save();
 
         $delivery = WebhookDelivery::query()->firstOrFail();
-        (new DeliverWebhookJob((int) $delivery->getKey()))->handle($this->app->make(WebhookSigner::class));
+        (new DeliverWebhookJob((int) $delivery->getKey()))->handle($this->app->make(WebhookSigner::class), $this->app->make(WebhookUrlGuard::class));
 
         Http::assertNothingSent();
         $this->assertSame('skipped', $delivery->refresh()->getAttribute('status'));

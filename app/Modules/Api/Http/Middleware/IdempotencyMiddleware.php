@@ -14,16 +14,24 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response as HttpResponse;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Symfony\Component\HttpFoundation\Response;
+use Throwable;
 
 /**
  * Header Idempotency-Key ist für POST und PATCH Pflicht. Eine Wiederholung mit gleichem Schlüssel und
  * gleichem Body liefert die gespeicherte Antwort (Header Idempotent-Replayed: true), ein abweichender
  * Body 409 idempotency_mismatch. Antworten werden 24 Stunden vorgehalten.
+ *
+ * Vor der Controller-Ausführung wird ein In-Progress-Marker atomar gesetzt (Cache::add). Ein paralleler
+ * Zweitaufruf mit demselben Schlüssel erhält 409 idempotency_in_progress, statt den Seiteneffekt zu wiederholen.
  */
 final class IdempotencyMiddleware
 {
     public const string REPLAY_HEADER = 'Idempotent-Replayed';
+
+    /** Lebensdauer des In-Progress-Markers in Sekunden (Obergrenze für einen hängenden Request). */
+    public const int IN_PROGRESS_TTL_SECONDS = 120;
 
     public function __construct(
         private readonly ApiCaller $caller,
@@ -83,7 +91,19 @@ final class IdempotencyMiddleware
             return new HttpResponse((string) $stored->getAttribute('response_body'), (int) $stored->getAttribute('response_status'), $headers);
         }
 
-        $response = $next($request);
+        $marker = self::inProgressKey($apiKeyId, $request->method(), $path, $key);
+
+        if (! Cache::add($marker, $requestHash, self::IN_PROGRESS_TTL_SECONDS)) {
+            return Problem::make(409, 'idempotency_in_progress', 'Eine Anfrage mit diesem Idempotency-Key wird gerade verarbeitet.');
+        }
+
+        try {
+            $response = $next($request);
+        } catch (Throwable $e) {
+            Cache::forget($marker);
+
+            throw $e;
+        }
 
         if ($response->getStatusCode() < 500 && ($response instanceof JsonResponse || $response instanceof HttpResponse)) {
             IdempotencyKey::query()->create([
@@ -101,9 +121,15 @@ final class IdempotencyMiddleware
             ]);
         }
 
+        Cache::forget($marker);
         $response->headers->set(self::REPLAY_HEADER, 'false');
 
         return $response;
+    }
+
+    public static function inProgressKey(?int $apiKeyId, string $method, string $path, string $idempotencyKey): string
+    {
+        return 'api:idempotency:in_progress:'.hash('sha256', ($apiKeyId ?? 0).'|'.$method.'|'.$path.'|'.$idempotencyKey);
     }
 
     private function requestHash(Request $request): string

@@ -1,6 +1,6 @@
 # Datenmodell Immoware Hub
 
-Stand: 11.09.2026
+Stand: 11.09.2026, Änderungsvermerk 12.09.2026 (Abschnitt Abgleich mit dem Code)
 Zielsystem: MariaDB 10.11+, InnoDB, utf8mb4_bin für Hash- und Pfadspalten, utf8mb4_unicode_ci sonst
 Gesellschaft: Hausverwaltung Müller GmbH
 Dokumentstatus: Entwurf
@@ -9,15 +9,32 @@ Belegregel: Das Datenmodell ist Hub-intern und trifft keine eigenen Aussagen üb
 
 ## Konventionen
 
-- Primärschlüssel `id` BINARY(16), UUIDv7, sofern nicht anders angegeben.
+- Primärschlüssel `id` BINARY(16), UUIDv7, sofern nicht anders angegeben. Im Code BIGINT UNSIGNED AUTO_INCREMENT, siehe Abgleich 12.09.2026 Punkt 1.
 - Zeitstempel `created_at`, `updated_at` DATETIME(6) NOT NULL, UTC.
 - Hash-Verfahren: external_id_hash, path_hash, content_hash, row_hash, checksum, header_fingerprint sind reines SHA-256 (reproduzierbar, kein Pepper). iban_hash und base_url_hash sind HMAC-SHA256 mit geheimem Pepper (08-security.md Abschnitt 2.2).
 - Herkunft-Block (H) auf allen Spiegel-Tabellen: `source_system` VARCHAR(32) NOT NULL (immoware24, hub), `connection_id` BINARY(16) FK immoware_connections, `external_id` VARCHAR(512) NOT NULL, `external_id_hash` CHAR(64) NOT NULL (SHA-256 von external_id), `checksum` CHAR(64) NOT NULL (SHA-256 des normalisierten Datensatzes), `sync_version` INT UNSIGNED NOT NULL DEFAULT 1, `identity_confidence` ENUM('exact','derived','uncertain') NOT NULL DEFAULT 'exact', `first_seen_at` DATETIME(6), `last_seen_at` DATETIME(6), `missing_since` DATETIME(6) NULL, `stale_since` DATETIME(6) NULL, `deleted_at` DATETIME(6) NULL, `deletion_reason` VARCHAR(64) NULL, `last_payload_id` BINARY(16) NULL FK external_payloads.
-- Unique auf Spiegel-Tabellen immer (connection_id, external_id_hash), nie auf VARCHAR(512).
+- Unique auf Spiegel-Tabellen immer (organization_id, source_system, external_id_hash), nie auf VARCHAR(512) (Änderungsvermerk 12.09.2026, zuvor connection_id; Abgleich Punkt 3).
 - Zeilen ohne vollständigen fachlichen Schlüssel (identity_confidence = uncertain) tragen external_id = "uncertain:" plus row_hash. Sie werden nicht versioniert; jeder Vollexport ersetzt die uncertain-Zeilen desselben Exporttyps und Objekts (deletion_reason = superseded_uncertain). Regel in 07-sync-strategy.md Abschnitt 7.
 - Versionen: jede Spiegel-Tabelle hat eine Schattentabelle `<tabelle>_versions` mit allen fachlichen Spalten plus `version_id` BINARY(16) PK, `entity_id` BINARY(16), `sync_version` INT UNSIGNED, `valid_from` DATETIME(6), `valid_to` DATETIME(6) NULL, `payload_id` BINARY(16) NULL, `sync_event_id` BINARY(16) NULL. Unique (entity_id, sync_version). Index (entity_id, valid_from). Versionen entstehen nur bei Checksum-Änderung.
 - Kein Hard Delete auf Spiegel-Tabellen. Hard Delete personenbezogener Felder erfolgt durch Überschreiben mit NULL und Vermerk in audit_logs. Dieselbe Regel gilt im selben Job für alle Zeilen der Schattentabelle `<tabelle>_versions` derselben entity_id (personenbezogene Spalten auf NULL, version_id, sync_version, valid_from, valid_to, payload_id bleiben, damit die Versionshistorie als Gerüst erhalten bleibt) sowie für conflicts.local_snapshot_json, conflicts.proposed_change_json, dlq_items.payload_json, webhook_outbox.payload_json und write_operations.original_filename, soweit sie auf dieselbe entity_id bzw. denselben Kontakt verweisen (Feldwerte durch Platzhalter "[erased]" ersetzt, Struktur bleibt). Löschkonzept in 08-security.md Abschnitt 7.3.
 - Geldbeträge als BIGINT in Cent, Währung CHAR(3).
+
+## Abgleich mit dem Code (Änderungsvermerk 12.09.2026)
+
+Die Migrationen unter database/migrations sind für MariaDB und SQLite geschrieben und weichen in folgenden Punkten vom Entwurf ab. Wo Code und Dokument abweichen, gilt nach Datenintegrität das Folgende; die Tabellenblöcke unten sind Entwurfsnotation und in diesen Punkten so zu lesen:
+
+1. Primärschlüssel und Fremdschlüssel sind BIGINT UNSIGNED AUTO_INCREMENT (Laravel id(), foreignId()), nicht BINARY(16)/UUIDv7. Einzige UUID-Spalte ist write_operations.operation_uuid (Kennung in der Upload-API). Gründe: Portabilität SQLite, einfache Indizes, keine eigene UUIDv7-Implementierung.
+2. Herkunftsblock (H) im Code (Blueprint-Makro externalIdentity): organization_id, connection_id (NULL erlaubt, weil Importdateien keine Connection tragen), source_system (Default immoware24), external_id, external_id_hash, external_parent_id, external_updated_at, first_synced_at, last_synced_at (statt first_seen_at, last_seen_at), checksum (NULL bis zum ersten Sync), sync_version, identity_confidence, missing_since, stale_since, deletion_reason, last_payload_id, timestamps, deleted_at.
+3. Unique auf Spiegeltabellen ist (organization_id, source_system, external_id_hash), nicht (connection_id, external_id_hash). Grund: Kontakte und Verträge entstehen sowohl aus DAV-Connections als auch aus Importdateien ohne Connection; ein Datensatz je Mandant, Quellsystem und externer Kennung ist die Integritätsgrenze. Tabellen ohne organization_id nutzen (connection_id, source_system, external_id_hash).
+4. Generierte Spalten (contact_merges.is_active, external_payloads.dedup_hash, conflicts.open_key) sind nicht als GENERATED ALWAYS umgesetzt, sondern Anwendungslogik (Scopes und Services); SQLite und MariaDB verhalten sich damit gleich. Duplikatsperre für Importdateien: Prüfung über content_hash im Import-Service.
+5. Trigger: umgesetzt sind ausschließlich die Trigger aus docs/architecture/03-mariadb-triggers.sql (Migration 2026_09_12_130000, nur MariaDB/MySQL): audit_logs ohne UPDATE und DELETE; write_operations mit put_attempts <= 1, ohne Verringerung, ohne Rückweg von sent, unknown oder verified auf pending oder prechecked, nur operation webdav_create. Alle übrigen im Entwurf genannten Trigger (purpose-Kopplung an technische Nutzer, Vier-Augen-Prüfung write_enabled, capabilities.enabled gegen evidence_status, contact_merges nach contacts.merged_into_id) sind Anwendungslogik ohne Datenbanksperre.
+6. immoware_connections.connector_type ist VARCHAR(32) mit den Werten des Codes (ConnectionsController::CONNECTOR_TYPES): webdav_documents (WebDAV Dokumente, lesend), webdav_inbox (WebDAV Posteingang, Schreibpfad create-only, purpose write), carddav_contacts, caldav_calendar, file_import (CSV, DATEV, CAMT.053; ersetzt csv_export, datev_export, bank_file) und rest_api_slot (Platzhalter WAITING_FOR_VENDOR_ACCESS, ohne Endpunkte). Die Zuordnung zum Adapter erfolgt über den Präfix (ConnectorType::fromConnectorType): webdav* zu webdav, carddav* zu carddav, caldav* zu caldav, file_import/csv*/datev*/camt* zu file_import, rest_api* zu rest_api_slot.
+7. paired_read_connection_id: Pflicht bei purpose = write (Prüfung im Admin-Formular ConnectionRequest: Pflichtfeld bei purpose write, nur Lese-Connections vom Typ webdav_documents des eigenen Mandanten, nicht die Connection selbst; zur Laufzeit im PosteingangUploadService mit denialReason paired_read_connection_missing, kein Rückfall auf die Schreib-Connection; nicht als Trigger. Abschlusslauf 12.09.2026). Bedeutung: die Lese-Connection (webdav_documents) desselben Mandanten, in deren Spiegel (documents) ein verifizierter Upload als Zeile mit origin hub_upload und write_operation_id angelegt wird, damit der nächste Posteingang-Scan dieselbe Zeile aktualisiert statt ein Duplikat anzulegen (Regel in Abschnitt C, documents). Fehlt die Kopplung, wird der Upload verifiziert, aber keine documents-Zeile angelegt (Warnung im Log); Uploads pausieren, wenn die gekoppelte Lese-Connection degraded oder im Breaker ist. Die Schreib-Connection (webdav_inbox) trägt selbst nie documents-Zeilen.
+8. write_operations.status verwendet die Werte von App\Core\Enums\WriteOperationStatus (pending, prechecked, sent, unknown, verified, failed, rejected); capabilities.capability_key die fachlichen Schlüssel aus App\Modules\Connector\Enums\CapabilityKey (05-write-capabilities.md Abschnitt 2.2). users.role hat sechs Werte (owner, administrator, developer, operator, read_only, api_client; 08-security.md Abschnitt 4).
+9. Spaltentypen: JSON-Spalten als json() (in SQLite TEXT), Zeitstempel als timestamp(6) bzw. timestamp, Beträge BIGINT in Cent plus currency CHAR(3), ENUMs als VARCHAR mit Prüfung in der Anwendung (Enum-Casts).
+10. Mark-and-Sweep aus CSV-Vollexporten (Änderungsvermerk 12.09.2026, Migration 2026_09_12_120100): Spiegeltabellen mit CSV-Sweep tragen zusätzlich missing_count SMALLINT UNSIGNED NOT NULL DEFAULT 0 (Zähler aufeinanderfolgender Vollexporte ohne den Datensatz). Soft Delete erst bei zwei aufeinanderfolgenden Fehlen, nur innerhalb gleicher source_system, gleicher connection_id und gleichen Exporttyps sowie nur für im Lauf gesehene Objekte; ein Treffer setzt den Zähler zurück. Die Schutzgrenze (Anteil fehlender Datensätze) bleibt.
+11. open_items sind kein Snapshot je (external_id, as_of_date), sondern eine Zeile je offenem Posten mit dem jüngsten Stichtag (Unique im Code: organization_id, source_system, external_id_hash wie bei allen Spiegeltabellen; as_of_date ist der Stichtag des letzten Exports). Nur ein Vollexport setzt settled_at für nicht enthaltene Posten, und nur für Posten derselben Quelle und Connection sowie der im Lauf gesehenen Objekte; Teilexporte erledigen nichts (Änderungsvermerk 12.09.2026, Bereich Imports).
+12. webhook_deliveries.queued_at DATETIME NULL (Migration 2026_09_12_120100): Zeitpunkt der letzten Einreihung eines DeliverWebhookJob; gesetzt bei Dispatch, Redeliver und Queue-Retry, geleert bei Ausführung. hub:webhooks:redeliver reiht nur Zustellungen mit status failed, fälligem next_attempt_at und ohne offene Einreihung erneut ein (Schutz gegen Doppelzustellung).
 
 ## A. Mandant, Verbindung, Fähigkeiten
 
@@ -51,16 +68,16 @@ Begründung: Das Freigabe-Passwort gilt je Nutzer, nicht je Freigabe. Rotation �
 | id | BINARY(16) PK | |
 | organization_id | BINARY(16) FK NOT NULL | |
 | name | VARCHAR(120) NOT NULL | |
-| connector_type | ENUM('webdav_documents','carddav_contacts','caldav_calendar','csv_export','datev_export','bank_file') NOT NULL | |
+| connector_type | VARCHAR(32) NOT NULL: webdav_documents, webdav_inbox, carddav_contacts, caldav_calendar, file_import, rest_api_slot | Werte des Codes (Abgleich 12.09.2026 Punkt 6); csv_export, datev_export, bank_file sind in file_import zusammengefasst |
 | base_url_encrypted | TEXT NOT NULL | Freigabe-Link aus dem Konfigurationsportal, verschlüsselt (Pfadschema nicht öffentlich belegt, VERMUTET) |
-| base_url_hash | CHAR(64) NOT NULL | HMAC-SHA256 mit Pepper |
+| base_url_hash | CHAR(64) NOT NULL | HMAC-SHA256 mit Pepper (App\Core\Support\HashedIdentifier, abgeleitet im saving-Hook des Modells; ebenso bank_accounts.iban_hash) |
 | auth_scheme | ENUM('unknown','basic','digest') NOT NULL DEFAULT 'unknown' | per Probe, nicht belegt |
 | server_fingerprint | CHAR(64) NULL | Hash aus DAV-Header, Report-Set, Server-Header, Auth |
 | probe_result | JSON NULL | etag_stable, sync_token, ctag, if_none_match, folders |
 | last_probe_at | DATETIME(6) NULL | |
 | technical_user_id | BINARY(16) FK immoware_technical_users NOT NULL | Zugangsdaten liegen am technischen Nutzer, nicht an der Connection |
 | purpose | ENUM('read','write') NOT NULL DEFAULT 'read' | getrennte Nutzer |
-| paired_read_connection_id | BINARY(16) FK immoware_connections NULL | Pflicht bei purpose = write: die Lese-Connection, in deren Spiegel (documents) Uploads geführt werden |
+| paired_read_connection_id | BIGINT FK immoware_connections NULL | Pflicht bei purpose = write (Anwendungsprüfung): die Lese-Connection webdav_documents, in deren Spiegel (documents) verifizierte Uploads geführt werden; Semantik Abgleich 12.09.2026 Punkt 7 |
 | write_enabled | TINYINT(1) NOT NULL DEFAULT 0 | |
 | write_enabled_by | BINARY(16) NULL FK users | erste Person, Rolle admin |
 | write_confirmed_by | BINARY(16) NULL FK users | zweite Person, Rolle release |
@@ -80,8 +97,8 @@ Begründung: Das Freigabe-Passwort gilt je Nutzer, nicht je Freigabe. Rotation �
 | last_health_ok | TINYINT(1) NULL | |
 | last_health_result | JSON NULL | |
 Unique: (organization_id, name), (base_url_hash, technical_user_id). Index: (connector_type, status), (technical_user_id)
-Check (Trigger): purpose der Connection = purpose des technischen Nutzers; paired_read_connection_id NOT NULL, wenn purpose = write.
-Check (Anwendung und Trigger): write_enabled = 1 nur wenn write_enabled_by (Rolle admin), write_confirmed_by (Rolle release), write_approval_document_id gesetzt und write_enabled_by <> write_confirmed_by. Rollenmodell mit genau diesen vier Werten von users.role ist verbindlich (08-security.md Abschnitt 4).
+Check (Anwendung, kein Trigger, Abgleich Punkt 5): purpose der Connection = purpose des technischen Nutzers; paired_read_connection_id NOT NULL, wenn purpose = write.
+Check (Anwendung, kein Trigger): write_enabled = 1 nur wenn write_enabled_by (Rolle administrator), write_confirmed_by (Rolle owner), write_approval_document_id gesetzt und write_enabled_by <> write_confirmed_by. Rollenmodell mit den sechs Werten von users.role gemäß 08-security.md Abschnitt 4 (Änderungsvermerk 12.09.2026).
 
 ### capabilities
 | Spalte | Typ | Hinweis |
@@ -97,7 +114,7 @@ Check (Anwendung und Trigger): write_enabled = 1 nur wenn write_enabled_by (Roll
 | tested_by | BINARY(16) NULL FK users | |
 | test_protocol | TEXT NULL | |
 Unique: (connection_id, capability_key)
-Trigger BEFORE UPDATE: enabled = 1 nur wenn evidence_status IN ('VERIFIZIERT','DOKUMENTIERT') AND tested_at IS NOT NULL AND hard_locked = 0, sonst SIGNAL.
+Prüfung (Anwendung, CapabilityRegistry; kein Trigger, Abgleich Punkt 5): enabled = 1 nur wenn evidence_status IN ('VERIFIZIERT','DOKUMENTIERT') AND tested_at IS NOT NULL AND hard_locked = 0.
 
 Initialbelegung (Stand 11.09.2026): webdav.list, webdav.read, webdav.create = VERIFIZIERT; carddav.read, caldav.read = VERIFIZIERT für Existenz, Lesefähigkeit zu verifizieren am eigenen Mandanten; webdav.overwrite, webdav.delete, webdav.move = VERIFIZIERT als serverseitig möglich, hard_locked; carddav.write, caldav.write = VERMUTET, hard_locked; csv.import.*, datev.import, camt.import = DOKUMENTIERT (Dateiformat je nach Sichtung).
 
@@ -201,9 +218,9 @@ Zweck: normalisierte Nachschlagetabelle für die Filter email und phone auf /api
 | reason | TEXT NULL | |
 | undone_by | BINARY(16) FK users NULL | |
 | undone_at | DATETIME(6) NULL | |
-| is_active | TINYINT(1) GENERATED ALWAYS AS (IF(undone_at IS NULL, 1, NULL)) STORED | NULL bei rückgängig gemachtem Merge |
+| is_active | TINYINT(1), Anwendungslogik statt generierter Spalte (Abgleich Punkt 4) | NULL bei rückgängig gemachtem Merge |
 Unique: (source_contact_id, is_active) erzwingt genau einen aktiven Merge je Quellkontakt (NULL-Werte in Unique-Indizes gelten in InnoDB als verschieden, deshalb die generierte Spalte). Index: (target_contact_id)
-Trigger AFTER INSERT/UPDATE: contacts.merged_into_id des Quellkontakts wird auf target_contact_id bzw. NULL gesetzt, damit beide Tabellen nicht auseinanderlaufen.
+Anwendungslogik (kein Trigger, Abgleich Punkt 5): contacts.merged_into_id des Quellkontakts wird in derselben Transaktion auf target_contact_id bzw. NULL gesetzt, damit beide Tabellen nicht auseinanderlaufen.
 
 ### companies
 | Spalte | Typ | Hinweis |
@@ -331,7 +348,7 @@ Hinweis: Welche Ordner der DAV-Server tatsächlich exponiert (mindestens Postein
 | write_operation_id | BINARY(16) FK NULL | bei hub_upload |
 | H | external_id = path | |
 Unique: (connection_id, path_hash).
-Regel gegen Duplikate zwischen Lese- und Schreib-Connection: documents-Zeilen existieren ausschließlich auf Connections mit purpose = read. Ein erfolgreicher Upload (write_operations.status = succeeded) legt seine documents-Zeile mit connection_id = paired_read_connection_id der Schreib-Connection an (origin = hub_upload, write_operation_id gesetzt, path relativ zur Lese-Freigabe). Findet der nächste Posteingang-Scan der Lese-Connection dieselbe (connection_id, path_hash), aktualisiert der Reconciler diese Zeile (Metadaten, remote_etag) statt eine zweite anzulegen; origin und write_operation_id bleiben erhalten, es entsteht kein document.created, sondern höchstens document.updated. Findet der Scan eine Datei, deren (content_hash oder target_path_hash) zu einer write_operation in status verifying oder unknown passt, wird diese Operation über den Scan abgeschlossen. Voraussetzung ist, dass Lese- und Schreibfreigabe denselben Pfadraum abbilden; ist die Schreibfreigabe auf den Posteingang beschränkt, wird der Pfad über allowed_write_prefix auf die Lese-Freigabe abgebildet (Abbildung in Phase 0 zu verifizieren, sonst degraded). Index: (content_hash), (connection_id, folder_id), (remote_last_modified), (missing_since), (property_id), (unit_id), (contact_id), (case_id)
+Regel gegen Duplikate zwischen Lese- und Schreib-Connection: documents-Zeilen existieren ausschließlich auf Connections mit purpose = read. Ein erfolgreicher Upload (write_operations.status = verified, Konzeptname succeeded) legt seine documents-Zeile mit connection_id = paired_read_connection_id der Schreib-Connection an (origin = hub_upload, write_operation_id gesetzt, path relativ zur Lese-Freigabe). Findet der nächste Posteingang-Scan der Lese-Connection dieselbe (connection_id, path_hash), aktualisiert der Reconciler diese Zeile (Metadaten, remote_etag) statt eine zweite anzulegen; origin und write_operation_id bleiben erhalten, es entsteht kein document.created, sondern höchstens document.updated. Findet der Scan eine Datei, deren (content_hash oder target_path_hash) zu einer write_operation in status sent oder unknown passt (Konzeptnamen verifying, unknown), wird diese Operation über den Scan abgeschlossen. Voraussetzung ist, dass Lese- und Schreibfreigabe denselben Pfadraum abbilden; ist die Schreibfreigabe auf den Posteingang beschränkt, wird der Pfad über allowed_write_prefix auf die Lese-Freigabe abgebildet (Abbildung in Phase 0 zu verifizieren, sonst degraded). Index: (content_hash), (connection_id, folder_id), (remote_last_modified), (missing_since), (property_id), (unit_id), (contact_id), (case_id)
 Partitionierung: keine, Zielgröße Millionen Zeilen ist mit den Indizes tragbar.
 
 ## D. Vorgänge und Buchhaltung (lesend)
@@ -408,7 +425,7 @@ Partitionierung: RANGE nach YEAR(booking_date) ab 100 Mio. Zeilen vorgesehen, ni
 | currency | CHAR(3) NOT NULL DEFAULT 'EUR' | |
 | as_of_date | DATE NOT NULL | Stichtag des Exports |
 | H | | |
-Unique: (connection_id, external_id_hash, as_of_date). Index: (property_id, as_of_date), (contact_id, due_date)
+Unique im Entwurf: (connection_id, external_id_hash, as_of_date); im Code (organization_id, source_system, external_id_hash), eine Zeile je Posten mit jüngstem Stichtag, siehe Abgleich mit dem Code Nr. 11 (Änderungsvermerk 12.09.2026). Index: (property_id, as_of_date), (contact_id, due_date)
 
 ## E. Synchronisation, Archiv, Nachvollziehbarkeit
 
@@ -447,7 +464,7 @@ Unique: (source_system, connection_id, entity_type, external_id_hash). Index: (e
 | received_at | DATETIME(6) NOT NULL | |
 | contains_personal_data | TINYINT(1) NOT NULL DEFAULT 0 | |
 | pseudonymized_at | DATETIME(6) NULL | Inhalt gelöscht, Hash bleibt |
-| dedup_hash | CHAR(64) GENERATED ALWAYS AS (IF(payload_type IN ('csv_file','datev_file','camt_file') AND pseudonymized_at IS NULL, content_hash, HEX(id))) STORED | Duplikatsperre nur für Importdateien |
+| dedup_hash | CHAR(64), Anwendungslogik statt generierter Spalte (Abgleich Punkt 4) | Duplikatsperre nur für Importdateien über content_hash |
 Unique: (connection_id, payload_type, dedup_hash). Byteidentische PROPFIND-, OPTIONS-, Probe- und vCard-Antworten werden je Lauf neu archiviert, damit sync_run_id und last_payload_id auf den aktuellen Lauf zeigen. Für Importdateien gilt die Duplikatsperre nur, solange der Altdatensatz nicht pseudonymisiert ist; nach Pseudonymisierung darf eine identische Datei erneut aufgenommen werden. Index: (external_id_hash, received_at), (sync_run_id), (received_at), (contains_personal_data, pseudonymized_at)
 Partitionierung: RANGE COLUMNS(received_at) monatlich.
 
@@ -547,7 +564,7 @@ Hinweis: Es gibt keine Vorbelegung. Spaltenformate der Immoware24-Exporte sind N
 | occurrences | INT UNSIGNED NOT NULL DEFAULT 1 | Anzahl der Läufe, die denselben offenen Konflikt erneut festgestellt haben |
 | last_seen_run_id | BINARY(16) FK NULL | letzter Lauf, der den Konflikt erneut festgestellt hat |
 | last_seen_at | DATETIME(6) NULL | |
-| open_key | TINYINT(1) GENERATED ALWAYS AS (IF(status IN ('open','in_progress'), 1, NULL)) STORED | NULL bei abgeschlossenen Konflikten |
+| open_key | TINYINT(1), Anwendungslogik statt generierter Spalte (Abgleich Punkt 4) | NULL bei abgeschlossenen Konflikten |
 Unique: (entity_type, entity_id, conflict_type, open_key) erzwingt höchstens einen offenen Konflikt je Datensatz und Typ. Index: (status, created_at), (entity_type, entity_id), (conflict_type, status), (assigned_to, status)
 Regel: Stellt ein Lauf einen Konflikt fest, für den bereits ein offener Eintrag mit gleichem (entity_type, entity_id, conflict_type) existiert, wird dieser aktualisiert (occurrences + 1, last_seen_run_id, last_seen_at, remote_payload_id auf die aktuelle Nutzlast), es wird kein neuer Eintrag angelegt. proposed_change ist davon ausgenommen (je Vorschlag ein Eintrag, entity_id plus field im proposed_change_json).
 
@@ -574,14 +591,14 @@ Regel: Stellt ein Lauf einen Konflikt fest, für den bereits ein offener Eintrag
 | verify_result | JSON NULL | length, hash_match |
 | precheck_attempts | TINYINT UNSIGNED NOT NULL DEFAULT 0 | |
 | verify_attempts | TINYINT UNSIGNED NOT NULL DEFAULT 0 | |
-| put_attempts | TINYINT UNSIGNED NOT NULL DEFAULT 0 | maximal 1, Trigger prüft |
+| put_attempts | TINYINT UNSIGNED NOT NULL DEFAULT 0 | maximal 1, Trigger (MariaDB, 03-mariadb-triggers.sql) und WriteOperation::saving prüfen |
 | requested_by | BINARY(16) FK users NOT NULL | |
 | requested_via | ENUM('ui','api_key','system') NOT NULL | |
 | sent_at | DATETIME(6) NULL | |
 | verified_at | DATETIME(6) NULL | |
 | failed_at | DATETIME(6) NULL | |
 Unique: (idempotency_key). Index: (connection_id, status), (target_path_hash), (status, sent_at), (connection_id, content_hash) zur Duplikatswarnung
-Trigger BEFORE UPDATE: put_attempts darf 1 nicht überschreiten; Wechsel von sent oder unknown zurück auf queued oder precheck ist verboten.
+Trigger BEFORE INSERT und BEFORE UPDATE (MariaDB/MySQL, umgesetzt): put_attempts darf 1 nicht überschreiten und nicht verringert werden; Wechsel von sent, unknown oder verified zurück auf pending oder prechecked ist verboten; operation nur webdav_create. Statuswerte gemäß WriteOperationStatus (Abgleich Punkt 8).
 
 ### dlq_items
 | Spalte | Typ | Hinweis |
@@ -687,7 +704,7 @@ Unique: (endpoint_id, outbox_id). Index: (status, next_attempt_at)
 | prev_hash | CHAR(64) NOT NULL | |
 | row_hash | CHAR(64) NOT NULL | SHA-256(prev_hash, alle Felder) |
 Index: (entity_type, entity_id), (actor_type, actor_id, occurred_at), (occurred_at), (connection_id, occurred_at)
-Rechte: Anwendungs-DB-Nutzer hat INSERT und SELECT, kein UPDATE, kein DELETE. Trigger BEFORE UPDATE und BEFORE DELETE mit SIGNAL.
+Rechte: Anwendungs-DB-Nutzer hat INSERT und SELECT, kein UPDATE, kein DELETE. Trigger BEFORE UPDATE und BEFORE DELETE mit SIGNAL (MariaDB/MySQL, umgesetzt in Migration 2026_09_12_130000). Unique (prev_hash) gegen Verzweigung der Kette.
 
 ### audit_anchors
 | Spalte | Typ | Hinweis |

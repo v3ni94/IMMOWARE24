@@ -36,3 +36,9 @@ ScheduleFacade::command('hub:write:resume')
     ->withoutOverlapping()
     ->onOneServer()
     ->description('hub:write resume sent/unknown via PROPFIND');
+
+// 03-monitoring.md Abschnitt 5: Lebenszeichen für die Container-Healthchecks (Scheduler direkt, Worker über Queue high).
+ScheduleFacade::command('hub:worker:heartbeat')
+    ->everyMinute()
+    ->onOneServer()
+    ->description('hub heartbeat scheduler/worker');

@@ -14,6 +14,7 @@ use App\Modules\Sync\Jobs\RunSyncJob;
 use App\Modules\Sync\Models\SyncRun;
 use App\Modules\Sync\Models\SyncState;
 use App\Modules\Sync\Services\BootstrapService;
+use App\Modules\Sync\Services\SyncStateService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -52,6 +53,8 @@ final class DavSyncTokenJobTest extends TestCase
             'base_url_hash' => hash('sha256', $this->server->url()),
             'status' => 'active',
             'probe_result' => ['sync_token_supported' => true],
+            'rate_limit_rps' => 50,
+            'last_health_ok' => true,
         ]);
         config()->set('hub.sync.chunks.max_per_run', 3);
     }
@@ -86,7 +89,7 @@ final class DavSyncTokenJobTest extends TestCase
         $this->assertSame(SyncStatus::Succeeded, $run->getAttribute('status'));
         $this->assertSame(1, (int) $run->getAttribute('chunks'));
 
-        $entityState = $this->app->make(\App\Modules\Sync\Services\SyncStateService::class)->find($connectionId, SyncEntity::Contact->value);
+        $entityState = $this->app->make(SyncStateService::class)->find($connectionId, SyncEntity::Contact->value);
         $this->assertNotNull($entityState);
         $this->assertNotNull($entityState->getAttribute('last_success_at'), 'commitSuccess muss erreicht werden');
         $this->assertNull($entityState->getAttribute('stale_since'));

@@ -27,8 +27,10 @@ use Illuminate\Support\Facades\Route;
  * Prefix /admin, Namensraum admin. und der Middleware-Gruppe admin (web, auth, admin.access, 2fa)
  * umschlossen. Weitere Admin-Seiten registrieren hier ihre Routen als admin.<bereich>.<aktion>.
  * Rechte je Aktion prüfen die Controller über requirePermission() oder Route::can('<recht>').
- * Sicherheitskritische Aktionen (API-Key anlegen, Rolle ändern, Connection-Status, Webhook anlegen) tragen
- * zusätzlich 2fa.fresh: TOTP-Bestätigung höchstens hub.security.totp.fresh_minutes alt (08-security.md 3.1).
+ * Sicherheitskritische Aktionen (API-Key anlegen, Nutzer ändern inkl. Rolle und Passwort, 2FA zurücksetzen,
+ * Webhook anlegen, Connection ändern, Connection-Status inkl. degraded aufheben, Schreib-Flags mit Freigabe anzeigen)
+ * tragen zusätzlich 2fa.fresh: erneute Bestätigung per Passwort oder Code höchstens hub.security.totp.fresh_minutes
+ * alt (08-security.md 3.1, Änderungsvermerk 12.09.2026).
  */
 Route::get('/', DashboardController::class)->name('dashboard');
 
@@ -71,7 +73,7 @@ Route::prefix('users')->name('users.')->group(static function (): void {
     Route::post('/', [UsersController::class, 'store'])->name('store');
     Route::get('{user}/edit', [UsersController::class, 'edit'])->whereNumber('user')->name('edit');
     Route::put('{user}', [UsersController::class, 'update'])->whereNumber('user')->middleware('2fa.fresh')->name('update');
-    Route::post('{user}/reset-two-factor', [UsersController::class, 'resetTwoFactor'])->whereNumber('user')->name('reset-two-factor');
+    Route::post('{user}/reset-two-factor', [UsersController::class, 'resetTwoFactor'])->whereNumber('user')->middleware('2fa.fresh')->name('reset-two-factor');
     Route::post('{user}/unlock', [UsersController::class, 'unlock'])->whereNumber('user')->name('unlock');
 });
 
@@ -94,7 +96,7 @@ Route::prefix('export')->name('export.')->group(static function (): void {
     Route::get('{export}/download', [ExportController::class, 'download'])->whereNumber('export')->name('download');
 });
 
-Route::get('system', [SystemController::class, 'index'])->name('system.index');
+Route::get('system', [SystemController::class, 'index'])->middleware('2fa.fresh')->name('system.index');
 
 foreach (RecordsController::ENTITIES as $entity => $model) {
     Route::get('records/'.$entity.'/{id}', [RecordsController::class, 'show'])->whereNumber('id')->defaults('entity', $entity)->name('records.'.$entity.'.show');
@@ -107,9 +109,10 @@ Route::prefix('connections')->name('connections.')->group(function (): void {
     Route::get('/', [ConnectionsController::class, 'index'])->name('index');
     Route::get('/create', [ConnectionsController::class, 'create'])->name('create');
     Route::post('/', [ConnectionsController::class, 'store'])->name('store');
-    Route::get('/{id}', [ConnectionsController::class, 'show'])->whereNumber('id')->name('show');
+    // Detailseite zeigt write_enabled samt Freigabe (Vier-Augen-Prinzip): erneute Bestätigung erforderlich.
+    Route::get('/{id}', [ConnectionsController::class, 'show'])->whereNumber('id')->middleware('2fa.fresh')->name('show');
     Route::get('/{id}/edit', [ConnectionsController::class, 'edit'])->whereNumber('id')->name('edit');
-    Route::put('/{id}', [ConnectionsController::class, 'update'])->whereNumber('id')->name('update');
+    Route::put('/{id}', [ConnectionsController::class, 'update'])->whereNumber('id')->middleware('2fa.fresh')->name('update');
     Route::post('/{id}/probe', [ConnectionsController::class, 'probe'])->whereNumber('id')->name('probe');
     Route::post('/{id}/status', [ConnectionsController::class, 'status'])->whereNumber('id')->middleware('2fa.fresh')->name('status');
 });

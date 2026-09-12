@@ -7,33 +7,69 @@ namespace App\Modules\Api\Http\Query;
 use App\Modules\Api\Exceptions\ApiProblemException;
 use App\Modules\Api\Support\ResourceDefinition;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Pagination\CursorPaginator;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\Cursor;
 
 /**
  * Wendet Filter (property_id, unit_id, contact_id, updated_since, external_id, status, q und
- * ressourcenspezifische Filter), Sortierung (?sort=-updated_at) und Pagination (page, per_page, max 500) an.
- * Nie Model::all(), immer paginate().
+ * ressourcenspezifische Filter), Sortierung (?sort=-updated_at) und Pagination an: Offset (page, per_page,
+ * max 500) oder Cursor (?cursor=, opaque Base64url-JSON aus Sortierschlüssel und id, 09 Abschnitt 2.2).
+ * Nie Model::all(), immer paginate() oder cursorPaginate().
  */
 final class ListQuery
 {
     /** @var array<int, string> */
     public const array GLOBAL_FILTERS = ['property_id', 'unit_id', 'contact_id', 'updated_since', 'external_id', 'status', 'q', 'include_deleted'];
 
+    public const string CURSOR_PARAMETER = 'cursor';
+
     /**
      * @param  Builder<Model>  $query
-     * @return LengthAwarePaginator<int, Model>
+     * @return LengthAwarePaginator<int, Model>|CursorPaginator<int, Model>
      */
-    public function apply(Builder $query, Request $request, ResourceDefinition $definition): LengthAwarePaginator
+    public function apply(Builder $query, Request $request, ResourceDefinition $definition): LengthAwarePaginator|CursorPaginator
     {
         $this->applyFilters($query, $request, $definition);
         $this->applySort($query, $request, $definition);
 
+        if ($this->wantsCursor($request)) {
+            [, $perPage] = $this->pagination($request);
+
+            return $query->cursorPaginate($perPage, ['*'], self::CURSOR_PARAMETER, $this->cursor($request));
+        }
+
         [$page, $perPage] = $this->pagination($request);
 
         return $query->paginate($perPage, ['*'], 'page', $page);
+    }
+
+    /**
+     * Cursor-Modus, sobald der Parameter cursor vorhanden ist (auch leer: erste Seite im Cursor-Modus).
+     */
+    public function wantsCursor(Request $request): bool
+    {
+        return $request->query->has(self::CURSOR_PARAMETER);
+    }
+
+    private function cursor(Request $request): ?Cursor
+    {
+        $raw = $request->query(self::CURSOR_PARAMETER);
+
+        if (! is_string($raw) || trim($raw) === '') {
+            return null;
+        }
+
+        $cursor = Cursor::fromEncoded($raw);
+
+        if ($cursor === null) {
+            throw ApiProblemException::badRequest('invalid_cursor', 'Der Cursor ist ungültig oder gehört zu einer anderen Sortierung.');
+        }
+
+        return $cursor;
     }
 
     /**

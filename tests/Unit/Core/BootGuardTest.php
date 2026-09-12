@@ -76,4 +76,24 @@ final class BootGuardTest extends TestCase
 
         $this->assertSame(['IMMOWARE_WRITE_WEBDAV_DELETE_ENABLED'], (new BootGuard)->violations($config));
     }
+
+    /**
+     * @return iterable<string, array{bool, string, bool}>
+     */
+    public static function environments(): iterable
+    {
+        yield 'production, Flag false' => [false, 'production', true];
+        yield 'staging, Flag false' => [false, 'staging', true];
+        yield 'production, Flag true' => [true, 'production', true];
+        yield 'testing, Flag false' => [false, 'testing', false];
+        yield 'local, Flag false' => [false, 'local', false];
+        yield 'testing, Flag true' => [true, 'testing', true];
+        yield 'unbekannte Umgebung, Flag false' => [false, 'irgendwas', true];
+    }
+
+    #[DataProvider('environments')]
+    public function test_guard_cannot_be_disabled_outside_testing_and_local(bool $configured, string $environment, bool $expected): void
+    {
+        $this->assertSame($expected, BootGuard::shouldRun($configured, $environment));
+    }
 }

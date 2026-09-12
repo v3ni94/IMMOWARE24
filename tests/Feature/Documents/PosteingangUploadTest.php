@@ -4,26 +4,27 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Documents;
 
+use App\Core\Enums\Role;
 use App\Core\Enums\WriteOperationStatus;
+use App\Core\Exceptions\WriteBlockedException;
 use App\Modules\Connector\Models\ImmowareConnection;
 use App\Modules\Documents\DTO\UploadRequest;
 use App\Modules\Documents\DTO\UploadResult;
+use App\Modules\Documents\Jobs\ExecuteWriteOperationJob;
+use App\Modules\Documents\Jobs\ResolveUnknownWriteOperationJob;
 use App\Modules\Documents\Models\Document;
 use App\Modules\Documents\Services\PosteingangUploadService;
+use App\Modules\Documents\Services\UploadContentStore;
 use App\Modules\Security\Models\AuditLog;
+use App\Modules\Security\Models\User;
 use App\Modules\Sync\Models\WriteOperation;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request as PsrRequest;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
-use App\Core\Enums\Role;
-use App\Modules\Documents\Jobs\ResolveUnknownWriteOperationJob;
-use App\Modules\Documents\Services\UploadContentStore;
-use App\Modules\Security\Models\User;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 final class PosteingangUploadTest extends TestCase
@@ -183,7 +184,8 @@ final class PosteingangUploadTest extends TestCase
 
         $rejected = $service->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-412'));
         $this->assertSame(UploadResult::OUTCOME_REJECTED, $rejected->outcome);
-        $this->assertSame(WriteOperationStatus::Failed, $rejected->status(), 'nach sent ist nur failed zulässig (kein Rücksprung)');
+        $this->assertSame(WriteOperationStatus::Rejected, $rejected->status(), 'HTTP 412: Ziel existiert, PUT hat nicht gewirkt, Status rejected (kein Rücksprung auf pending)');
+        $this->assertSame('precondition_failed', $rejected->operation->getAttribute('precheck_result')['rejected_reason']);
         $this->assertSame(412, $rejected->operation->getAttribute('http_status'));
         $this->assertSame(1, $rejected->operation->getAttribute('put_attempts'));
         $this->assertSame('write_target_exists', $rejected->operation->getAttribute('precheck_result')['conflict']);
@@ -295,7 +297,7 @@ final class PosteingangUploadTest extends TestCase
         try {
             $service->approve($result->operation->fresh() ?? $result->operation, $viewer);
             $this->fail('WriteBlockedException erwartet');
-        } catch (\App\Core\Exceptions\WriteBlockedException) {
+        } catch (WriteBlockedException) {
             Http::assertNothingSent();
         }
 
@@ -385,6 +387,88 @@ final class PosteingangUploadTest extends TestCase
         $resumed = $service->resume($stale);
         $this->assertSame(WriteOperationStatus::Unknown, $resumed->status());
         $this->assertSame(1, $this->countSent('PUT'), 'resume sendet nie ein PUT');
+    }
+
+    public function test_submit_queues_execution_on_write_queue_and_job_puts_once(): void
+    {
+        Queue::fake();
+        $connection = $this->writeConnection();
+        $this->fakeServer($connection);
+        $service = $this->service();
+
+        $result = $service->submit(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-queued'));
+
+        $this->assertSame(UploadResult::OUTCOME_QUEUED, $result->outcome);
+        $this->assertSame(WriteOperationStatus::Pending, $result->status());
+        $this->assertNotSame('', $result->operationUuid());
+        $this->assertSame('inhalt', $this->app->make(UploadContentStore::class)->retrieve($result->operation), 'Inhalt liegt für den Worker im Blob-Speicher');
+        Http::assertNothingSent();
+        Queue::assertPushedOn('write', ExecuteWriteOperationJob::class, fn (ExecuteWriteOperationJob $job): bool => $job->operationId === (int) $result->operation->getKey());
+        $this->assertSame(1, AuditLog::query()->where('action', 'write.dispatched')->count());
+
+        // Worker führt aus: Precheck, genau ein PUT, Verifikation; Blob wird danach freigegeben.
+        $this->app->call([new ExecuteWriteOperationJob((int) $result->operation->getKey()), 'handle']);
+
+        $operation = $result->operation->fresh();
+        $this->assertNotNull($operation);
+        $this->assertSame(WriteOperationStatus::Verified, $operation->getAttribute('status'));
+        $this->assertSame(1, $this->countSent('PUT'));
+        $this->assertNull($this->app->make(UploadContentStore::class)->retrieve($operation));
+
+        // Zweiter Job-Lauf für dieselbe Operation: kein zweites PUT.
+        $this->app->call([new ExecuteWriteOperationJob((int) $operation->getKey()), 'handle']);
+        $this->assertSame(1, $this->countSent('PUT'));
+    }
+
+    public function test_submit_from_api_key_stays_pending_and_worker_never_executes_without_approval(): void
+    {
+        Queue::fake();
+        $connection = $this->writeConnection();
+        $this->fakeServer($connection);
+        $service = $this->service();
+
+        $result = $service->submit(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-api-q', 'application/pdf', null, 'api_key'));
+
+        $this->assertSame(UploadResult::OUTCOME_PENDING_APPROVAL, $result->outcome);
+        Queue::assertNotPushed(ExecuteWriteOperationJob::class);
+
+        // Selbst ein direkt eingeplanter Job führt einen api_key-Antrag ohne approved_by nicht aus.
+        $this->app->call([new ExecuteWriteOperationJob((int) $result->operation->getKey()), 'handle']);
+        Http::assertNothingSent();
+        $this->assertSame(WriteOperationStatus::Pending, $result->operation->fresh()?->getAttribute('status'));
+    }
+
+    public function test_denied_request_whose_content_cannot_be_stored_is_rejected_not_silently_lost(): void
+    {
+        $connection = $this->writeConnection();
+        $this->fakeServer($connection);
+        config()->set('hub.core.write.enabled', false);
+
+        // Blob-Speicher nicht erreichbar (Disk nicht konfiguriert).
+        config()->set('hub.core.write.storage_disk', 'disk-existiert-nicht');
+
+        $result = $this->service()->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-nostore'));
+
+        $this->assertSame(UploadResult::OUTCOME_REJECTED, $result->outcome);
+        $this->assertSame(WriteOperationStatus::Rejected, $result->status());
+        $this->assertSame('content_storage_failed', $result->operation->getAttribute('precheck_result')['rejected_reason']);
+        $this->assertSame('write_disabled_global', $result->operation->getAttribute('precheck_result')['denied_reason']);
+        $this->assertSame(0, WriteOperation::query()->where('status', WriteOperationStatus::Pending->value)->count(), 'keine pending-Leiche ohne Inhalt');
+        Http::assertNothingSent();
+    }
+
+    public function test_write_connection_without_paired_read_connection_is_denied(): void
+    {
+        $connection = $this->writeConnection();
+        $connection->forceFill(['paired_read_connection_id' => null])->save();
+        $this->fakeServer($connection);
+
+        $result = $this->service()->upload(new UploadRequest((int) $connection->getKey(), 'inhalt', 'a.pdf', 'intent-nopair'));
+
+        $this->assertSame(UploadResult::OUTCOME_DENIED, $result->outcome);
+        $this->assertSame('paired_read_connection_missing', $result->operation->getAttribute('precheck_result')['denied_reason']);
+        Http::assertNothingSent();
+        $this->assertSame(0, Document::query()->count(), 'kein Rückfall auf die Schreib-Connection als Spiegel');
     }
 
     private function service(): PosteingangUploadService

@@ -8,6 +8,7 @@ use App\Core\Enums\Role;
 use App\Modules\Admin\Http\Requests\StoreUserRequest;
 use App\Modules\Admin\Http\Requests\UpdateUserRequest;
 use App\Modules\Security\Models\User;
+use App\Modules\Security\Services\SessionManager;
 use App\Modules\Security\Services\TwoFactorService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
@@ -18,11 +19,16 @@ use Illuminate\Support\Collection;
 /**
  * Benutzer: Liste, Anlage und Bearbeitung (Rolle, aktiv/deaktiviert), 2FA-Status, 2FA zurücksetzen mit
  * Bestätigung, Sperre aufheben. Rollenvergabe nach docs/immoware/08-security.md Abschnitt 5: Administrator
- * vergibt nur Operator und Nur Lesen, Owner vergibt alle Rollen; niemand ändert die eigene Rolle.
+ * vergibt nur Operator und Nur Lesen, Owner vergibt alle Rollen; niemand ändert die eigene Rolle. Passwörter fremder
+ * Nutzer setzt nur, wer deren Rolle verwalten darf; danach enden alle Sitzungen des Zielnutzers. Der letzte aktive
+ * Owner einer Organisation kann weder herabgestuft noch deaktiviert werden (Änderungsvermerk 12.09.2026).
  */
 final class UsersController extends AdminController
 {
-    public function __construct(private readonly TwoFactorService $twoFactor) {}
+    public function __construct(
+        private readonly TwoFactorService $twoFactor,
+        private readonly SessionManager $sessions,
+    ) {}
 
     public function index(Request $request): View
     {
@@ -122,6 +128,11 @@ final class UsersController extends AdminController
             $this->assertAssignable($actor, $newRole);
             // Der Zielnutzer muss ebenfalls in der Vergabekompetenz des Akteurs liegen (kein Herabstufen eines Owners durch einen Administrator).
             $this->assertAssignable($actor, $user->role);
+
+            if ($newRole !== Role::Owner) {
+                $this->assertNotLastOwner($user, 'Der letzte aktive Owner der Organisation kann nicht herabgestuft werden.');
+            }
+
             $changes['role'] = $newRole;
         }
 
@@ -134,19 +145,42 @@ final class UsersController extends AdminController
         if ($disable !== $user->isDisabled()) {
             if ($disable) {
                 $this->assertAssignable($actor, $user->role);
+                $this->assertNotLastOwner($user, 'Der letzte aktive Owner der Organisation kann nicht deaktiviert werden.');
             }
 
             $changes['disabled_at'] = $disable ? now()->toImmutable() : null;
         }
 
-        if (isset($data['password']) && $data['password'] !== '') {
+        $passwordChanged = isset($data['password']) && $data['password'] !== '';
+
+        if ($passwordChanged) {
+            if (! $isSelf) {
+                // Kontoübernahme verhindern: Nur wer die Rolle des Zielnutzers verwalten darf, setzt dessen Passwort
+                // (ein Administrator setzt nie das Passwort eines Owners oder Administrators).
+                $this->assertAssignable($actor, $user->role);
+            }
+
             $changes['password'] = (string) $data['password'];
         }
 
         $user->forceFill($changes)->save();
         $user->refresh();
 
-        $after = ['name' => $user->name, 'role' => $user->role->value, 'disabled_at' => $user->disabled_at?->toIso8601String(), 'password_changed' => isset($changes['password'])];
+        $terminatedSessions = 0;
+
+        if ($passwordChanged && ! $isSelf) {
+            // Bestehende Sitzungen des Zielnutzers beenden, damit ein kompromittiertes Konto nicht angemeldet bleibt.
+            $terminatedSessions = $this->sessions->logoutAllSessions($user, $request);
+        }
+
+        $after = [
+            'name' => $user->name,
+            'role' => $user->role->value,
+            'disabled_at' => $user->disabled_at?->toIso8601String(),
+            // Schlüsselname bewusst ohne "password", sonst maskiert der SecretMasker den booleschen Wert.
+            'login_reset' => $passwordChanged,
+            'sessions_terminated' => $terminatedSessions,
+        ];
         $this->audit('users.updated', $user, $before, $after);
 
         return $this->redirectWithStatus('admin.users.index', sprintf('Benutzer %s aktualisiert.', $user->name));
@@ -214,6 +248,26 @@ final class UsersController extends AdminController
     {
         if (! $this->assignableRoles($actor)->contains($role)) {
             abort(403, sprintf('Die Rolle %s darf von Ihrer Rolle nicht vergeben oder verwaltet werden.', $role->label()));
+        }
+    }
+
+    /**
+     * Mindestens ein aktiver Owner je Organisation muss bestehen bleiben (Vier-Augen-Prinzip, degraded aufheben).
+     */
+    private function assertNotLastOwner(User $target, string $message): void
+    {
+        if ($target->role !== Role::Owner) {
+            return;
+        }
+
+        $otherOwners = User::query()
+            ->where('role', Role::Owner->value)
+            ->whereNull('disabled_at')
+            ->whereKeyNot($target->getKey())
+            ->count();
+
+        if ($otherOwners === 0) {
+            abort(403, $message);
         }
     }
 }

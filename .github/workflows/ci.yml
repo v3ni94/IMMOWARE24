@@ -172,9 +172,20 @@ jobs:
           php artisan migrate:rollback --force --no-interaction
           php artisan migrate --force --no-interaction
 
+      - name: Integritaets-Trigger vorhanden (docs/architecture/03-mariadb-triggers.sql)
+        # migrate:fresh oben lief mit HUB_DB_TRIGGERS=true (Standard). Die vier Trigger muessen existieren.
+        run: |
+          count="$(php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); echo Illuminate\Support\Facades\DB::table("information_schema.TRIGGERS")->where("TRIGGER_SCHEMA", "immoware_hub_test")->whereIn("TRIGGER_NAME", ["audit_logs_no_update", "audit_logs_no_delete", "write_operations_guard_insert", "write_operations_guard_update"])->count();')"
+          echo "Trigger: $count"
+          test "$count" = "4"
+
       - name: Tests gegen MariaDB
         # phpunit.xml setzt SQLite ohne force; die Job-Umgebung hat Vorrang. Zur Sicherheit wird die
         # Testkonfiguration zusaetzlich explizit auf MariaDB gedreht (nur im CI-Arbeitsverzeichnis).
+        # HUB_DB_TRIGGERS=false: RefreshDatabase migriert neu; Tests in Security und Admin simulieren
+        # Manipulationen an audit_logs (AuditChainTest, AuditTest), die der Trigger in Produktion abweist.
+        env:
+          HUB_DB_TRIGGERS: "false"
         run: |
           sed -i 's#<env name="DB_CONNECTION" value="sqlite"/>#<env name="DB_CONNECTION" value="mariadb"/>#' phpunit.xml
           sed -i 's#<env name="DB_DATABASE" value=":memory:"/>#<env name="DB_DATABASE" value="immoware_hub_test"/>#' phpunit.xml

@@ -29,7 +29,6 @@ class ImmowareConnectionFactory extends Factory
             'name' => 'WebDAV Dokumente '.fake()->unique()->numerify('###'),
             'connector_type' => 'webdav_documents',
             'base_url' => $baseUrl,
-            'base_url_hash' => hash('sha256', $baseUrl),
             'credentials' => ['username' => 'hub-read', 'password' => 'test-secret'],
             'auth_scheme' => 'unknown',
             'purpose' => 'read',

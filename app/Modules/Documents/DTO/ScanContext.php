@@ -20,5 +20,10 @@ final readonly class ScanContext
         public float $sweepMaxMissingRatio = 0.2,
         public int $sweepMinCountForRatio = 10,
         public int $sweepMaxMissingCount = 500,
+        /**
+         * Health-Check-Ergebnis der Connection vor dem Lauf (sync_runs.health_ok_before). Nur true erlaubt Soft Deletes
+         * (07-sync-strategy.md Abschnitt 4 Punkt 5); null bedeutet unbekannt und zählt als nicht gesund.
+         */
+        public ?bool $healthOk = null,
     ) {}
 }

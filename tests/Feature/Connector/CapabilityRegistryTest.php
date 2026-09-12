@@ -100,6 +100,7 @@ final class CapabilityRegistryTest extends TestCase
         $this->assertNotNull($tested->getAttribute('tested_at'));
 
         $registry->ensureHardLocks($id);
-        $this->assertSame(4, Capability::query()->where('connection_id', $id)->where('hard_locked', true)->count());
+        // documents.overwrite, documents.delete, documents.move, contacts.write, calendar.write
+        $this->assertSame(5, Capability::query()->where('connection_id', $id)->where('hard_locked', true)->count());
     }
 }

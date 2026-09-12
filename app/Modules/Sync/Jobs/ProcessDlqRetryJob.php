@@ -33,6 +33,7 @@ final class ProcessDlqRetryJob implements ShouldQueue
         public readonly ?string $correlationId = null,
     ) {
         $this->onQueue((string) config('hub.sync.queue', 'sync'));
+        $this->timeout = max(60, (int) config('hub.sync.jobs.timeout_seconds', 900));
     }
 
     /**
@@ -40,7 +41,13 @@ final class ProcessDlqRetryJob implements ShouldQueue
      */
     public function middleware(): array
     {
-        return [(new WithoutOverlapping('immoware:dlq:'.$this->dlqItemId))->dontRelease()];
+        // expireAfter: ohne Ablauf bliebe der Lock nach einem harten Worker-Abbruch dauerhaft und jeder weitere Retry
+        // desselben Eintrags würde still verworfen (Änderungsvermerk 12.09.2026).
+        return [
+            (new WithoutOverlapping('immoware:dlq:'.$this->dlqItemId))
+                ->dontRelease()
+                ->expireAfter($this->timeout + 60),
+        ];
     }
 
     public function handle(DlqService $dlq, CorrelationId $correlation): void
@@ -68,5 +75,17 @@ final class ProcessDlqRetryJob implements ShouldQueue
         } catch (Throwable $exception) {
             Log::warning('ProcessDlqRetryJob: Wiederaufnahme gescheitert.', ['dlq_item_id' => $this->dlqItemId, 'error' => $dlq->describe($exception)]);
         }
+    }
+
+    /**
+     * Timeout oder harter Abbruch während des Replays: der Eintrag darf nicht im Status retrying verharren.
+     */
+    public function failed(?Throwable $exception): void
+    {
+        $exception ??= new \RuntimeException('ProcessDlqRetryJob ohne Exception fehlgeschlagen.');
+
+        app(DlqService::class)->markReplayFailed($this->dlqItemId, $exception);
+
+        Log::error('ProcessDlqRetryJob endgültig fehlgeschlagen.', ['dlq_item_id' => $this->dlqItemId, 'error' => $exception->getMessage()]);
     }
 }

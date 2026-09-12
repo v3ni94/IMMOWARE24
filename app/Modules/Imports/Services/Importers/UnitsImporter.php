@@ -69,7 +69,13 @@ final class UnitsImporter extends AbstractCsvImporter
      */
     protected function scopeSweep(Builder $query, ImportContext $context, array $propertyIds): ?Builder
     {
-        return $propertyIds === [] ? null : $query->whereIn('property_id', $propertyIds);
+        if ($propertyIds === []) {
+            return null;
+        }
+
+        $query->whereIn('property_id', $propertyIds);
+
+        return $query;
     }
 
     protected function sweepModel(): string

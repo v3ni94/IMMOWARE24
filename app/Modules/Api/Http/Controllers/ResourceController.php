@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace App\Modules\Api\Http\Controllers;
 
+use App\Modules\Api\Exceptions\ApiProblemException;
 use App\Modules\Api\Http\Query\ListQuery;
 use App\Modules\Api\Http\Resources\ApiResponse;
+use App\Modules\Api\Support\ApiCaller;
+use App\Modules\Api\Support\ResourceDefinition;
 use App\Modules\Api\Support\ResourceRegistry;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -23,6 +26,7 @@ final class ResourceController
         private readonly ResourceRegistry $registry,
         private readonly ListQuery $listQuery,
         private readonly ApiResponse $response,
+        private readonly ApiCaller $caller,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -30,6 +34,7 @@ final class ResourceController
         $resource = $this->resourceName($request);
         $definition = $this->registry->get($resource);
         $query = $this->baseQuery($definition->model, $definition->with);
+        $this->scopeToOrganization($query, $definition, $request);
 
         $paginator = $this->listQuery->apply($query, $request, $definition);
 
@@ -41,6 +46,7 @@ final class ResourceController
         $resource = $this->resourceName($request);
         $definition = $this->registry->get($resource);
         $query = $this->baseQuery($definition->model, $definition->with);
+        $this->scopeToOrganization($query, $definition, $request);
 
         /** @var Model $model */
         $model = $query->whereKey((int) $id)->firstOrFail();
@@ -52,6 +58,37 @@ final class ResourceController
         }
 
         return $this->response->single($model, $definition, $request, $this->listQuery->fields($request));
+    }
+
+    /**
+     * Mandantenscope für Modelle ohne Global Scope organization (z. B. conflicts über die Connection).
+     *
+     * @param  Builder<Model>  $query
+     */
+    private function scopeToOrganization(Builder $query, ResourceDefinition $definition, Request $request): void
+    {
+        if (! $definition->needsOrganizationScope()) {
+            return;
+        }
+
+        $organizationId = $this->caller->organizationId($request);
+
+        if ($organizationId === null) {
+            throw ApiProblemException::forbidden('role_forbidden', 'Kein Mandantenkontext.');
+        }
+
+        $query->where(static function (Builder $inner) use ($definition, $organizationId): void {
+            if ($definition->organizationColumn !== null) {
+                $inner->where($inner->getModel()->qualifyColumn($definition->organizationColumn), $organizationId);
+            }
+
+            if ($definition->organizationVia !== null) {
+                $method = $definition->organizationColumn !== null ? 'orWhereHas' : 'whereHas';
+                $inner->{$method}($definition->organizationVia, static function (Builder $related) use ($organizationId): void {
+                    $related->withoutGlobalScopes()->where($related->getModel()->qualifyColumn('organization_id'), $organizationId);
+                });
+            }
+        });
     }
 
     /**

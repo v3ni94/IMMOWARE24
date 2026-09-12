@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Modules\Contacts\Services;
 
+use App\Modules\Connector\Support\DavResponse;
 use App\Modules\Contacts\Contracts\DavMirrorHandlerInterface;
-use App\Modules\Contacts\Dav\DavResource;
 use App\Modules\Contacts\Mapping\VCardContactMapper;
 use App\Modules\Contacts\VCard\VCardParser;
 
@@ -24,7 +24,7 @@ final class ContactMirrorHandler implements DavMirrorHandlerInterface
         private readonly CollectionStateStore $states,
     ) {}
 
-    public function handleResource(DavResource $resource): array
+    public function handleResource(DavResponse $resource): array
     {
         $cards = $this->parser->parseAll((string) $resource->data);
 
@@ -56,8 +56,8 @@ final class ContactMirrorHandler implements DavMirrorHandlerInterface
         $this->mirror->markMissingByHref($this->connectionId, $href);
     }
 
-    public function sweep(array $seenHrefs): array
+    public function sweep(array $seenHrefs, bool $healthOk = true): array
     {
-        return $this->mirror->sweep($this->connectionId, $seenHrefs, $this->states, $this->collectionPath);
+        return $this->mirror->sweep($this->connectionId, $seenHrefs, $this->states, $this->collectionPath, $healthOk);
     }
 }

@@ -5,13 +5,16 @@ declare(strict_types=1);
 namespace App\Modules\Api\Support;
 
 use App\Modules\Connector\Models\ImmowareConnection;
+use App\Modules\Connector\Support\ConnectorProvenance;
 use App\Modules\Sync\Models\FieldMapping;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 
 /**
  * Herkunftsblock jeder API-Ressource: source_system, external_id, last_synced_at, connector,
- * mapping_version, data_age_seconds, stale. Connector- und Mapping-Auflösung werden je Request gecacht.
+ * mapping_version, data_age_seconds, stale. connector ist der Adaptername des ConnectorManagers
+ * (webdav, carddav, caldav, file_import, rest_api_slot), nicht der rohe connector_type der Connection.
+ * Connector- und Mapping-Auflösung werden je Request gecacht.
  */
 final class Provenance
 {
@@ -63,10 +66,18 @@ final class Provenance
     {
         if (! array_key_exists($connectionId, $this->connectors)) {
             $connection = ImmowareConnection::query()->withoutGlobalScopes()->find($connectionId, ['id', 'connector_type']);
-            $this->connectors[$connectionId] = $connection !== null ? (string) $connection->getAttribute('connector_type') : null;
+            $this->connectors[$connectionId] = $connection !== null ? self::adapterName((string) $connection->getAttribute('connector_type')) : null;
         }
 
         return $this->connectors[$connectionId];
+    }
+
+    /**
+     * Adaptername aus connector_type, eine Quelle für alle Module: ConnectorProvenance (Connector-Modul).
+     */
+    public static function adapterName(string $connectorType): ?string
+    {
+        return ConnectorProvenance::connectorName($connectorType);
     }
 
     private function mappingVersion(string $entityType): ?int

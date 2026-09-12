@@ -1,22 +1,46 @@
-# Immoware Hub, Laravel Scheduler als einmaliger Lauf. Wird minuetlich vom Timer immoware-hub-scheduler.timer gestartet.
-# Ablage: /etc/systemd/system/immoware-hub-scheduler.service
+# Immoware Hub, Laravel Scheduler als Dauerdienst (schedule:work), Betrieb ohne Docker.
+# Ablage:     /etc/systemd/system/immoware-hub-scheduler.service
+# Aktivieren: systemctl enable --now immoware-hub-scheduler.service
+# Pruefen:    systemctl status immoware-hub-scheduler.service
+#
+# Aenderungsvermerk 12.09.2026: Vorher Type=oneshot mit schedule:run, minuetlich per Timer. Die Sync-Kommandos
+# laufen mit runInBackground(); schedule:run endet sofort und systemd beendete mit KillMode=control-group die
+# gerade gestarteten Hintergrundprozesse, schedule:finish lief nie und der withoutOverlapping-Mutex blieb bis zu
+# 24 Stunden gesetzt. schedule:work als Dauerdienst verhaelt sich wie der Scheduler-Container in compose.yaml.
+# Der Timer immoware-hub-scheduler.timer ist entfallen; ein noch installierter Timer ist zu deaktivieren:
+# systemctl disable --now immoware-hub-scheduler.timer
 
 [Unit]
-Description=Immoware Hub Scheduler (schedule:run)
+Description=Immoware Hub Scheduler (schedule:work)
 After=network.target redis-server.service mariadb.service
+Wants=redis-server.service mariadb.service
+PartOf=immoware-hub.target
 
 [Service]
-Type=oneshot
+Type=simple
 User=immoware
 Group=immoware
 WorkingDirectory=/var/www/immoware-hub/current
 EnvironmentFile=-/etc/immoware-hub/worker.env
-ExecStart=/usr/bin/php artisan schedule:run --no-interaction --no-ansi
-TimeoutStartSec=300
+ExecStart=/usr/bin/php artisan schedule:work --no-interaction --no-ansi
+Restart=always
+RestartSec=5
+# Hintergrundprozesse (runInBackground) beim Stopp zu Ende laufen lassen, nur den Hauptprozess signalisieren.
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=60
 Nice=5
 
+# Haertung
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/www/immoware-hub/shared/storage /var/www/immoware-hub/current/bootstrap/cache
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

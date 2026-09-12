@@ -6,28 +6,25 @@ namespace App\Modules\Contacts\Dav;
 
 use App\Core\Exceptions\ConnectorException;
 use App\Core\Exceptions\WriteBlockedException;
+use App\Modules\Connector\Http\HttpClientFactory;
+use App\Modules\Connector\Support\ConnectorContext;
 use App\Modules\Contacts\Contracts\DavTransportInterface;
 use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Support\Facades\Http;
 
 /**
- * Lesender DAV-Transport über die Http-Facade. Das Auth-Verfahren kommt aus connection.auth_scheme
- * (Probe-Ergebnis: basic, digest, unknown), analog zu HttpClientFactory; die Annahme "Basic" ist laut
- * 04-authentication.md nur VERMUTET und darf nicht fest im Code stehen. Jede nicht lesende Methode
- * (PUT, DELETE, MOVE, COPY, PROPPATCH, MKCOL, LOCK, UNLOCK, POST, PATCH) wird vor dem Senden
- * mit WriteBlockedException abgewiesen; CardDAV und CalDAV sind ausschließlich lesend.
+ * Lesender DAV-Transport für CardDAV und CalDAV über die HttpClientFactory des Connector-Moduls
+ * (Änderungsvermerk 12.09.2026): Rate Limit, Circuit Breaker, remote_requests-Protokoll, Timeouts, User-Agent
+ * und Auth-Verfahren (connection.auth_scheme laut Probe: basic, digest, unknown) kommen ausschließlich von dort.
+ * Jede nicht lesende Methode wird vor dem Senden mit WriteBlockedException abgewiesen; zusätzlich sperrt der
+ * Methoden-Guard der Factory für CardDAV- und CalDAV-Kontexte alles außer OPTIONS, PROPFIND, REPORT, GET, HEAD.
  */
 final class HttpDavTransport implements DavTransportInterface
 {
-    public const array READ_METHODS = ['PROPFIND', 'REPORT', 'GET', 'OPTIONS', 'HEAD'];
+    public const array READ_METHODS = HttpClientFactory::DAV_READ_METHODS;
 
     public function __construct(
-        private readonly string $username,
-        #[\SensitiveParameter] private readonly string $password,
-        private readonly string $userAgent = 'ImmowareHub/0.1.0',
-        private readonly int $timeoutSeconds = 60,
-        private readonly int $connectTimeoutSeconds = 10,
-        private readonly string $authScheme = 'unknown',
+        private readonly HttpClientFactory $http,
+        private readonly ConnectorContext $context,
     ) {}
 
     public function request(string $method, string $url, array $headers = [], ?string $body = null): DavHttpResponse
@@ -38,16 +35,8 @@ final class HttpDavTransport implements DavTransportInterface
             throw new WriteBlockedException(sprintf('DAV-Methode %s ist für CardDAV und CalDAV hart gesperrt.', $method), $method);
         }
 
-        $pending = Http::withUserAgent($this->userAgent)
-            ->connectTimeout($this->connectTimeoutSeconds)
-            ->timeout($this->timeoutSeconds)
-            ->withOptions(['allow_redirects' => false, 'http_errors' => false])
-            ->withHeaders($headers);
-
-        // digest laut Probe: Digest-Auth; basic und unknown: Basic-Auth (Standardvermutung, siehe Klassenkommentar).
-        $pending = strtolower($this->authScheme) === 'digest'
-            ? $pending->withDigestAuth($this->username, $this->password)
-            : $pending->withBasicAuth($this->username, $this->password);
+        // Absolute URL: die baseUrl des Kontexts darf nicht erneut vorangestellt werden.
+        $pending = $this->http->for($this->context, 'read')->baseUrl('')->withHeaders($headers);
 
         if ($body !== null) {
             $pending = $pending->withBody($body, 'application/xml; charset=utf-8');

@@ -70,8 +70,13 @@ final class BootstrapAndScheduleTest extends SyncTestCase
         $this->assertTrue($contacts->runInBackground);
         $this->assertStringContainsString('hub:sync:dispatch', $contacts->command);
 
+        // Defaults gemäß 07-sync-strategy.md Abschnitt 1.5: Full Reconcile wöchentlich Samstag 22:00, Dokumente alle 30 Minuten,
+        // Kalender alle 4 Stunden, Health-Check alle 15 Minuten.
         $full = $events->first(fn ($e): bool => $e->description === SyncSchedule::DESCRIPTION_PREFIX.'full all');
-        $this->assertSame('30 2 * * *', $full->expression);
+        $this->assertSame('0 22 * * 6', $full->expression);
+        $this->assertSame('*/30 * * * *', $events->first(fn ($e): bool => $e->description === SyncSchedule::DESCRIPTION_PREFIX.'incremental document')->expression);
+        $this->assertSame('0 */4 * * *', $events->first(fn ($e): bool => $e->description === SyncSchedule::DESCRIPTION_PREFIX.'incremental calendar_event')->expression);
+        $this->assertSame('*/15 * * * *', $events->first(fn ($e): bool => $e->description === SyncSchedule::DESCRIPTION_PREFIX.'stale check')->expression);
     }
 
     public function test_dispatch_for_all_targets_only_matching_active_connections(): void

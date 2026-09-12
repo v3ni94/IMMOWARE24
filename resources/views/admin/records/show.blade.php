@@ -1,7 +1,11 @@
 @extends('layouts.admin', ['title' => $label.' #'.$model->getKey()])
 @php use App\Core\Support\GermanDate; @endphp
 @section('actions')
-    <a class="hub-button hub-button-secondary" href="{{ route('admin.records.'.$entity.'.payload', ['id' => $model->getKey()]) }}">Rohpayload ({{ $payloadCount }})</a>
+    @if ($canViewPayload ?? false)
+        <a class="hub-button hub-button-secondary" href="{{ route('admin.records.'.$entity.'.payload', ['id' => $model->getKey()]) }}">Rohpayload ({{ $payloadCount }})</a>
+    @else
+        <span class="hub-muted" title="Rohnutzlasten sehen nur Owner, Administrator und Developer (Recht payloads.view).">Rohpayload ({{ $payloadCount }}), kein Zugriff</span>
+    @endif
 @endsection
 @section('content')
     @if ($model->getAttribute('deleted_at') !== null)

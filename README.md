@@ -25,7 +25,7 @@ Stand: 12.09.2026. Projektphase: Anwendungscode der Phasen 1 bis 8 sowie 10 bis 
 | Querschnitt | Mock-Immoware-Server (WebDAV, CardDAV, CalDAV, elf Fehlerszenarien), Contract-Tests | vorhanden, `tests/mock-immoware/`, `tests/Contract/`, `hub:mock-immoware:serve` |
 | Querschnitt | Betrieb: Dockerfile, compose.yaml, nginx, supervisord, systemd, Deploy-, Backup- und Restore-Skripte, CI | vorhanden, `deploy/`, `docker/`, `docs/operations/`, nicht gegen einen echten Host geprüft |
 
-Alle Bausteine sind ausschließlich gegen simulierte DAV-Server (`Http::fake()`) und Testdateien geprüft. Kein Baustein wurde bisher am echten Immoware24-Mandanten getestet. Verhalten des DAV-Servers (Auth-Schema, ETag-Stabilität, sync-token, 412 bei If-None-Match) bleibt VERMUTET bis zur Probe in Phase 0. Der Mock-Server unter `tests/mock-immoware/` ist eine Simulation auf Basis belegter Aussagen und ersetzt die Probe nicht. Stand 12.09.2026: `php artisan test` 427 Tests, 3.281 Assertions, 420 bestanden, 7 übersprungen (Contract-Tests gegen externen DAV-Server ohne `CONTRACT_DAV_BASE_URL`), Pint und PHPStan (Level 5) ohne Befund. Details in `docs/immoware/10-test-report.md`, Abschnitt 6.
+**Ungetestet am echten Mandanten (Stand 12.09.2026):** Alle Immoware24-Zugänge (WebDAV, CardDAV, CalDAV, Dateiexporte) sind ausschließlich gegen simulierte DAV-Server (`Http::fake()`, Mock-Server) und Testdateien geprüft. Kein Baustein wurde bisher am echten Immoware24-Mandanten getestet; Phase 0 (Probe) hat nicht begonnen. Der Schreibpfad (create-only PUT in den Posteingang) bleibt gesperrt: `IMMOWARE_WRITE_ENABLED=false`, `IMMOWARE_WRITE_WEBDAV_CREATE_ENABLED=false`, `write_enabled = 0` je Connection, keine Freigabe der Geschäftsführung. Eine Aktivierung vor Abschluss von Phase 0 und der Freigabe nach `docs/immoware/05-write-capabilities.md` Abschnitt 5 ist nicht vorgesehen. Verhalten des DAV-Servers (Auth-Schema, ETag-Stabilität, sync-token, 412 bei If-None-Match) bleibt VERMUTET bis zur Probe in Phase 0. Der Mock-Server unter `tests/mock-immoware/` ist eine Simulation auf Basis belegter Aussagen und ersetzt die Probe nicht. Review 12.09.2026: 85 Findings, 57 bestätigt (5 kritisch, 25 hoch, 27 mittel), Behebung im Fix-Lauf 12.09.2026 (`docs/immoware/10-test-report.md` Abschnitt 7). Stand nach Abschluss des Fix-Laufs 12.09.2026: 554 Tests, 4.223 Assertions, 546 bestanden, 8 übersprungen (Contract-Tests ohne echten DAV-Server, MariaDB-Zweig), Pint und PHPStan (Level 5) ohne Befund. Details in `docs/immoware/10-test-report.md`, Abschnitt 6.
 
 ## Entwicklung
 
@@ -66,12 +66,13 @@ Testlauf und Qualitätssicherung (vor jedem Commit):
 ```
 php artisan test                                            Gesamte Suite, SQLite in-memory
 php artisan test --filter=Documents                         Teilmenge je Modul
-DB_CONNECTION=sqlite DB_DATABASE=:memory: php artisan migrate:fresh --env=testing
-vendor/bin/pint --test                                      Codestil
+cp .env.testing.example .env.testing                        Einmalig, Werte wie phpunit.xml (SQLite in-memory, Cache array, Queue sync)
+php artisan migrate:fresh --env=testing                     Migrationen gegen SQLite prüfen
+vendor/bin/pint --test <pfad>                               Codestil, nur eigene Pfade
 phpstan analyse --no-progress                               Statische Analyse, Level 5
 ```
 
-Hinweis: `migrate:fresh --env=testing` greift ohne die beiden DB-Variablen auf die MariaDB-Verbindung der lokalen `.env` zu. Die Testsuite selbst setzt SQLite in-memory über `phpunit.xml`.
+Hinweis: `migrate:fresh --env=testing` liest `.env.testing`. Ohne diese Datei greift das Kommando auf die MariaDB-Verbindung der lokalen `.env` zu. `.env.testing` gehört nicht in das Repository (nur `.env.testing.example`). Die Testsuite selbst setzt SQLite in-memory über `phpunit.xml`. Die MariaDB-Integritätstrigger (`docs/architecture/03-mariadb-triggers.sql`) entstehen nur auf MariaDB oder MySQL; auf SQLite gilt allein die Anwendungslogik.
 
 Alle Schreib-Flags (`IMMOWARE_WRITE_*`) stehen standardmäßig auf false. Die hart gesperrten Flags (Overwrite, Delete, Move, CardDAV, CalDAV) lassen die Anwendung beim Start mit Exception abbrechen, wenn sie auf true stehen (BootGuard). Der Upload in den Posteingang über `POST /api/v1/documents` antwortet ohne Freigabe mit 403 `application/problem+json`, Code `write_disabled`.
 
@@ -204,7 +205,7 @@ Stand 12.09.2026. Betriebsunterlagen unter `docs/operations/`, Konfigurationen u
 
 | Thema | Datei |
 |---|---|
-| Deployment (Docker Compose oder Host mit nginx, php-fpm, supervisord oder systemd), CI, manueller Deploy-Workflow | `docs/operations/01-deployment.md` |
+| Deployment (Docker Compose oder Host mit nginx, php-fpm, supervisord oder systemd), CI, manueller Deploy-Workflow, `TRUSTED_PROXIES` | `docs/operations/01-deployment.md` |
 | Backup (mariadb-dump, GPG, Retention, Offsite) und Restore, Wiederherstellungstest | `docs/operations/02-backup-restore.md` |
 | Health-Endpunkte, Metriken, Alarme (stale, DLQ, 429, Circuit open) | `docs/operations/03-monitoring.md` |
 | Runbook Störfälle (401, Passwort-Rotation, Ordnerstruktur, Worker, DLQ, Upload) | `docs/operations/04-runbook.md` |
@@ -218,4 +219,4 @@ docker compose run --rm app php artisan migrate --force
 docker compose exec app php artisan hub:doctor
 ```
 
-Prozessrollen: `app` (php-fpm), `web` (nginx, Port 127.0.0.1:8080, TLS terminiert ein vorgelagerter Proxy), `worker` (`queue:work redis --queue=high,default,sync,write,documents,low --max-time=3600 --memory=256`), `scheduler` (`schedule:work`), `mariadb` 11.4, `redis` 7 (appendonly). Migrationen laufen nie automatisch beim Containerstart. Keine Secrets in Repository-Dateien, alle Werte über `.env` oder Secret-Store. GitHub Actions: `ci.yml` (validate, audit, Pint, PHPStan, Tests SQLite und MariaDB), `deploy.yml` nur manuell mit Platzhalter-Secrets.
+Prozessrollen: `app` (php-fpm), `web` (nginx, Port 127.0.0.1:8080, TLS terminiert ein vorgelagerter Proxy), `worker` (`queue:work redis --queue=high,default,sync,write,documents,low --max-time=3600 --memory=256`), `scheduler` (`schedule:work`, auch als systemd-Dauerdienst ohne Docker, kein Timer mehr), `mariadb` 11.4, `redis` 7 (appendonly). Migrationen laufen nie automatisch beim Containerstart. Keine Secrets in Repository-Dateien, alle Werte über `.env` oder Secret-Store. GitHub Actions: `ci.yml` (validate, audit, Pint, PHPStan, Tests SQLite und MariaDB), `deploy.yml` nur manuell mit Platzhalter-Secrets.

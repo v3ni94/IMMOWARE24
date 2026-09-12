@@ -68,7 +68,9 @@ return [
             'driver' => 'redis',
             'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 90),
+            // Muss größer sein als der längste Job-Timeout (Sync-Jobs 900 s, Worker --timeout 1800), sonst liefert Redis einen
+            // laufenden Job erneut aus (doppelter PROPFIND-Lauf, doppelte Zähler). Änderungsvermerk 12.09.2026.
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 3600),
             'block_for' => null,
             'after_commit' => false,
         ],

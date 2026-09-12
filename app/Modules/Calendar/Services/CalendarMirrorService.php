@@ -7,8 +7,8 @@ namespace App\Modules\Calendar\Services;
 use App\Modules\Calendar\Mapping\ICalEventMapper;
 use App\Modules\Calendar\Models\CalendarEvent;
 use App\Modules\Contacts\Services\CollectionStateStore;
+use App\Modules\Contacts\Services\SweepGuard;
 use Carbon\CarbonImmutable;
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
 
 /**
  * Spiegel für calendar_events: Upsert über externe ID, Prüfsumme, Mark-and-Sweep als Soft Delete.
@@ -21,7 +21,7 @@ final class CalendarMirrorService
 
     public const string RESULT_UNCHANGED = 'unchanged';
 
-    public function __construct(private readonly ConfigRepository $config) {}
+    public function __construct(private readonly SweepGuard $guard) {}
 
     /**
      * @param  array<string, mixed>  $local
@@ -81,46 +81,64 @@ final class CalendarMirrorService
     }
 
     /**
+     * Mark-and-Sweep analog ContactMirrorService::sweep(): missing_since beim ersten Fehlen, Soft Delete erst ab
+     * required_misses (Default 2) bei bestätigtem Health-Check, Schutzgrenze über SweepGuard.
+     *
      * @param  array<string, true>  $seenHrefs
-     * @return array{missing: int, deleted: int}
+     * @return array{missing: int, deleted: int, blocked: bool}
      */
-    public function sweep(int $connectionId, array $seenHrefs, CollectionStateStore $states, string $collectionPath): array
+    public function sweep(int $connectionId, array $seenHrefs, CollectionStateStore $states, string $collectionPath, bool $healthOk = true): array
     {
-        $required = max(1, (int) $this->config->get('hub.calendar.sweep.required_misses', 1));
+        $required = $this->guard->requiredMisses('hub.calendar.sweep');
         $now = CarbonImmutable::now();
-        $missing = 0;
-        $deleted = 0;
 
-        $rows = CalendarEvent::query()
+        $base = CalendarEvent::query()
             ->withoutGlobalScope('organization')
             ->where('connection_id', $connectionId)
             ->where('source_system', CalendarEvent::SOURCE_IMMOWARE24)
-            ->whereNotNull('ical_href')
-            ->select(['id', 'ical_href', 'missing_since'])
-            ->lazyById(500);
+            ->whereNotNull('ical_href');
 
-        /** @var CalendarEvent $row */
-        foreach ($rows as $row) {
-            $href = (string) $row->ical_href;
+        $total = (clone $base)->count();
+        $candidates = [];
 
-            if (isset($seenHrefs[$href])) {
-                continue;
+        foreach ((clone $base)->select(['id', 'ical_href', 'missing_since'])->lazyById(500) as $row) {
+            if ($row instanceof CalendarEvent && ! isset($seenHrefs[(string) $row->ical_href])) {
+                $candidates[] = $row;
+            }
+        }
+
+        $missing = count($candidates);
+
+        if ($missing === 0) {
+            return ['missing' => 0, 'deleted' => 0, 'blocked' => false];
+        }
+
+        if ($this->guard->exceeded('hub.calendar.sweep', $missing, $total)) {
+            foreach ($candidates as $row) {
+                CalendarEvent::query()->withoutGlobalScope('organization')->whereKey($row->getKey())->whereNull('missing_since')->update(['missing_since' => $now]);
             }
 
-            $misses = $states->markMissing($connectionId, $collectionPath, $href);
-            $missing++;
+            $this->guard->recordMassMissing($connectionId, 'calendar_event', $collectionPath, $missing, $total);
+
+            return ['missing' => $missing, 'deleted' => 0, 'blocked' => true];
+        }
+
+        $deleted = 0;
+
+        foreach ($candidates as $row) {
+            $misses = $states->markMissing($connectionId, $collectionPath, (string) $row->ical_href, 'calendar_event');
             $update = ['missing_since' => $row->missing_since ?? $now];
 
-            if ($misses >= $required) {
+            if ($misses >= $required && $healthOk) {
                 $update['deleted_at'] = $now;
-                $update['deletion_reason'] = 'missing_remote';
+                $update['deletion_reason'] = 'missing_twice';
                 $deleted++;
             }
 
             CalendarEvent::query()->withoutGlobalScope('organization')->whereKey($row->getKey())->update($update);
         }
 
-        return ['missing' => $missing, 'deleted' => $deleted];
+        return ['missing' => $missing, 'deleted' => $deleted, 'blocked' => false];
     }
 
     public function markMissingByHref(int $connectionId, string $href): void

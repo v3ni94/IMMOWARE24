@@ -26,6 +26,9 @@ final class FakeConnector implements ImmowareConnectorInterface
 
     private ?SyncResult $default = null;
 
+    /** @var (\Closure(SyncRequest, SyncResult): void)|null Hook nach jedem pull(), z. B. um Lock-Verlust zu simulieren. */
+    private ?\Closure $afterPull = null;
+
     public function page(?string $cursor, SyncResult $result): self
     {
         $this->pages[$cursor ?? ''] = $result;
@@ -43,6 +46,13 @@ final class FakeConnector implements ImmowareConnectorInterface
     public function failWith(Throwable $exception): self
     {
         $this->throws = $exception;
+
+        return $this;
+    }
+
+    public function afterPull(\Closure $hook): self
+    {
+        $this->afterPull = $hook;
 
         return $this;
     }
@@ -75,7 +85,13 @@ final class FakeConnector implements ImmowareConnectorInterface
             throw $this->throws;
         }
 
-        return $this->pages[$request->cursor ?? ''] ?? $this->default ?? new SyncResult(processed: 1, created: 1);
+        $result = $this->pages[$request->cursor ?? ''] ?? $this->default ?? new SyncResult(processed: 1, created: 1);
+
+        if ($this->afterPull !== null) {
+            ($this->afterPull)($request, $result);
+        }
+
+        return $result;
     }
 
     public function push(SyncRequest $request): SyncResult

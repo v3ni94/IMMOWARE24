@@ -84,13 +84,16 @@ final class DavPullRunner
 
         $result = $this->loadAndHandle($connectionId, $client, $handler, $request->entityType, $path, $toLoad);
 
+        // Soft Delete nur bei bestätigtem Health-Check der Connection (07 Abschnitt 4 Punkt 5); null zählt als nicht gesund.
         $seen = array_fill_keys(array_keys($remote), true);
-        $swept = $handler->sweep($seen);
+        $swept = $handler->sweep($seen, $connection->getAttribute('last_health_ok') === true);
 
         $strategy = $request->mode === SyncMode::Full ? self::STRATEGY_FULL : ($info->ctag !== null ? self::STRATEGY_CTAG_ETAG : self::STRATEGY_ETAG_ONLY);
         $this->states->commitCollection($state, ['ctag' => $info->ctag, 'sync_token' => $info->syncToken, 'strategy' => $strategy]);
 
-        return $result->merge(new SyncResult(deleted: $swept['deleted'], tokens: ['ctag' => $info->ctag, 'sync_token' => $info->syncToken]));
+        $sweepErrors = $swept['blocked'] ? [['reason' => 'sweep_blocked_mass_missing', 'missing' => $swept['missing']]] : [];
+
+        return $result->merge(new SyncResult(deleted: $swept['deleted'], errors: $sweepErrors, tokens: ['ctag' => $info->ctag, 'sync_token' => $info->syncToken]));
     }
 
     private function runSyncCollection(int $connectionId, AbstractDavClient $client, DavMirrorHandlerInterface $handler, SyncRequest $request, SyncState $state): ?SyncResult

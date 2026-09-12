@@ -27,6 +27,12 @@ final class AuthenticateApiKey
 
     public function handle(Request $request, Closure $next): Response
     {
+        // Feature-Flag HUB_API_KEYS_ENABLED (05-write-capabilities: keine Keys in Phase 1). Ohne Flag ist die
+        // gesamte API-Key-Authentifizierung abgeschaltet, unabhängig von vorhandenen Keys.
+        if (! (bool) config('hub.core.api_keys.enabled', false)) {
+            return ProblemResponse::make(503, 'api_keys_disabled', 'API nicht verfügbar', 'Die API-Key-Authentifizierung ist deaktiviert (HUB_API_KEYS_ENABLED).', [], ['Retry-After' => '3600']);
+        }
+
         $token = $request->bearerToken();
 
         if ($token === null || $token === '') {

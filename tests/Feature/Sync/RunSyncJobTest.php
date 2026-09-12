@@ -7,6 +7,7 @@ namespace Tests\Feature\Sync;
 use App\Core\DTO\SyncResult;
 use App\Core\Enums\SyncMode;
 use App\Core\Enums\SyncStatus;
+use App\Core\Exceptions\ConnectorException;
 use App\Modules\Sync\Enums\SyncEntity;
 use App\Modules\Sync\Jobs\FetchImmowareContactsJob;
 use App\Modules\Sync\Jobs\RunSyncJob;
@@ -15,6 +16,8 @@ use App\Modules\Sync\Models\SyncRun;
 use App\Modules\Sync\Models\SyncState;
 use App\Modules\Sync\Services\SyncMetrics;
 use App\Modules\Sync\Support\SyncLockManager;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 
@@ -170,5 +173,99 @@ final class RunSyncJobTest extends SyncTestCase
         $this->assertStringContainsString('unveränderten Cursor', (string) $run->getAttribute('error_summary'));
         $this->assertSame(1, DlqItem::query()->count());
         $this->assertNull(SyncState::query()->firstOrFail()->getAttribute('last_success_at'));
+    }
+
+    public function test_incremental_run_is_skipped_while_lock_of_same_connection_and_entity_is_held(): void
+    {
+        Queue::fake();
+        $connection = $this->activeConnection();
+        $connectionId = (int) $connection->getKey();
+        $lock = Cache::lock(SyncLockManager::key($connectionId, SyncEntity::Document->value), 600);
+        $this->assertTrue($lock->get());
+
+        // 07-sync-strategy.md Abschnitt 5: der Lock je Connection und Adapter schließt auch Incremental neben Full aus.
+        $this->runJob(new RunSyncJob($connectionId, SyncEntity::Document->value, SyncMode::Incremental));
+
+        $this->assertSame(0, $this->connector->requestCount());
+        $run = SyncRun::query()->firstOrFail();
+        $this->assertSame(SyncStatus::Skipped, $run->getAttribute('status'));
+        $this->assertStringContainsString('Lock', (string) $run->getAttribute('error_summary'));
+
+        // Anderer Adapter derselben Connection ist nicht betroffen.
+        $this->runJob(new RunSyncJob($connectionId, SyncEntity::Contact->value, SyncMode::Incremental));
+        $this->assertSame(1, $this->connector->requestCount());
+    }
+
+    public function test_lock_loss_between_chunks_aborts_run_without_cursor_commit(): void
+    {
+        Queue::fake();
+        config()->set('hub.sync.chunks.max_per_run', 5);
+        $connection = $this->activeConnection();
+        $connectionId = (int) $connection->getKey();
+        $key = SyncLockManager::key($connectionId, SyncEntity::Document->value);
+        $store = Cache::getStore();
+        $this->assertInstanceOf(ArrayStore::class, $store);
+
+        // Nach dem ersten Chunk geht der Lock verloren (TTL abgelaufen) und ein fremder Lauf übernimmt ihn.
+        $this->connector
+            ->page(null, new SyncResult(processed: 1, cursor: 'c1'))
+            ->page('c1', new SyncResult(processed: 1))
+            ->afterPull(function () use ($store, $key): void {
+                unset($store->locks[$key]);
+                $this->assertTrue(Cache::lock($key, 600, 'fremd')->get());
+            });
+
+        $this->runJob(new RunSyncJob($connectionId, SyncEntity::Document->value, SyncMode::Incremental));
+
+        Queue::assertNothingPushed();
+        $this->assertSame(1, $this->connector->requestCount(), 'Nach Lock-Verlust kein weiterer Chunk.');
+        $run = SyncRun::query()->firstOrFail();
+        $this->assertSame(SyncStatus::Aborted, $run->getAttribute('status'));
+        $this->assertSame('aborted', $run->getAttribute('phase'));
+        $this->assertNull(SyncState::query()->firstOrFail()->getAttribute('last_success_at'), 'kein Cursor-Commit nach Lock-Verlust');
+        $this->assertSame('fremd', $store->locks[$key]['owner'], 'fremder Lock bleibt unangetastet');
+    }
+
+    public function test_transient_exception_keeps_lock_for_retry_and_same_job_resumes_it(): void
+    {
+        $connection = $this->activeConnection();
+        $connectionId = (int) $connection->getKey();
+        $locks = $this->app->make(SyncLockManager::class);
+        $this->connector->failWith(new ConnectorException('503 vorübergehend'));
+
+        $job = new RunSyncJob($connectionId, SyncEntity::Document->value, SyncMode::Full);
+        $queueJob = new SyncJob($this->app, json_encode(['uuid' => 'job-uuid-1', 'attempts' => 1], JSON_THROW_ON_ERROR), 'sync', 'sync');
+        $job->setJob($queueJob);
+
+        try {
+            $this->runJob($job);
+            $this->fail('Exception erwartet.');
+        } catch (ConnectorException) {
+            $this->addToAssertionCount(1);
+        }
+
+        // Kein Lock-Release bei transienter Exception: der Retry desselben Jobs nimmt ihn wieder auf ...
+        $this->assertTrue($locks->isLocked($connectionId, SyncEntity::Document->value));
+        $this->assertTrue($locks->acquireOrResume($connectionId, SyncEntity::Document->value, SyncLockManager::ownerForJob('job-uuid-1')));
+        // ... ein fremder Lauf nicht.
+        $this->assertFalse($locks->acquireOrResume($connectionId, SyncEntity::Document->value, 'anderer-lauf'));
+
+        // Erst das endgültige Scheitern gibt ihn frei.
+        $job->failed(new ConnectorException('endgültig'));
+        $this->assertFalse($locks->isLocked($connectionId, SyncEntity::Document->value));
+    }
+
+    public function test_lock_ttl_is_at_least_twice_the_job_timeout_and_renewable(): void
+    {
+        config()->set('hub.sync.jobs.timeout_seconds', 5000);
+        config()->set('hub.sync.locks.full_ttl_seconds', 60);
+        $locks = $this->app->make(SyncLockManager::class);
+
+        $this->assertSame(10000, $locks->defaultTtl());
+        $this->assertNotNull($owner = $locks->acquire(1, 'document'));
+        $this->assertTrue($locks->renew(1, 'document', $owner));
+        $this->assertFalse($locks->renew(1, 'document', 'fremd'));
+        $locks->release(1, 'document', $owner);
+        $this->assertFalse($locks->isLocked(1, 'document'));
     }
 }

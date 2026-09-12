@@ -4,7 +4,7 @@
         "title": "Immoware Hub API",
         "version": "v1",
         "summary": "REST-API des Immoware Hub für Spiegeldaten aus Immoware24, Hub-Vorgänge, Verzeichnis und Health.",
-        "description": "Alle Ressourcen liefern Spiegeldaten mit Herkunftsblock provenance (source_system, external_id, last_synced_at, connector, mapping_version, data_age_seconds, stale). Immoware24 ist Master; der Hub schreibt ausschließlich neue Dateien in den WebDAV-Posteingang (POST /api/v1/documents) und legt für alle anderen Änderungswünsche Änderungsvorschläge an.\n\n**Authentifizierung**: Authorization: Bearer hub_live_<prefix>_<secret>. Jede Operation nennt in x-scope die benötigten Scopes; admin umfasst alle Scopes.\n\n**Pagination**: page und per_page (maximal 500), Antwort {data, meta:{page, per_page, total}, links}. Sortierung über sort=-updated_at, Feldauswahl über fields=.\n\n**Fehler**: application/problem+json nach RFC 7807 mit type unter https://immoware.muellerhv.de/errors/<code>, request_id entspricht X-Correlation-Id.\n\n**Rate Limits**: 600 Requests pro Minute lesend, 60 pro Minute schreibend je Key. Header RateLimit-Limit, RateLimit-Remaining, bei 429 Retry-After.\n\n**Idempotenz**: Header Idempotency-Key ist für POST und PATCH Pflicht. Antworten werden 24 Stunden gespeichert und mit Idempotent-Replayed: true wiederholt.\n\n**Webhooks**: ausgehend, HMAC-SHA256-signiert, Ereigniskatalog im Abschnitt webhooks. Es gibt keine eingehenden Webhooks von Immoware24.",
+        "description": "Alle Ressourcen liefern Spiegeldaten mit Herkunftsblock provenance (source_system, external_id, last_synced_at, connector, mapping_version, data_age_seconds, stale). Immoware24 ist Master; der Hub schreibt ausschließlich neue Dateien in den WebDAV-Posteingang (POST /api/v1/documents) und legt für alle anderen Änderungswünsche Änderungsvorschläge an.\n\n**Authentifizierung**: Authorization: Bearer hub_live_<prefix>_<secret>. Jede Operation nennt in x-scope die benötigten Scopes; admin umfasst alle Scopes.\n\n**Pagination**: Offset über page und per_page (maximal 500), Antwort {data, meta:{page, per_page, total}, links}. Alternativ Cursor über cursor= (leer für die erste Seite, danach meta.next_cursor), Antwort {data, meta:{per_page, count, next_cursor, prev_cursor}, links}. Sortierung über sort=-updated_at, Feldauswahl über fields=.\n\n**Fehler**: application/problem+json nach RFC 7807 mit type unter https://immoware.muellerhv.de/errors/<code>, request_id entspricht X-Correlation-Id.\n\n**Rate Limits**: 600 Requests pro Minute lesend, 60 pro Minute schreibend je Key. Header RateLimit-Limit, RateLimit-Remaining, bei 429 Retry-After.\n\n**Idempotenz**: Header Idempotency-Key ist für POST und PATCH Pflicht. Antworten werden 24 Stunden gespeichert und mit Idempotent-Replayed: true wiederholt.\n\n**Webhooks**: ausgehend, HMAC-SHA256-signiert, Ereigniskatalog im Abschnitt webhooks. Es gibt keine eingehenden Webhooks von Immoware24.",
         "contact": {
             "name": "Hausverwaltung Müller GmbH"
         }
@@ -75,6 +75,14 @@
         {
             "name": "calendar-events",
             "description": "Kalendereinträge aus dem CalDAV-Spiegel (lesend, Phase 3)."
+        },
+        {
+            "name": "proposals",
+            "description": "Änderungsvorschläge (Human-in-the-Loop-Rückweg), lesend. Anlage über PATCH /contacts/{id}; Umsetzung erfolgt manuell in Immoware24 und wird durch den nächsten Sync bestätigt."
+        },
+        {
+            "name": "conflicts",
+            "description": "Sync-Konflikte, lesend. Zuweisung und Auflösung erfolgen in der Admin-Oberfläche (Endpunkte assign und resolve sind geplant)."
         }
     ],
     "paths": {
@@ -140,6 +148,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "OK",
                         "content": {
@@ -178,6 +189,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -251,6 +265,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -314,6 +331,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Einzelressource",
                         "content": {
@@ -362,6 +382,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "OK",
                         "content": {
@@ -402,6 +425,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -467,6 +493,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -522,6 +551,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "400": {
                         "$ref": "#/components/responses/BadRequest"
@@ -596,6 +628,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Einzelressource",
                         "content": {
@@ -654,6 +689,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "400": {
                         "$ref": "#/components/responses/BadRequest"
                     },
@@ -700,6 +738,194 @@
                 }
             }
         },
+        "/api/v1/conflicts": {
+            "get": {
+                "operationId": "api_v1_conflicts_index",
+                "summary": "conflicts auflisten",
+                "tags": [
+                    "conflicts"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "conflict_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "entity_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "entity_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "connection_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "assigned_to",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Conflict"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "conflicts:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/conflicts/{id}": {
+            "get": {
+                "operationId": "api_v1_conflicts_show",
+                "summary": "conflicts einzeln lesen",
+                "tags": [
+                    "conflicts"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Conflict"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "conflicts:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
         "/api/v1/contacts": {
             "get": {
                 "operationId": "api_v1_contacts_index",
@@ -713,6 +939,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -794,6 +1023,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -857,6 +1089,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Einzelressource",
                         "content": {
@@ -914,6 +1149,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "400": {
                         "$ref": "#/components/responses/BadRequest"
@@ -974,6 +1212,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -1039,6 +1280,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -1101,6 +1345,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "200": {
                         "description": "Einzelressource",
@@ -1170,6 +1417,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "200": {
                         "description": "Verzeichnis",
@@ -1263,6 +1513,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Verzeichnis",
                         "content": {
@@ -1319,6 +1572,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -1416,6 +1672,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -1472,6 +1731,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "400": {
                         "$ref": "#/components/responses/BadRequest"
                     },
@@ -1518,6 +1780,65 @@
                 }
             }
         },
+        "/api/v1/documents/uploads/{uuid}": {
+            "get": {
+                "operationId": "api_v1_documents_uploads_show",
+                "summary": "Status eines Upload-Antrags (write_operation) lesen",
+                "tags": [
+                    "meta"
+                ],
+                "parameters": [
+                    {
+                        "name": "uuid",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
+                    "200": {
+                        "description": "Status des Upload-Antrags",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/DocumentUploadResult"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "documents:write",
+                    "sync:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
         "/api/v1/documents/{id}": {
             "get": {
                 "operationId": "api_v1_documents_show",
@@ -1544,6 +1865,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "200": {
                         "description": "Einzelressource",
@@ -1588,6 +1912,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -1644,6 +1971,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "200": {
                         "description": "Seite",
@@ -1708,6 +2038,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Einzelressource",
                         "content": {
@@ -1759,6 +2092,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "200": {
                         "description": "OK",
@@ -1816,6 +2152,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "OK",
                         "content": {
@@ -1868,6 +2207,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "OK",
                         "content": {
@@ -1906,6 +2248,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -1979,6 +2324,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -2042,6 +2390,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Einzelressource",
                         "content": {
@@ -2085,6 +2436,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -2150,6 +2504,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -2213,6 +2570,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Einzelressource",
                         "content": {
@@ -2243,6 +2603,186 @@
                 "x-phase": 1
             }
         },
+        "/api/v1/proposals": {
+            "get": {
+                "operationId": "api_v1_proposals_index",
+                "summary": "proposals auflisten",
+                "tags": [
+                    "proposals"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "entity_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "entity_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "connection_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "field",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Proposal"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "conflicts:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/proposals/{id}": {
+            "get": {
+                "operationId": "api_v1_proposals_show",
+                "summary": "proposals einzeln lesen",
+                "tags": [
+                    "proposals"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Proposal"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "conflicts:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
         "/api/v1/sync/status": {
             "get": {
                 "operationId": "api_v1_sync_status",
@@ -2260,6 +2800,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "200": {
                         "description": "OK",
@@ -2301,6 +2844,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -2366,6 +2912,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -2429,6 +2978,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Einzelressource",
                         "content": {
@@ -2472,6 +3024,9 @@
                     },
                     {
                         "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/cursor"
                     },
                     {
                         "$ref": "#/components/parameters/sort"
@@ -2537,6 +3092,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Seite",
                         "content": {
@@ -2600,6 +3158,9 @@
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
                     },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
+                    },
                     "200": {
                         "description": "Einzelressource",
                         "content": {
@@ -2647,6 +3208,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "200": {
                         "description": "Webhook-Endpunkt",
@@ -2697,6 +3261,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "201": {
                         "description": "Webhook-Endpunkt",
@@ -2764,6 +3331,9 @@
                     },
                     "429": {
                         "$ref": "#/components/responses/RateLimited"
+                    },
+                    "503": {
+                        "$ref": "#/components/responses/ServiceUnavailable"
                     },
                     "204": {
                         "description": "Webhook-Endpunkt",
@@ -3274,7 +3844,16 @@
                     "maximum": 500,
                     "default": 100
                 },
-                "description": "Maximal 500."
+                "description": "Maximal 500. Gilt für Offset- und Cursor-Pagination."
+            },
+            "cursor": {
+                "name": "cursor",
+                "in": "query",
+                "schema": {
+                    "type": "string"
+                },
+                "allowEmptyValue": true,
+                "description": "Cursor-Pagination statt page: leer für die erste Seite, danach meta.next_cursor. Opaque (Base64url-JSON aus Sortierschlüssel und id), an sort und Filter gebunden; ungültig liefert 400 invalid_cursor. Antwort ohne total, mit meta.next_cursor und meta.prev_cursor."
             },
             "sort": {
                 "name": "sort",
@@ -3378,7 +3957,7 @@
         },
         "responses": {
             "BadRequest": {
-                "description": "400 bad_request, invalid_filter, idempotency_key_required",
+                "description": "400 bad_request, invalid_filter, invalid_cursor, idempotency_key_required",
                 "content": {
                     "application/problem+json": {
                         "schema": {
@@ -3425,7 +4004,7 @@
                 }
             },
             "Conflict": {
-                "description": "409 conflict, write_target_exists, idempotency_mismatch",
+                "description": "409 conflict, write_target_exists, idempotency_mismatch, idempotency_in_progress",
                 "content": {
                     "application/problem+json": {
                         "schema": {
@@ -3464,6 +4043,16 @@
             },
             "NotImplemented": {
                 "description": "501 not_implemented, Hinweis WAITING_FOR_MODULE im Feld hint",
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            },
+            "ServiceUnavailable": {
+                "description": "503 api_keys_disabled (HUB_API_KEYS_ENABLED=false), Header Retry-After",
                 "content": {
                     "application/problem+json": {
                         "schema": {
@@ -3821,7 +4410,17 @@
             },
             "DocumentUploadResult": {
                 "type": "object",
+                "description": "Upload-Antrag (write_operation). POST liefert zusätzlich outcome, effect, approval_required und status_url; GET /documents/uploads/{uuid} liefert den aktuellen Stand.",
+                "required": [
+                    "operation_uuid",
+                    "upload_id",
+                    "status"
+                ],
                 "properties": {
+                    "operation_uuid": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
                     "upload_id": {
                         "type": "integer"
                     },
@@ -3837,17 +4436,128 @@
                             "rejected"
                         ]
                     },
-                    "outcome": {
-                        "type": "string"
+                    "operation": {
+                        "type": "string",
+                        "enum": [
+                            "webdav_create"
+                        ]
                     },
                     "target_path": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "original_filename": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "size_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "content_hash": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "requested_via": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "precheck_result": {
+                        "type": [
+                            "object",
+                            "null"
+                        ]
+                    },
+                    "verify_result": {
+                        "type": [
+                            "object",
+                            "null"
+                        ]
+                    },
+                    "last_error": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "document_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "case_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "source_document_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "sent_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "verified_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "failed_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "outcome": {
                         "type": "string"
                     },
                     "effect": {
                         "type": "string",
                         "enum": [
-                            "immoware24"
+                            "immoware24",
+                            "immoware24_after_approval"
                         ]
+                    },
+                    "approval_required": {
+                        "type": "boolean"
+                    },
+                    "status_url": {
+                        "type": "string"
                     }
                 }
             },
@@ -5104,6 +5814,273 @@
                             "integer",
                             "null"
                         ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Proposal": {
+                "type": "object",
+                "description": "Änderungsvorschläge (Human-in-the-Loop-Rückweg), lesend. Anlage über PATCH /contacts/{id}; Umsetzung erfolgt manuell in Immoware24 und wird durch den nächsten Sync bestätigt.",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "connection_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "entity_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "entity_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "field": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "old_value": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "new_value": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "reason": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "status": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "requested_by": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "transferred_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "transferred_by": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "confirmed_by_sync_run_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "confirmed_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "rejected_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "correlation_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Conflict": {
+                "type": "object",
+                "description": "Sync-Konflikte, lesend. Zuweisung und Auflösung erfolgen in der Admin-Oberfläche (Endpunkte assign und resolve sind geplant).",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "connection_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "sync_run_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "entity_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "entity_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "conflict_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "conflict_state": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "local_snapshot_json": {
+                        "type": [
+                            "object",
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "proposed_change_json": {
+                        "type": [
+                            "object",
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "remote_payload_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "status": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "assigned_to": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "resolved_by": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "resolved_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "resolution_note": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "confirmed_by_sync_run_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "occurrences": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "last_seen_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
                     },
                     "created_at": {
                         "type": [

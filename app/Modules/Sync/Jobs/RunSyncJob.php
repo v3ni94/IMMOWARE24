@@ -31,8 +31,11 @@ use Throwable;
 
 /**
  * Orchestrator: führt pull() des Adapters in Chunks mit Cursor aus. Nach max_per_run Chunks plant er sich
- * mit dem nächsten Cursor selbst erneut ein (kein Endloslauf). Full Syncs halten einen Lock je
- * Connection und Entität; ein zweiter Full Sync wird als skipped protokolliert.
+ * mit dem nächsten Cursor selbst erneut ein (kein Endloslauf). Jeder Lauf (Full wie Incremental) hält den
+ * SyncLockManager-Lock je Connection und Entität über alle Chunks; ein zweiter Lauf derselben Quelle wird als
+ * skipped protokolliert. Der Lock wird je Chunk verlängert; Lock-Verlust beendet den Lauf als aborted ohne
+ * Cursor-Commit (07-sync-strategy.md Abschnitt 5). Bei einer transienten Exception bleibt der Lock für den Retry
+ * bestehen (Owner-Token aus der Job-UUID); erst failed() gibt ihn frei. Änderungsvermerk 12.09.2026.
  */
 class RunSyncJob implements ShouldQueue
 {
@@ -40,6 +43,9 @@ class RunSyncJob implements ShouldQueue
 
     /** @var array<int, string> */
     public const array RUNNABLE_CONNECTION_STATUSES = ['active', 'degraded'];
+
+    /** Owner-Token des in diesem Versuch gehaltenen Locks (nicht serialisiert). */
+    private ?string $activeLockOwner = null;
 
     public function __construct(
         public readonly int $connectionId,
@@ -116,29 +122,22 @@ class RunSyncJob implements ShouldQueue
             return;
         }
 
-        $lockOwner = $this->lockOwner;
+        // Lock je Connection und Adapter für jeden Modus. Der Owner ist je Queue-Job deterministisch, damit ein Retry
+        // seinen eigenen Lock wieder aufnimmt; Fortsetzungsjobs tragen den Owner im Payload.
+        $lockOwner = $this->lockOwner ?? SyncLockManager::ownerForJob($this->job?->uuid());
 
-        if ($this->mode === SyncMode::Full && $lockOwner === null) {
-            $lockOwner = $locks->acquire($this->connectionId, $this->entityType);
+        if (! $locks->acquireOrResume($this->connectionId, $this->entityType, $lockOwner)) {
+            $reason = $this->lockOwner !== null
+                ? 'Fortsetzung übersprungen: Sync-Lock inzwischen von einem anderen Lauf gehalten.'
+                : sprintf('%s übersprungen: Sync-Lock der Connection und Entität wird von einem anderen Lauf gehalten.', $this->mode === SyncMode::Full ? 'Full Sync' : 'Lauf');
+            $runs->skipped($this->connectionId, $this->entityType, $this->mode, $reason, $this->triggerSource);
+            $metrics->increment(SyncMetrics::SKIPPED_LOCKED, 1, $this->labels());
+            Log::info('RunSyncJob: Lauf übersprungen, Lock gehalten.', [...$this->labels(), 'run_id' => $this->runId]);
 
-            if ($lockOwner === null) {
-                $runs->skipped($this->connectionId, $this->entityType, $this->mode, 'Full Sync läuft bereits (Lock gehalten).', $this->triggerSource);
-                $metrics->increment(SyncMetrics::SKIPPED_LOCKED, 1, $this->labels());
-                Log::info('RunSyncJob: Full Sync übersprungen, Lock gehalten.', $this->labels());
-
-                return;
-            }
-        } elseif ($this->mode === SyncMode::Full && $lockOwner !== null && $this->attempts() > 1) {
-            // Retry eines Fortsetzungsjobs: Der Lock wird bei transienten Fehlern nicht freigegeben, kann aber
-            // abgelaufen sein. restore()->get() erneuert ihn nur, wenn ihn niemand anderes hält.
-            if (! $locks->restore($this->connectionId, $this->entityType, $lockOwner)->get()) {
-                $runs->skipped($this->connectionId, $this->entityType, $this->mode, 'Fortsetzung übersprungen: Full-Sync-Lock inzwischen von einem anderen Lauf gehalten.', $this->triggerSource);
-                $metrics->increment(SyncMetrics::SKIPPED_LOCKED, 1, $this->labels());
-                Log::warning('RunSyncJob: Fortsetzung übersprungen, Lock von anderem Lauf gehalten.', [...$this->labels(), 'run_id' => $this->runId]);
-
-                return;
-            }
+            return;
         }
+
+        $this->activeLockOwner = $lockOwner;
 
         $state = $states->forEntity($this->connectionId, $this->entityType);
         $run = $this->runId !== null ? SyncRun::query()->find($this->runId) : null;
@@ -171,6 +170,16 @@ class RunSyncJob implements ShouldQueue
             $chunks = 0;
 
             while ($chunks < $maxChunks) {
+                // Heartbeat: Lock je Chunk verlängern. Verlust bedeutet phase aborted, kein Cursor-Commit (07 Abschnitt 5).
+                if (! $locks->renew($this->connectionId, $this->entityType, $lockOwner)) {
+                    $runs->abort($run, 'Sync-Lock während des Laufs verloren (TTL abgelaufen oder Cache nicht erreichbar). Kein Cursor-Commit.');
+                    $states->recordFailure($state, $run, 'Lock verloren, Lauf abgebrochen.');
+                    $metrics->increment(SyncMetrics::SYNC_ERRORS, 1, $this->labels());
+                    Log::error('RunSyncJob: Lock verloren, Lauf abgebrochen.', [...$this->labels(), 'run_id' => $run->getKey()]);
+
+                    return;
+                }
+
                 $request = new SyncRequest($this->connectionId, $this->entityType, $this->mode, $since, $cursor, $limit, (int) $run->getKey());
                 $result = $connector->pull($request);
                 $chunks++;
@@ -228,13 +237,21 @@ class RunSyncJob implements ShouldQueue
             $run->forceFill(['error_summary' => $runs->describe($exception)]);
             $run->save();
 
-            // Endgültiges Scheitern (fail(), sync.failed, DLQ) behandelt ausschließlich failed(), damit je Lauf genau
-            // ein Ereignis entsteht. Der Lock bleibt bei einem Fortsetzungsjob (lockOwner im Payload) für den Retry
-            // bestehen; ein Erstjob ohne lockOwner im Payload erwirbt ihn beim Retry neu und gibt ihn daher frei.
-            if ($this->attempts() >= $this->tries || $this->lockOwner === null) {
+            if ($this->job === null) {
+                // Synchrone Ausführung (DLQ-Replay über dispatchNow, --sync): kein Worker ruft failed() auf. Der Lauf wird
+                // hier geschlossen (sync.failed einmalig) und der Lock freigegeben, sonst bliebe der Lauf running und der
+                // Lock bis zur TTL belegt. Den DLQ-Eintrag verantwortet der Aufrufer (DlqService::replay bzw. failed()).
+                $runs->fail($run, $exception);
+                $this->notifyFailure($run, (int) $connection->getAttribute('organization_id'), $runs->describe($exception));
                 $locks->release($this->connectionId, $this->entityType, $lockOwner);
+                $this->activeLockOwner = null;
+
+                throw $exception;
             }
 
+            // Endgültiges Scheitern (fail(), sync.failed, DLQ) behandelt ausschließlich failed(), damit je Lauf genau
+            // ein Ereignis entsteht. Der Lock bleibt für den Retry bestehen: derselbe Job nimmt ihn über seinen
+            // deterministischen Owner-Token wieder auf; ein fremder Lauf wird bis dahin als skipped protokolliert.
             throw $exception;
         }
     }
@@ -247,9 +264,8 @@ class RunSyncJob implements ShouldQueue
         $dlq = app(DlqService::class);
         $dlq->store(static::class, $this->dlqArguments(), $exception, $this->connectionId, $this->entityType, (string) $this->queue);
 
-        if ($this->lockOwner !== null) {
-            app(SyncLockManager::class)->release($this->connectionId, $this->entityType, $this->lockOwner);
-        }
+        $owner = $this->activeLockOwner ?? $this->lockOwner ?? ($this->job !== null ? SyncLockManager::ownerForJob($this->job->uuid()) : null);
+        app(SyncLockManager::class)->release($this->connectionId, $this->entityType, $owner);
 
         // Nur der eigene Lauf wird geschlossen: über runId (Fortsetzungsjobs) oder, beim Erstjob ohne runId,
         // der jüngste noch laufende Lauf dieser Connection, Entität, Modus und Auslösequelle. Fremde Läufe

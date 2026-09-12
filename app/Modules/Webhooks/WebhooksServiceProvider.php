@@ -5,13 +5,17 @@ declare(strict_types=1);
 namespace App\Modules\Webhooks;
 
 use App\Core\Contracts\WebhookDispatcherInterface;
+use App\Core\Support\UrlGuard;
+use App\Modules\Webhooks\Console\EmitStaleSyncEventsCommand;
 use App\Modules\Webhooks\Console\RedeliverWebhooksCommand;
 use App\Modules\Webhooks\Events\HubEvent;
 use App\Modules\Webhooks\Listeners\RecordHubEventListener;
 use App\Modules\Webhooks\Services\WebhookDispatcher;
 use App\Modules\Webhooks\Services\WebhookSigner;
+use App\Modules\Webhooks\Services\WebhookUrlGuard;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Events\Dispatcher as EventDispatcher;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 
 class WebhooksServiceProvider extends ServiceProvider
@@ -30,6 +34,7 @@ class WebhooksServiceProvider extends ServiceProvider
         }
 
         $this->app->singleton(WebhookSigner::class);
+        $this->app->singleton(WebhookUrlGuard::class, static fn (Application $app): WebhookUrlGuard => new WebhookUrlGuard(null, $app->make(UrlGuard::class)));
         $this->app->singleton(WebhookDispatcher::class);
         $this->app->bind(WebhookDispatcherInterface::class, WebhookDispatcher::class);
     }
@@ -56,10 +61,11 @@ class WebhooksServiceProvider extends ServiceProvider
         }
 
         if ($this->app->runningInConsole()) {
-            $this->commands([RedeliverWebhooksCommand::class]);
+            $this->commands([RedeliverWebhooksCommand::class, EmitStaleSyncEventsCommand::class]);
 
             $this->callAfterResolving(Schedule::class, static function (Schedule $schedule): void {
                 $schedule->command('hub:webhooks:redeliver')->everyFiveMinutes()->withoutOverlapping(10)->onOneServer();
+                $schedule->command('hub:webhooks:emit-stale')->hourly()->withoutOverlapping(10)->onOneServer();
             });
         }
     }

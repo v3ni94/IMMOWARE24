@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Tests\Unit\Contacts;
+namespace Tests\Unit\Connector;
 
-use App\Modules\Contacts\Dav\DavMultistatusParser;
+use App\Modules\Connector\Support\DavMultistatusParser;
 use PHPUnit\Framework\TestCase;
 
-final class DavMultistatusParserTest extends TestCase
+final class DavMultistatusParserCardDavTest extends TestCase
 {
     public function test_parses_propfind_with_ctag_sync_token_and_reports(): void
     {

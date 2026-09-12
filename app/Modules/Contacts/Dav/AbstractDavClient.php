@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Modules\Contacts\Dav;
 
 use App\Core\Exceptions\ConnectorException;
+use App\Modules\Connector\Support\DavMultistatusParser;
+use App\Modules\Connector\Support\DavResponse;
 use App\Modules\Contacts\Contracts\DavTransportInterface;
 
 /**
@@ -109,7 +111,7 @@ abstract class AbstractDavClient
      * Lädt die Nutzdaten (vCard bzw. iCalendar) der angegebenen hrefs in Batches von 50.
      *
      * @param  array<int, string>  $hrefs
-     * @return array<int, DavResource>
+     * @return array<int, DavResponse>
      */
     public function multiget(array $hrefs): array
     {

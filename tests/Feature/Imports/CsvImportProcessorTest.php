@@ -139,6 +139,7 @@ final class CsvImportProcessorTest extends TestCase
         $stale->refresh();
         $this->assertNull($stale->deleted_at, 'Soft Delete erst beim zweiten Vollexport ohne Treffer');
         $this->assertNotNull($stale->missing_since);
+        $this->assertSame(1, (int) $stale->missing_count);
         $this->assertSame('missing_in_full_export', $stale->deletion_reason);
 
         // Zweiter Vollexport desselben Objekts ohne VE-ALT: Soft Delete. VE-02 fehlt erstmals: nur missing_since.
@@ -147,10 +148,12 @@ final class CsvImportProcessorTest extends TestCase
 
         $stale->refresh();
         $this->assertNotNull($stale->deleted_at, 'Mark-and-Sweep per Soft Delete nach zwei Vollexporten');
+        $this->assertSame(2, (int) $stale->missing_count);
         $this->assertSame('missing_in_full_export', $stale->deletion_reason);
         $ve02 = Unit::query()->withoutGlobalScope('organization')->where('unit_number', 'VE-02')->firstOrFail();
         $this->assertNull($ve02->deleted_at);
         $this->assertNotNull($ve02->missing_since);
+        $this->assertSame(1, (int) $ve02->missing_count);
 
         // Einheiten anderer Objekte bleiben von einem objektbezogenen Vollexport unberührt.
         $foreign->refresh();
@@ -207,6 +210,53 @@ final class CsvImportProcessorTest extends TestCase
         $this->assertSame(ImportFileStatus::Imported->value, $file->status);
         $this->assertSame(0, Unit::query()->withoutGlobalScope('organization')->onlyTrashed()->count());
         $this->assertStringContainsString('Schutzgrenze', json_encode($file->errors, JSON_THROW_ON_ERROR));
+    }
+
+    public function test_missing_count_resets_when_record_reappears_between_full_exports(): void
+    {
+        $organization = $this->createOrganization();
+        $this->confirmUnitsFormat();
+        $property = Property::factory()->for($organization)->create(['immoware_object_number' => 'OBJ-001']);
+
+        // VE-02 fehlt in units_bom_v2, ist in units_bom enthalten: Fehlen, Treffer, Fehlen darf nicht löschen.
+        $this->dropFixture('units_bom.csv', $organization, ExportType::Units, ['is_full_export' => true]);
+        $this->scanAndProcess();
+        $this->dropFixture('units_bom_v2.csv', $organization, ExportType::Units, ['is_full_export' => true]);
+        $this->scanAndProcess();
+        $ve02 = Unit::query()->withoutGlobalScope('organization')->where('unit_number', 'VE-02')->firstOrFail();
+        $this->assertSame(1, (int) $ve02->missing_count);
+
+        $this->dropFixtureVariant('units_bom.csv', $organization, ExportType::Units, ['is_full_export' => true], 'units_bom_3.csv');
+        $this->scanAndProcess();
+        $ve02->refresh();
+        $this->assertSame(0, (int) $ve02->missing_count, 'Treffer setzt den Zähler zurück');
+        $this->assertNull($ve02->missing_since);
+
+        $this->dropFixtureVariant('units_bom_v2.csv', $organization, ExportType::Units, ['is_full_export' => true], 'units_bom_v2_4.csv');
+        $this->scanAndProcess();
+        $ve02->refresh();
+        $this->assertNull($ve02->deleted_at, 'Nur aufeinanderfolgendes Fehlen zählt');
+        $this->assertSame(1, (int) $ve02->missing_count);
+        $this->assertNotNull($property);
+    }
+
+    public function test_full_export_of_one_connection_never_sweeps_records_of_another_connection(): void
+    {
+        $organization = $this->createOrganization();
+        $this->confirmUnitsFormat();
+        $property = Property::factory()->for($organization)->create(['immoware_object_number' => 'OBJ-001']);
+        $fileConnection = $this->createConnection($organization, ['connector_type' => 'file_import']);
+        $otherConnection = $this->createConnection($organization, ['connector_type' => 'file_import']);
+        $otherSource = Unit::factory()->for($property)->create(['organization_id' => $organization->getKey(), 'connection_id' => $otherConnection->getKey(), 'unit_number' => 'VE-ANDERE', 'external_id' => 'unit:OBJ-001|VE-ANDERE', 'missing_since' => now()->subWeek(), 'missing_count' => 1]);
+        $sameSource = Unit::factory()->for($property)->create(['organization_id' => $organization->getKey(), 'connection_id' => $fileConnection->getKey(), 'unit_number' => 'VE-GLEICHE', 'external_id' => 'unit:OBJ-001|VE-GLEICHE', 'missing_since' => now()->subWeek(), 'missing_count' => 1]);
+
+        $this->dropFixture('units_bom.csv', $organization, ExportType::Units, ['is_full_export' => true, 'connection' => (string) $fileConnection->getKey()]);
+        $file = $this->scanAndProcess();
+        $this->assertSame(ImportFileStatus::Imported->value, $file->status);
+
+        $this->assertNull($otherSource->refresh()->deleted_at, 'Datensätze einer anderen Connection bleiben unberührt');
+        $this->assertSame(1, (int) $otherSource->missing_count);
+        $this->assertNotNull($sameSource->refresh()->deleted_at, 'Zweites Fehlen in derselben Connection: Soft Delete');
     }
 
     public function test_partial_export_does_not_sweep(): void

@@ -102,9 +102,12 @@ final class CollectionStateStore
     }
 
     /**
+     * Zählt ein Fehlen. Ohne State-Zeile (z. B. Ressource aus einer älteren Version des Spiegels) wird die Zeile mit
+     * consecutive_missing = 1 angelegt, damit das zweite Fehlen im Folgelauf zählbar ist (Änderungsvermerk 12.09.2026).
+     *
      * @return int neue Anzahl aufeinanderfolgender Fehlzeiten
      */
-    public function markMissing(int $connectionId, string $collectionPath, string $href): int
+    public function markMissing(int $connectionId, string $collectionPath, string $href, ?string $entityType = null): int
     {
         $state = SyncState::query()
             ->where('connection_id', $connectionId)
@@ -114,10 +117,20 @@ final class CollectionStateStore
             ->first();
 
         if ($state === null) {
+            SyncState::query()->create([
+                'connection_id' => $connectionId,
+                'entity_type' => $entityType,
+                'scope' => self::SCOPE_RESOURCE,
+                'collection_path_hash' => self::pathHash($collectionPath),
+                'resource_external_id_hash' => self::hrefHash($href),
+                'consecutive_missing' => 1,
+                'cursor_json' => ['href' => $href],
+            ]);
+
             return 1;
         }
 
-        $state->consecutive_missing = (int) $state->consecutive_missing + 1;
+        $state->consecutive_missing = min(255, (int) $state->consecutive_missing + 1);
         $state->save();
 
         return (int) $state->consecutive_missing;

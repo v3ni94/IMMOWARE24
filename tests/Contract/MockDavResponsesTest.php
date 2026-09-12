@@ -8,7 +8,7 @@ use App\Core\Exceptions\ConnectorException;
 use App\Modules\Connector\Support\DavMultistatusParser;
 use App\Modules\Connector\Testing\MockDavResponses;
 use App\Modules\Contacts\Dav\CardDavClient;
-use App\Modules\Contacts\Dav\HttpDavTransport;
+use App\Modules\Contacts\Services\DavClientFactory;
 use App\Modules\Documents\Http\WebDavClientFactory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -69,7 +69,9 @@ final class MockDavResponsesTest extends TestCase
     {
         Http::fake(['dav.example.test/*' => MockDavResponses::invalidXml()]);
 
-        $client = new CardDavClient(new HttpDavTransport('hub-read', 'secret'), 'https://dav.example.test/dav/addressbooks/kontakte/');
+        $connection = $this->createConnection(null, ['connector_type' => 'carddav_contacts', 'base_url' => 'https://dav.example.test/dav/addressbooks/kontakte/', 'base_url_hash' => hash('sha256', 'https://dav.example.test/dav/addressbooks/kontakte/'), 'status' => 'active', 'rate_limit_rps' => 50]);
+        $client = $this->app->make(DavClientFactory::class)->carddav($connection);
+        $this->assertInstanceOf(CardDavClient::class, $client);
 
         $this->expectException(ConnectorException::class);
         $this->expectExceptionMessage('ohne gültiges Multistatus-XML');

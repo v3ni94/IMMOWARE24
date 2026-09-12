@@ -6,10 +6,15 @@ namespace Tests\Feature\Security;
 
 use App\Core\Contracts\AuditLoggerInterface;
 use App\Core\Enums\AuditSource;
+use App\Core\Support\CorrelationId;
+use App\Core\Support\OrganizationContext;
+use App\Core\Support\SecretMasker;
 use App\Modules\Security\Models\AuditLog;
 use App\Modules\Security\Models\User;
 use App\Modules\Security\Services\AuditChainVerifier;
 use App\Modules\Security\Services\AuditLogger;
+use App\Modules\Security\Services\PepperedHasher;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -122,5 +127,55 @@ final class AuditChainTest extends TestCase
         $result = $this->app->make(AuditChainVerifier::class)->verify();
         $this->assertFalse($result->valid);
         $this->assertStringContainsString('Anker', (string) $result->message);
+    }
+
+    public function test_sequential_entries_from_two_writers_form_one_consistent_chain(): void
+    {
+        // Web-Request und Queue-Worker schreiben abwechselnd: jede Zeile verkettet auf den unmittelbaren Vorgänger,
+        // kein prev_hash kommt doppelt vor (Sequenz-Lock plus lockForUpdate plus Unique-Index).
+        $web = $this->app->make(AuditLogger::class);
+        $worker = new AuditLogger(
+            $this->app->make(SecretMasker::class),
+            $this->app->make(PepperedHasher::class),
+            $this->app->make(CorrelationId::class),
+            $this->app->make(OrganizationContext::class),
+        );
+
+        $entries = [];
+
+        for ($i = 0; $i < 6; $i++) {
+            $entries[] = ($i % 2 === 0 ? $web : $worker)->record('test.parallel', null, [], ['i' => $i, 'writer' => $i % 2 === 0 ? 'web' : 'worker'], AuditSource::System);
+        }
+
+        $this->assertSame(AuditLog::GENESIS_HASH, $entries[0]->prev_hash);
+
+        for ($i = 1; $i < count($entries); $i++) {
+            $this->assertSame($entries[$i - 1]->row_hash, $entries[$i]->prev_hash, 'Eintrag '.$i.' verkettet nicht auf seinen Vorgänger.');
+        }
+
+        $this->assertSame(6, AuditLog::query()->distinct()->count('prev_hash'));
+        $this->assertTrue($this->app->make(AuditChainVerifier::class)->verify()->valid);
+    }
+
+    public function test_duplicate_predecessor_is_rejected_by_unique_index(): void
+    {
+        $logger = $this->app->make(AuditLogger::class);
+        $first = $logger->record('test.fork', null, [], ['n' => 1], AuditSource::System);
+        $logger->record('test.fork', null, [], ['n' => 2], AuditSource::System);
+
+        // Simulierter zweiter Schreiber, der trotz Sperre denselben Vorgänger gelesen hat: die Verzweigung scheitert.
+        $this->expectException(QueryException::class);
+
+        DB::table('audit_logs')->insert([
+            'occurred_at' => now(),
+            'actor_type' => 'system',
+            'source' => 'system',
+            'action' => 'test.fork',
+            'before_json' => '[]',
+            'after_json' => '{"n":3}',
+            'prev_hash' => $first->prev_hash,
+            'row_hash' => str_repeat('a', 64),
+            'created_at' => now(),
+        ]);
     }
 }

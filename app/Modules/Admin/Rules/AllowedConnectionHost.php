@@ -4,17 +4,22 @@ declare(strict_types=1);
 
 namespace App\Modules\Admin\Rules;
 
+use App\Core\Support\UrlGuard;
 use Closure;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Support\Str;
 
 /**
  * Schutz vor SSRF über die Freigabe-URL einer Connection: Probe und Sync senden die Zugangsdaten der
- * Connection an diesen Host. Zulässig sind nur Hosts der Allowlist hub.connector.connections.allowed_hosts;
- * IP-Literale privater, lokaler und reservierter Bereiche sowie lokale Hostnamen werden immer abgelehnt.
+ * Connection an diesen Host. Gleiche Regel wie für Webhook-Ziele (App\Core\Support\UrlGuard): nur https,
+ * keine Zugangsdaten in der URL, keine lokalen Hostnamen, keine privaten, Loopback-, Link-Local- oder
+ * reservierten Adressen (auch nach DNS-Auflösung). Zusätzlich muss der Host in der Allowlist
+ * hub.connector.connections.allowed_hosts liegen, sofern diese gesetzt ist.
  */
 final class AllowedConnectionHost implements ValidationRule
 {
+    public function __construct(private readonly ?UrlGuard $guard = null) {}
+
     public function validate(string $attribute, mixed $value, Closure $fail): void
     {
         if (! is_string($value) || $value === '') {
@@ -29,10 +34,16 @@ final class AllowedConnectionHost implements ValidationRule
             return;
         }
 
-        $host = strtolower(trim($host, '[]'));
+        $host = UrlGuard::normalizeHost($host);
+        $reason = $this->guard()->reason($value);
 
-        if (self::isForbiddenHost($host)) {
-            $fail('Die Freigabe-URL darf nicht auf lokale oder private Adressen zeigen.');
+        if ($reason !== null) {
+            $fail(match ($reason) {
+                'scheme_not_https' => 'Die Freigabe-URL muss mit https:// beginnen.',
+                'credentials_in_url' => 'Die Freigabe-URL darf keine Zugangsdaten enthalten.',
+                'dns_unresolved' => 'Der Host der Freigabe-URL ist nicht auflösbar.',
+                default => 'Die Freigabe-URL darf nicht auf lokale oder private Adressen zeigen.',
+            });
 
             return;
         }
@@ -46,15 +57,17 @@ final class AllowedConnectionHost implements ValidationRule
 
     public static function isForbiddenHost(string $host): bool
     {
-        if ($host === 'localhost' || str_ends_with($host, '.localhost') || str_ends_with($host, '.local') || str_ends_with($host, '.internal')) {
-            return true;
+        return UrlGuard::isForbiddenHost($host);
+    }
+
+    private function guard(): UrlGuard
+    {
+        if ($this->guard !== null) {
+            return $this->guard;
         }
 
-        if (filter_var($host, FILTER_VALIDATE_IP) === false) {
-            return false;
-        }
+        $guard = app()->bound(UrlGuard::class) ? app(UrlGuard::class) : null;
 
-        // Öffentliche IP-Literale sind zulässig, sofern die Allowlist sie erlaubt; alles andere ist gesperrt.
-        return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+        return $guard instanceof UrlGuard ? $guard : new UrlGuard;
     }
 }

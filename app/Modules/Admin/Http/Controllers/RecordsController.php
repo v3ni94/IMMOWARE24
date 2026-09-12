@@ -16,11 +16,14 @@ use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
 
 /**
  * Datenherkunft: lesende Detailseiten für Kontakte, Dokumente, Objekte und Einheiten mit Herkunftsblock
  * (Quelle, External ID, letzter Sync, Connector, Mapping-Version) und Link auf die archivierten Rohnutzlasten
- * (external_payloads, maskiert). Keine Mutation.
+ * (external_payloads, maskiert). Keine Mutation. Rechte: records.view für die Detailseite, payloads.view für
+ * Rohnutzlasten (nur Owner, Administrator, Developer). Jeder Aufruf der Detailseite und jeder Payload-Abruf wird
+ * auditiert (08-security.md Abschnitt 6: jeder Download eines Payloads ist Pflichtereignis).
  */
 final class RecordsController extends AdminController
 {
@@ -55,9 +58,14 @@ final class RecordsController extends AdminController
 
     public function show(Request $request, string $id): View
     {
+        $this->requirePermission('records.view');
+
         $entity = (string) $request->route('entity');
         $model = $this->find($entity, (int) $id);
         $connection = $this->connection($model);
+        $payloadCount = $this->payloadQuery($model)?->count() ?? 0;
+
+        $this->audit('records.viewed', $model, [], ['entity' => $entity, 'payload_count' => $payloadCount], $connection !== null ? (int) $connection->getKey() : null);
 
         return view('admin::records.show', [
             'entity' => $entity,
@@ -67,13 +75,17 @@ final class RecordsController extends AdminController
             'connectorName' => $connection !== null ? $connection->getAttribute('name').' ('.$connection->getAttribute('connector_type').')' : $this->fallbackConnector($model),
             'mappingVersion' => $this->mappingVersion(self::ENTITY_TYPES[$entity]),
             'attributes' => $this->displayAttributes($model),
-            'payloadCount' => $this->payloadQuery($model)?->count() ?? 0,
+            'payloadCount' => $payloadCount,
+            'canViewPayload' => Gate::allows('payloads.view'),
             'staleThreshold' => (int) (config('hub.sync.stale_after_seconds.'.self::ENTITY_TYPES[$entity]) ?? config('hub.sync.stale_after_seconds.default', 86400)),
         ]);
     }
 
     public function payload(Request $request, string $id): View
     {
+        $this->requirePermission('records.view');
+        $this->requirePermission('payloads.view');
+
         $entity = (string) $request->route('entity');
         $model = $this->find($entity, (int) $id);
         $query = $this->payloadQuery($model);
@@ -95,6 +107,15 @@ final class RecordsController extends AdminController
                 $content = is_string($raw) && mb_check_encoding($raw, 'UTF-8') ? $raw : null;
             }
         }
+
+        $connectionId = $model->getAttribute('connection_id');
+        $this->audit('records.payload_viewed', $model, [], [
+            'entity' => $entity,
+            'payload_id' => $selected instanceof ExternalPayload ? (int) $selected->getKey() : null,
+            'payload_type' => $selected instanceof ExternalPayload ? $selected->getAttribute('payload_type') : null,
+            'contains_personal_data' => $selected instanceof ExternalPayload ? (bool) $selected->getAttribute('contains_personal_data') : null,
+            'content_shown' => $content !== null,
+        ], $connectionId !== null ? (int) $connectionId : null);
 
         return view('admin::records.payload', [
             'entity' => $entity,

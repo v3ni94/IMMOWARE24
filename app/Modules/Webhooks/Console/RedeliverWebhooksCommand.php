@@ -11,8 +11,9 @@ use Illuminate\Console\Command;
 use Illuminate\Contracts\Bus\Dispatcher;
 
 /**
- * hub:webhooks:redeliver stellt fällige Zustellungen (pending, failed) erneut in die Queue,
- * optional eine DLQ-Zustellung per --dead=<id> (manuelle Wiederzustellung).
+ * hub:webhooks:redeliver stellt fällige failed-Zustellungen (next_attempt_at <= jetzt) erneut in die Queue, sofern
+ * sie nicht bereits in der Queue liegen (queued_at gesetzt und Fälligkeit noch innerhalb der Karenz). pending-Zustellungen
+ * werden nicht angefasst, ihr Job liegt aus dem Dispatch in der Queue. Optional eine DLQ-Zustellung per --dead=<id>.
  */
 final class RedeliverWebhooksCommand extends Command
 {
@@ -34,7 +35,7 @@ final class RedeliverWebhooksCommand extends Command
                 return self::FAILURE;
             }
 
-            $delivery->forceFill(['status' => WebhookDelivery::STATUS_PENDING, 'attempts' => 0, 'dead_at' => null, 'next_attempt_at' => CarbonImmutable::now()])->save();
+            $delivery->forceFill(['status' => WebhookDelivery::STATUS_PENDING, 'attempts' => 0, 'dead_at' => null, 'next_attempt_at' => CarbonImmutable::now(), 'queued_at' => CarbonImmutable::now()])->save();
             $bus->dispatch((new DeliverWebhookJob((int) $delivery->getKey()))->onQueue($queue));
             $this->info('Zustellung erneut eingereiht.');
 
@@ -42,19 +43,29 @@ final class RedeliverWebhooksCommand extends Command
         }
 
         $count = 0;
+        $now = CarbonImmutable::now();
 
-        // Nur Zustellungen, deren Fälligkeit um die Karenz überschritten ist: Der reguläre Retry läuft über den
-        // Queue-Backoff des DeliverWebhookJob, hier werden ausschließlich verlorene Jobs (Worker-Ausfall) aufgegriffen.
+        // Nur failed und fällig. Liegt der Job noch in der Queue (queued_at gesetzt), erst wenn sowohl Fälligkeit als
+        // auch Einreihung um die Karenz zurückliegen (verlorener Job nach Worker-Ausfall); sonst würde der
+        // Queue-Retry bzw. eine frische Einreihung doppelt zustellen.
         $grace = max(0, (int) config('hub.webhooks.redeliver_grace_seconds', 300));
+        $threshold = $now->subSeconds($grace);
 
         $ids = WebhookDelivery::query()
-            ->whereIn('status', [WebhookDelivery::STATUS_PENDING, WebhookDelivery::STATUS_FAILED])
-            ->where('next_attempt_at', '<=', CarbonImmutable::now()->subSeconds($grace))
+            ->where('status', WebhookDelivery::STATUS_FAILED)
+            ->where('next_attempt_at', '<=', $now)
+            ->where(static function ($query) use ($threshold): void {
+                $query->whereNull('queued_at')
+                    ->orWhere(static function ($lost) use ($threshold): void {
+                        $lost->where('next_attempt_at', '<=', $threshold)->where('queued_at', '<=', $threshold);
+                    });
+            })
             ->orderBy('id')
             ->limit((int) $this->option('limit'))
             ->pluck('id');
 
         foreach ($ids as $id) {
+            WebhookDelivery::query()->whereKey($id)->update(['queued_at' => $now]);
             $bus->dispatch((new DeliverWebhookJob((int) $id))->onQueue($queue));
             $count++;
         }

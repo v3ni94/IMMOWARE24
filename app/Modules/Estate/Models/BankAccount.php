@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Modules\Estate\Models;
 
+use App\Core\Support\HashedIdentifier;
 use App\Core\Traits\BelongsToOrganization;
 use App\Core\Traits\HasExternalIdentity;
 use Illuminate\Database\Eloquent\Model;
@@ -26,6 +27,21 @@ class BankAccount extends Model
         return [
             'iban' => 'encrypted',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        // iban_hash ist HMAC-SHA256 mit Pepper über die normalisierte IBAN (02-data-model.md, 08-security.md 2.2),
+        // nie reines SHA-256; wird bei jeder Änderung der IBAN neu abgeleitet.
+        static::saving(function (self $account): void {
+            if (! $account->isDirty('iban') && (string) $account->getAttribute('iban_hash') !== '') {
+                return;
+            }
+
+            $iban = $account->getAttribute('iban');
+            $hash = is_string($iban) ? app(HashedIdentifier::class)->iban($iban) : null;
+            $account->setAttribute('iban_hash', $hash ?? '');
+        });
     }
 
     /**

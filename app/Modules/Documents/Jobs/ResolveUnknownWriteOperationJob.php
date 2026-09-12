@@ -11,6 +11,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -33,6 +34,21 @@ final class ResolveUnknownWriteOperationJob implements ShouldQueue
         public readonly ?string $correlationId = null,
     ) {
         $this->onQueue((string) config('hub.documents.queues.write', 'write'));
+    }
+
+    /**
+     * Gleicher Lock-Schlüssel wie ExecuteWriteOperationJob: nie zwei Jobs gleichzeitig auf derselben Operation
+     * (hub:write:resume und die Selbst-Einplanung könnten sonst parallel PROPFIND-Versuche zählen).
+     *
+     * @return array<int, object>
+     */
+    public function middleware(): array
+    {
+        return [
+            (new WithoutOverlapping('immoware:write:'.$this->operationId))
+                ->dontRelease()
+                ->expireAfter($this->timeout + 60),
+        ];
     }
 
     /**

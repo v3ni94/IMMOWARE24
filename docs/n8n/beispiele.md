@@ -230,12 +230,12 @@ Hinweise für den Flow:
 
 ## Rückkanal: Dokument in den Posteingang einreichen (nur bei freigegebenem Schreibpfad)
 
-Der einzige Schreibweg aus n8n ist ein HTTP-Request an den Hub (nicht an Immoware24) mit Scope documents:create. Der Hub führt die Operation nach Abschnitt 6 der Architekturentscheidung aus.
+Der einzige Schreibweg aus n8n ist ein HTTP-Request an den Hub (nicht an Immoware24) mit Scope documents:write (Änderungsvermerk 12.09.2026: der Code verwendet documents:write, nicht documents:create). Der Hub führt die Operation nach Abschnitt 6 der Architekturentscheidung aus.
 
 Anfrage (Entwurf, einziger Schreibendpunkt gemäß 09-api-documentation.md Abschnitt 3.5):
 
 ```
-POST /api/v1/documents/uploads
+POST /api/v1/documents
 Authorization: Bearer <api_key>
 Idempotency-Key: <UUID, Pflicht; der Hub bildet daraus zusammen mit connection_id und content_hash den Idempotenzschlüssel>
 Content-Type: multipart/form-data
@@ -247,8 +247,8 @@ source_document_id=                          (optional)
 note=Eingangsrechnung aus Mailpostfach       (optional)
 ```
 
-Es gibt kein Feld target_folder: Der Zielpfad wird vom Hub aus allowed_write_prefix der Schreib-Connection und dem sanitisierten Dateinamen mit UUIDv7-Suffix gebildet; Unterordner werden nicht angesteuert (05-write-capabilities.md Abschnitt 3.2). Ein Antrag aus n8n (requested_via = api_key) wird erst nach menschlicher Freigabe über POST /api/v1/documents/uploads/{id}/approve ausgeführt.
+Es gibt kein Feld target_folder: Der Zielpfad wird vom Hub aus allowed_write_prefix der Schreib-Connection und dem sanitisierten Dateinamen mit UUIDv7-Suffix gebildet; Unterordner werden nicht angesteuert (05-write-capabilities.md Abschnitt 3.2). Ein Antrag aus n8n (requested_via = api_key) wird erst nach menschlicher Freigabe im Hub ausgeführt (outcome pending_approval, Freigabe über Admin-Oberfläche oder Kommando hub:write:approve); der Fortsetzungspfad für pending-Anträge wird im Fix-Lauf 12.09.2026 ergänzt, ein API-Endpunkt approve ist geplant und noch nicht umgesetzt (Änderungsvermerk 12.09.2026).
 
-Antwort 202 mit upload_id und status (queued, precheck, sent, unknown, verifying, succeeded, skipped_exists, failed, failed_verify); Abfrage über GET /api/v1/documents/uploads/{id}. Ein Status unknown wird vom Hub ausschließlich lesend über PROPFIND aufgelöst, niemals durch ein zweites PUT. n8n soll bei unknown nicht erneut einreichen, sondern auf das Ereignis document.upload.succeeded oder document.upload.failed warten. Solange write_enabled = false ist, antwortet der Endpunkt mit 403 write_disabled.
+Antwort 202 mit operation_uuid, upload_id, status (pending, prechecked, sent, unknown, verified, failed, rejected gemäß App\Core\Enums\WriteOperationStatus), outcome, approval_required und status_url; Abfrage über GET /api/v1/documents/uploads/{operation_uuid} (Header Location der 202-Antwort). Ein Status unknown wird vom Hub ausschließlich lesend über PROPFIND aufgelöst, niemals durch ein zweites PUT. n8n soll bei unknown nicht erneut einreichen, sondern die status_url weiter abfragen (Webhook-Ereignisse für Uploads sind geplant, 09 Abschnitt 5.3). Solange write_enabled = false ist, antwortet der Endpunkt mit 403 write_disabled.
 
 Voraussetzungen: DAV-Modul gebucht, technischer Schreibnutzer angelegt, Probe mit If-None-Match bestanden, schriftliche Bestätigung des Immoware24-Supports, Freigabe der Geschäftsführung. Alle Punkte derzeit offen (WAITING_FOR_VENDOR_ACCESS).

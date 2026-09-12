@@ -6,6 +6,7 @@ namespace Tests\Feature\Security;
 
 use App\Core\Enums\Role;
 use App\Modules\Security\Models\User;
+use App\Modules\Security\Services\LoginService;
 use App\Modules\Security\Services\SessionManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -45,9 +46,20 @@ final class SessionManagementTest extends TestCase
 
     public function test_sessions_page_renders_for_authenticated_user(): void
     {
-        $user = User::factory()->withoutTotp()->role(Role::ReadOnly)->create();
+        $user = User::factory()->role(Role::ReadOnly)->create();
 
-        $this->actingAs($user)->get('/security/sessions')->assertOk()->assertSee('Aktive Sitzungen');
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()])
+            ->get('/security/sessions')->assertOk()->assertSee('Aktive Sitzungen');
+    }
+
+    public function test_sessions_page_requires_two_factor_for_read_only(): void
+    {
+        // read_only ist nicht mehr von der 2FA-Pflicht ausgenommen (08-security.md 3.1, Änderungsvermerk 12.09.2026).
+        $withoutTotp = User::factory()->withoutTotp()->role(Role::ReadOnly)->create();
+        $this->actingAs($withoutTotp)->get('/security/sessions')->assertRedirect(route('security.two-factor.setup'));
+
+        $unverified = User::factory()->role(Role::ReadOnly)->create();
+        $this->actingAs($unverified)->get('/security/sessions')->assertRedirect(route('security.two-factor.challenge'));
     }
 
     public function test_guest_is_redirected_to_login(): void

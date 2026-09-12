@@ -40,6 +40,12 @@ Route::prefix('api/v1')->name('api.v1.')->middleware(['api.auth'])->group(static
         Route::get('sync/status', [MetaController::class, 'syncStatus'])->middleware('api.scope:sync:read')->name('sync.status');
         Route::get('capabilities', [MetaController::class, 'capabilities'])->middleware('api.scope:sync:read')->name('capabilities');
 
+        // Status eines Upload-Antrags (09 3.5): documents:write oder sync:read.
+        Route::get('documents/uploads/{uuid}', [DocumentUploadController::class, 'show'])
+            ->middleware('api.scope:documents:write,sync:read')
+            ->where('uuid', '[0-9a-fA-F-]{36}')
+            ->name('documents.uploads.show');
+
         Route::middleware('api.scope:directory:read')->group(static function (): void {
             Route::get('directory', [DirectoryController::class, 'index'])->name('directory.index');
             Route::get('directory/search', [DirectoryController::class, 'search'])->name('directory.search');

@@ -156,7 +156,10 @@ return [
     |
     */
 
-    'domain' => env('SESSION_DOMAIN'),
+    // Exakte Host-Angabe ohne führenden Punkt (kein Domain-Wildcard, 08-security.md 3.1); leer = Host des Requests.
+    'domain' => is_string(env('SESSION_DOMAIN')) && trim((string) env('SESSION_DOMAIN'), ' .') !== ''
+        ? ltrim(trim((string) env('SESSION_DOMAIN')), '.')
+        : null,
 
     /*
     |--------------------------------------------------------------------------
@@ -169,7 +172,10 @@ return [
     |
     */
 
-    'secure' => (bool) env('SESSION_SECURE_COOKIE', env('APP_ENV') === 'production'),
+    // Secure in jeder Umgebung außer local (08-security.md 3.1); SESSION_SECURE_COOKIE=false ist nur in local wirksam.
+    'secure' => env('APP_ENV') === 'local'
+        ? filter_var(env('SESSION_SECURE_COOKIE', false), FILTER_VALIDATE_BOOL)
+        : true,
 
     /*
     |--------------------------------------------------------------------------

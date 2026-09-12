@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Modules\Contacts\Dav;
 
+use App\Modules\Connector\Support\DavMultistatusParser;
+
 /**
  * Lesender CardDAV-Client (RFC 6352): addressbook-query, addressbook-multiget, sync-collection.
  */

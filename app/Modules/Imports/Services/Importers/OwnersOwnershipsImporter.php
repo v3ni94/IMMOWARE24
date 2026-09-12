@@ -7,10 +7,10 @@ namespace App\Modules\Imports\Services\Importers;
 use App\Core\Support\Money;
 use App\Modules\Contacts\Models\Contact;
 use App\Modules\Estate\Models\Ownership;
+use App\Modules\Estate\Models\Unit;
 use App\Modules\Imports\DTO\ImportContext;
 use App\Modules\Imports\DTO\ImportOutcome;
 use App\Modules\Imports\Enums\ExportType;
-use App\Modules\Estate\Models\Unit;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
@@ -91,7 +91,9 @@ final class OwnersOwnershipsImporter extends AbstractCsvImporter
             return null;
         }
 
-        return $query->whereIn('unit_id', Unit::query()->withoutGlobalScope('organization')->select('id')->whereIn('property_id', $propertyIds));
+        $query->whereIn('unit_id', Unit::query()->withoutGlobalScope('organization')->select('id')->whereIn('property_id', $propertyIds));
+
+        return $query;
     }
 
     protected function sweepModel(): string

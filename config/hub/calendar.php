@@ -9,12 +9,12 @@ return [
 
     'mapping_version' => 1,
 
+    // Mark-and-Sweep wie hub.contacts.sweep (07-sync-strategy.md Abschnitt 4, Änderungsvermerk 12.09.2026).
     'sweep' => [
-        'required_misses' => (int) env('HUB_CALENDAR_SWEEP_REQUIRED_MISSES', 1),
+        'required_misses' => (int) env('HUB_CALENDAR_SWEEP_REQUIRED_MISSES', 2),
+        'max_missing_ratio' => 0.2,
+        'min_count_for_ratio' => 10,
+        'max_missing_count' => 500,
     ],
 
-    'http' => [
-        'timeout_seconds' => (int) env('HUB_CALENDAR_HTTP_TIMEOUT', 60),
-        'connect_timeout_seconds' => (int) env('HUB_CALENDAR_HTTP_CONNECT_TIMEOUT', 10),
-    ],
 ];

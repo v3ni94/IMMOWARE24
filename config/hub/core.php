@@ -8,7 +8,8 @@ declare(strict_types=1);
  */
 return [
 
-    // BootGuard prüft beim Start die hart gesperrten Schreib-Flags. Abschaltbar nur in Tests.
+    // BootGuard prüft beim Start die hart gesperrten Schreib-Flags. false wirkt nur in testing und local;
+    // in production und staging wird der Wert ignoriert (BootGuard::shouldRun, Änderungsvermerk 12.09.2026).
     'boot_guard' => (bool) env('HUB_BOOT_GUARD', true),
 
     'encryption' => [

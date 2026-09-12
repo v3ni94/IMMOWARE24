@@ -54,6 +54,20 @@ final class SystemTest extends TestCase
     public function test_operator_and_read_only_are_forbidden(): void
     {
         $this->login(User::factory()->role(Role::Operator)->create())->get('/admin/system')->assertForbidden();
-        $this->actingAs(User::factory()->role(Role::ReadOnly)->withoutTotp()->create())->get('/admin/system')->assertForbidden();
+        $this->login(User::factory()->role(Role::ReadOnly)->create())->get('/admin/system')->assertForbidden();
+        // Ohne eingerichtete 2FA gibt es keine Admin-Seite, auch keine 403-Antwort mit Inhalt (Einrichtung zuerst).
+        $this->actingAs(User::factory()->role(Role::ReadOnly)->withoutTotp()->create())->get('/admin/system')->assertRedirect(route('security.two-factor.setup'));
+    }
+
+    public function test_write_flag_page_requires_fresh_reauthentication(): void
+    {
+        $user = User::factory()->role(Role::Owner)->create();
+        $stale = now()->subMinutes((int) config('hub.security.totp.fresh_minutes') + 1)->toIso8601String();
+
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => $stale])
+            ->get('/admin/system')->assertRedirect(route('security.confirm.show'));
+
+        $this->actingAs($user)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => $stale, LoginService::SESSION_REAUTHENTICATED_AT => now()->toIso8601String()])
+            ->get('/admin/system')->assertOk();
     }
 }

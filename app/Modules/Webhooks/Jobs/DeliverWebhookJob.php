@@ -8,6 +8,7 @@ use App\Modules\Webhooks\Models\WebhookDelivery;
 use App\Modules\Webhooks\Models\WebhookEndpoint;
 use App\Modules\Webhooks\Models\WebhookOutbox;
 use App\Modules\Webhooks\Services\WebhookSigner;
+use App\Modules\Webhooks\Services\WebhookUrlGuard;
 use Carbon\CarbonImmutable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -25,9 +26,12 @@ use Throwable;
  * Stellt eine Webhook-Zustellung zu: HMAC-SHA256-Signatur, Timeout 10 s, Retry 30 s, 2 min, 10 min, 30 min,
  * danach Status dead (DLQ). Jeder Versuch wird mit Status, Dauer und Antwortcode protokolliert.
  *
- * Retry-Pfad ist ausschließlich der Queue-Retry dieses Jobs (Exception plus backoff()). hub:webhooks:redeliver
- * greift nur Zustellungen auf, deren Fälligkeit um redeliver_grace_seconds überschritten ist (verlorene Jobs).
- * WithoutOverlapping je delivery_id und die Fälligkeitsprüfung in handle() verhindern Doppelzustellungen.
+ * Retry-Pfad ist ausschließlich der Queue-Retry dieses Jobs (Exception plus backoff()); queued_at markiert, dass ein
+ * Job in der Queue liegt. hub:webhooks:redeliver greift nur fällige failed-Zustellungen auf, die nicht (mehr) in der
+ * Queue liegen. WithoutOverlapping je delivery_id und die Fälligkeitsprüfung in handle() verhindern Doppelzustellungen.
+ *
+ * SSRF-Schutz: Vor jedem Versand wird das Ziel per WebhookUrlGuard (DNS-Auflösung) geprüft, Redirects werden nicht
+ * gefolgt. Ein gesperrtes Ziel führt zu Status skipped ohne Retry.
  */
 final class DeliverWebhookJob implements ShouldQueue
 {
@@ -58,7 +62,7 @@ final class DeliverWebhookJob implements ShouldQueue
         ];
     }
 
-    public function handle(WebhookSigner $signer): void
+    public function handle(WebhookSigner $signer, WebhookUrlGuard $urlGuard): void
     {
         /** @var WebhookDelivery|null $delivery */
         $delivery = WebhookDelivery::query()->find($this->deliveryId);
@@ -74,6 +78,9 @@ final class DeliverWebhookJob implements ShouldQueue
             return;
         }
 
+        // Der Job ist jetzt in Ausführung, nicht mehr in der Queue.
+        $delivery->forceFill(['queued_at' => null])->save();
+
         /** @var WebhookEndpoint|null $endpoint */
         $endpoint = WebhookEndpoint::query()->allOrganizations()->find($delivery->getAttribute('endpoint_id'));
         /** @var WebhookOutbox|null $outbox */
@@ -81,6 +88,16 @@ final class DeliverWebhookJob implements ShouldQueue
 
         if ($endpoint === null || $outbox === null || ! (bool) $endpoint->getAttribute('active')) {
             $delivery->forceFill(['status' => WebhookDelivery::STATUS_SKIPPED, 'last_error' => 'Endpunkt inaktiv oder entfernt.'])->save();
+
+            return;
+        }
+
+        $url = (string) $endpoint->getAttribute('url');
+        $blocked = $urlGuard->reason($url);
+
+        if ($blocked !== null) {
+            $delivery->forceFill(['status' => WebhookDelivery::STATUS_SKIPPED, 'last_error' => 'url_blocked:'.$blocked, 'last_attempt_at' => CarbonImmutable::now(), 'next_attempt_at' => null])->save();
+            Log::warning('Webhook-Zustellung wegen gesperrtem Ziel übersprungen', ['delivery_id' => $delivery->getKey(), 'endpoint_id' => $endpoint->getKey(), 'reason' => $blocked]);
 
             return;
         }
@@ -99,6 +116,7 @@ final class DeliverWebhookJob implements ShouldQueue
 
         try {
             $response = Http::timeout((int) config('hub.webhooks.timeout_seconds', 10))
+                ->withOptions(['allow_redirects' => false])
                 ->withHeaders([
                     (string) ($signatureConfig['header'] ?? 'X-Hub-Signature') => $signature,
                     (string) ($signatureConfig['event_header'] ?? 'X-Hub-Event') => (string) $outbox->getAttribute('event_type'),
@@ -108,7 +126,7 @@ final class DeliverWebhookJob implements ShouldQueue
                     'User-Agent' => 'ImmowareHub-Webhooks/1.0',
                 ])
                 ->withBody($body, 'application/json')
-                ->post((string) $endpoint->getAttribute('url'));
+                ->post($url);
 
             $responseCode = $response->status();
             $excerpt = $this->excerpt($response);
@@ -149,7 +167,8 @@ final class DeliverWebhookJob implements ShouldQueue
         $backoff = $this->backoff();
         $wait = $backoff[min($attempt - 1, count($backoff) - 1)] ?? 30;
 
-        $delivery->forceFill(['status' => WebhookDelivery::STATUS_FAILED, 'next_attempt_at' => $now->addSeconds($wait)])->save();
+        // Die Queue reiht diesen Job mit backoff() erneut ein: queued_at markiert die laufende Wiederholung.
+        $delivery->forceFill(['status' => WebhookDelivery::STATUS_FAILED, 'next_attempt_at' => $now->addSeconds($wait), 'queued_at' => $now])->save();
 
         throw new RuntimeException(sprintf('Webhook-Zustellung %d fehlgeschlagen (%s), Versuch %d von %d.', $this->deliveryId, $error, $attempt, $maxAttempts));
     }
@@ -167,6 +186,7 @@ final class DeliverWebhookJob implements ShouldQueue
             'status' => WebhookDelivery::STATUS_DEAD,
             'dead_at' => CarbonImmutable::now(),
             'next_attempt_at' => null,
+            'queued_at' => null,
             'last_error' => $exception !== null ? class_basename($exception) : ($delivery->getAttribute('last_error') ?? 'failed'),
         ])->save();
     }

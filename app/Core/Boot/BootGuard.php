@@ -21,6 +21,23 @@ final class BootGuard
         'write.caldav_enabled' => 'IMMOWARE_WRITE_CALDAV_ENABLED',
     ];
 
+    /** Umgebungen, in denen HUB_BOOT_GUARD=false den Guard tatsächlich abschaltet. */
+    public const array OPTIONAL_ENVIRONMENTS = ['testing', 'local'];
+
+    /**
+     * Ob der Guard beim Start laufen muss. HUB_BOOT_GUARD=false wirkt ausschließlich in testing und local;
+     * in allen anderen Umgebungen (production, staging) wird der Wert ignoriert und der Guard läuft immer
+     * (CLAUDE.md Regel 2, 05-write-capabilities.md Abschnitt 2.1, Änderungsvermerk 12.09.2026).
+     */
+    public static function shouldRun(bool $configured, string $environment): bool
+    {
+        if (! in_array(strtolower(trim($environment)), self::OPTIONAL_ENVIRONMENTS, true)) {
+            return true;
+        }
+
+        return $configured;
+    }
+
     /**
      * @param  array<string, mixed>  $coreConfig  Inhalt von config('hub.core')
      *

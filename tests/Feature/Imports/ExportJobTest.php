@@ -44,6 +44,31 @@ final class ExportJobTest extends TestCase
         $this->assertSame(strlen($content), $export->size_bytes);
     }
 
+    public function test_csv_export_neutralises_formula_prefixes(): void
+    {
+        Storage::fake('local');
+        $organization = $this->createOrganization();
+        Property::factory()->for($organization)->create(['name' => '=HYPERLINK("https://boese.example";"klick")', 'street' => '+49 Musterweg', 'city' => '@Stadt']);
+        Property::factory()->for($organization)->create(['name' => '-Minusname', 'street' => "\tTab", 'city' => 'Normal']);
+
+        $export = $this->app->make(HubExportService::class)->request((int) $organization->getKey(), 'properties', [], HubExportFormat::Csv, dispatch: false);
+        (new ExportJob((int) $export->getKey()))->handle($this->app->make(HubExportService::class), $this->app->make(ImportStorage::class));
+
+        $content = (string) Storage::disk('local')->get((string) $export->refresh()->storage_key);
+        $this->assertStringContainsString("\"'=HYPERLINK", $content, 'Führendes Gleichheitszeichen wird mit Apostroph entschärft');
+        $this->assertStringContainsString("'+49 Musterweg", $content);
+        $this->assertStringContainsString("'@Stadt", $content);
+        $this->assertStringContainsString("'-Minusname", $content);
+        $this->assertStringContainsString("'\tTab", $content);
+        $this->assertStringContainsString(';Normal', $content, 'Unkritische Werte bleiben unverändert');
+        $this->assertStringNotContainsString(';=HYPERLINK', $content);
+
+        $this->assertSame('', ExportJob::csvCell(null));
+        $this->assertSame('-1250', ExportJob::csvCell(-1250), 'Negative Beträge bleiben Zahlen');
+        $this->assertSame('-12,50', ExportJob::csvCell('-12,50'), 'Numerische Strings bleiben unverändert');
+        $this->assertSame("'=1+1", ExportJob::csvCell('=1+1'));
+    }
+
     public function test_json_export_with_filter(): void
     {
         Storage::fake('local');

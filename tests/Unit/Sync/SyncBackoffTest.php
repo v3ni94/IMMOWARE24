@@ -36,7 +36,9 @@ final class SyncBackoffTest extends TestCase
         config()->set('hub.sync.jobs.jitter_enabled', false);
         $job = new RunSyncJob(1, 'document', SyncMode::Incremental);
 
-        $this->assertSame(5, $job->tries, 'Fünfter Versuch endet in der DLQ.');
+        // tries 0: Releases durch WithoutOverlapping zählen nicht als Fehlversuch; der fünfte echte Fehler endet in der DLQ.
+        $this->assertSame(0, $job->tries);
+        $this->assertSame(5, $job->maxExceptions, 'Fünfter Fehlversuch endet in der DLQ.');
         $this->assertSame(900, $job->timeout);
         $this->assertSame('sync', $job->queue);
         $this->assertSame([30, 120, 600, 1800], $job->backoff());
@@ -47,7 +49,7 @@ final class SyncBackoffTest extends TestCase
 
         $wrapper = new FetchImmowareCalendarJob(3, SyncMode::Full);
         $this->assertSame('calendar_event', $wrapper->entityType);
-        $this->assertSame(5, $wrapper->tries);
+        $this->assertSame(5, $wrapper->maxExceptions);
     }
 
     public function test_dlq_arguments_rebuild_job(): void

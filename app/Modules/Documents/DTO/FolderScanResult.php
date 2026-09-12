@@ -29,5 +29,7 @@ final readonly class FolderScanResult
         public array $childFolders = [],
         public array $errors = [],
         public bool $sweepBlocked = false,
+        /** Depth-1-Antwort überschritt max_entries_per_folder: Auflistung unvollständig, kein Sweep. */
+        public bool $truncated = false,
     ) {}
 }

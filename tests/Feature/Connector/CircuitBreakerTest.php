@@ -125,4 +125,43 @@ final class CircuitBreakerTest extends TestCase
         $this->assertSame(3, $snapshot['open_cycles']);
         $this->assertSame(CarbonImmutable::now()->getTimestamp() + 3600, $snapshot['open_until']);
     }
+
+    public function test_half_open_trial_is_released_after_timeout_and_by_abort(): void
+    {
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-09-12 10:00:00'));
+        config()->set('hub.connector.circuit_breaker.trial_timeout_seconds', 90);
+        $breaker = $this->app->make(CircuitBreaker::class);
+        $key = CircuitBreaker::keyFor(8);
+        $breaker->recordFailure($key, true);
+
+        // Testrequest reserviert, aber nie beantwortet (Worker-Abbruch): nach trial_timeout_seconds verfällt die Reservierung.
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-09-12 10:10:01'));
+        $breaker->assertAvailable($key);
+        $this->assertTrue($breaker->snapshot($key)['trial_in_flight']);
+
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-09-12 10:11:00'));
+        try {
+            $breaker->assertAvailable($key);
+            $this->fail('Innerhalb des Timeouts bleibt der zweite Testrequest gesperrt.');
+        } catch (CircuitOpenException) {
+            $this->addToAssertionCount(1);
+        }
+
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-09-12 10:11:32'));
+        $breaker->assertAvailable($key);
+        $this->assertTrue($breaker->snapshot($key)['trial_in_flight'], 'neue Reservierung nach Verfall');
+
+        // Rate Limit vor dem Senden: abortTrial gibt die Reservierung sofort frei.
+        $breaker->abortTrial($key);
+        $this->assertFalse($breaker->snapshot($key)['trial_in_flight']);
+        $breaker->assertAvailable($key);
+
+        // Jeder Statuscode beendet den Testrequest, auch 409 oder 423 (vorher blieb das Flag hängen).
+        $breaker->recordStatus($key, 423);
+        $this->assertFalse($breaker->snapshot($key)['trial_in_flight']);
+        $this->assertSame(CircuitState::HalfOpen, $breaker->state($key));
+        $breaker->assertAvailable($key);
+        $breaker->recordStatus($key, 207);
+        $this->assertSame(CircuitState::Closed, $breaker->state($key));
+    }
 }

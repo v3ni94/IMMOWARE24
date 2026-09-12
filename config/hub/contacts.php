@@ -10,9 +10,17 @@ return [
     // Version des aktiven Feldmappings vCard nach contacts (field_mappings.version).
     'mapping_version' => 1,
 
-    // Anzahl aufeinanderfolgender vollständiger Läufe, in denen eine Ressource fehlen muss, bevor deleted_at gesetzt wird.
+    /*
+     * Mark-and-Sweep (07-sync-strategy.md Abschnitt 4, Änderungsvermerk 12.09.2026): Soft Delete erst nach required_misses
+     * aufeinanderfolgenden vollständigen Läufen ohne Treffer (mindestens 2) und nur bei bestätigtem Health-Check.
+     * Schutzgrenze: fehlen mehr als max_missing_ratio (ab min_count_for_ratio Einträgen) oder mehr als max_missing_count
+     * Ressourcen, wird nichts gelöscht, die Connection erhält degraded_reason mass_missing.
+     */
     'sweep' => [
-        'required_misses' => (int) env('HUB_CONTACTS_SWEEP_REQUIRED_MISSES', 1),
+        'required_misses' => (int) env('HUB_CONTACTS_SWEEP_REQUIRED_MISSES', 2),
+        'max_missing_ratio' => 0.2,
+        'min_count_for_ratio' => 10,
+        'max_missing_count' => 500,
     ],
 
     // Duplikatkandidaten: gleiche E-Mail oder gleiche Telefonnummer bei unterschiedlicher UID.
@@ -28,8 +36,4 @@ return [
     // Beispiel: 'Eigentümer' => 'owner', 'Mieter' => 'tenant'
     'category_roles' => [],
 
-    'http' => [
-        'timeout_seconds' => (int) env('HUB_CONTACTS_HTTP_TIMEOUT', 60),
-        'connect_timeout_seconds' => (int) env('HUB_CONTACTS_HTTP_CONNECT_TIMEOUT', 10),
-    ],
 ];

@@ -1,6 +1,6 @@
 # 08 Sicherheit, Datenschutz und Berechtigungen im Immoware Hub
 
-Stand: 11.09.2026
+Stand: 11.09.2026, Änderungsvermerk 12.09.2026 (Abgleich mit dem Code, Abschnitt 11)
 Bezug: Architekturentscheidung Abschnitte 1, 3.3, 6 und 7; Datenmodell Tabellen users, api_keys, immoware_connections, capabilities, write_operations, audit_logs, audit_anchors, external_payloads, hub_decision_backups; Dokumente 04-authentication.md und 05-write-capabilities.md.
 
 Regeln: Nur eigener autorisierter Zugang zum Immoware24-Mandanten der Hausverwaltung Müller GmbH. Keine Umgehung von Authentifizierung oder 2FA. Kein Scraping als Datenbankersatz. Jede Aussage über Immoware24 trägt ihren Belegstatus (VERIFIZIERT, DOKUMENTIERT, VERMUTET, NICHT VERFÜGBAR). Aussagen über den Hub selbst sind Designentscheidungen und tragen keinen Belegstatus.
@@ -9,7 +9,7 @@ Regeln: Nur eigener autorisierter Zugang zum Immoware24-Mandanten der Hausverwal
 
 1. Der Hub besitzt genau zwei Klassen von Geheimnissen: die DAV-Zugangsdaten der technischen Immoware24-Nutzer und die Hub-eigenen Anmeldedaten (Passwörter, TOTP-Geheimnisse, API-Keys, Webhook-Secrets). Beide liegen nie im Klartext in Datenbank, Log oder Konfigurationsdatei.
 2. Anmeldung am Hub nur mit Pflicht-2FA (TOTP). API-Zugriff nur mit gehashten, gescopten, befristeten Schlüsseln.
-3. Vier Rollen, identisch mit users.role im Datenmodell und mit AP 1.3 des Implementierungsplans: release (Geschäftsführung bzw. deren Vertretung, in diesem Dokument auch Owner genannt), admin (Administrator), operator (Operator), viewer (Read Only). Der einzige Schreibpfad gegen Immoware24 erfordert zwei Personen (erste Person admin, zweite Person release, niemals dieselbe Person) und ein hinterlegtes Freigabedokument der Geschäftsführung. Eine Erweiterung um developer und api_client ist zurückgestellt (Entscheidung frühestens Phase 4); API-Keys sind eigene Akteure (audit_logs.actor_type = api_key) und keine Nutzerrolle.
+3. Sechs Rollen gemäß App\Core\Enums\Role (Änderungsvermerk 12.09.2026, Abgleich mit dem Code): owner (Geschäftsführung, in älteren Fassungen release), administrator (in älteren Fassungen admin), developer, operator, read_only (in älteren Fassungen viewer), api_client (kann sich nicht an der UI anmelden, Akteur der API-Keys). Der einzige Schreibpfad gegen Immoware24 erfordert zwei Personen (erste Person administrator, zweite Person owner, niemals dieselbe Person, Role::canRequestWriteEnable und Role::canConfirmWriteEnable) und ein hinterlegtes Freigabedokument der Geschäftsführung.
 4. Auditlog append-only mit Hash-Kette, wöchentlich verankert.
 5. Datenschutz: Datensparsamkeit bei Kontaktdaten, Löschkonzept mit Pseudonymisierung, Verzeichnis der Verarbeitungstätigkeiten, AV-Verträge. Finanzdaten in einer eigenen Schutzstufe.
 6. KI-Assistenten (MCP oder vergleichbar) erhalten in Phase 1 bis 3 keinen Zugriff. Sobald sie angebunden werden, gilt der Permission-Layer aus Abschnitt 8: lesen mit Scopes, jede Schreib- oder Freigabehandlung ausschließlich durch einen Menschen.
@@ -79,10 +79,10 @@ Lesen und Schreiben erfolgen mit getrennten Immoware24-Nutzern der Hausverwaltun
 ### 3.1 Passwort und 2FA
 
 - Passwort: Argon2id (memory 64 MB, time 3, parallelism 1), Mindestlänge 12, Prüfung gegen bekannte kompromittierte Passwörter (lokale Liste, keine externe Abfrage mit Klartext).
-- 2FA: TOTP nach RFC 6238, 30 Sekunden, 6 Stellen, Toleranz eine Periode. Pflicht für alle vier Rollen (API-Keys sind keine Nutzer und melden sich nicht an der UI an). Login ohne bestätigtes TOTP nur bis zur Einrichtung (users.totp_confirmed_at) und nur für die Einrichtungsseite.
+- 2FA: TOTP nach RFC 6238, 30 Sekunden, 6 Stellen, Toleranz eine Periode (config/hub/security.php totp.window = 1), Replay-Schutz über den zuletzt akzeptierten Zähler (users.totp_last_counter). Pflicht für alle anmeldefähigen Rollen; totp.exempt_roles ist leer (Änderungsvermerk 12.09.2026, zuvor war read_only befreit). api_client meldet sich nicht an der UI an. Login ohne bestätigtes TOTP nur bis zur Einrichtung (users.totp_confirmed_at) und nur für die Einrichtungsseite.
 - Wiederherstellungscodes: 10 Codes, einmalig, Argon2id-gehasht, Anzeige nur bei Erzeugung. Verbrauch wird auditiert.
-- Sitzungen: HttpOnly, Secure, SameSite=Strict, Ablauf 8 Stunden absolut, 30 Minuten inaktiv. Re-Authentifizierung mit TOTP vor sicherheitskritischen Aktionen (write_enabled setzen, API-Key anlegen, Rolle ändern, degraded aufheben).
-- Sperre: 10 Fehlversuche in 15 Minuten sperren das Konto für 15 Minuten, Audit-Eintrag, Benachrichtigung an Administratoren.
+- Sitzungen: HttpOnly, Secure (SESSION_SECURE_COOKIE=true), SameSite=Strict (SESSION_SAME_SITE=strict), 30 Minuten inaktiv (SESSION_LIFETIME=30), 8 Stunden absolut (HUB_SESSION_ABSOLUTE_MINUTES=480, config sessions.absolute_minutes). Re-Authentifizierung mit TOTP vor sicherheitskritischen Aktionen (write_enabled setzen, API-Key anlegen, Rolle ändern, degraded aufheben, Webhook anlegen): Middleware 2fa.fresh, Bestätigung höchstens totp.fresh_minutes = 5 Minuten alt (HUB_TOTP_FRESH_MINUTES).
+- Sperre (config/hub/security.php login): 5 Fehlversuche (HUB_LOGIN_MAX_ATTEMPTS, Änderungsvermerk 12.09.2026: Code strenger als die frühere Angabe 10) sperren das Konto für 15 Minuten (HUB_LOGIN_LOCKOUT_MINUTES), Audit-Eintrag, Benachrichtigung bei Anmeldung von neuer IP (HUB_LOGIN_NOTIFY_NEW_IP). Zusätzlich throttle am Login je Client-IP; wirksam nur mit korrekt gesetztem TRUSTED_PROXIES. Passwort-Mindestlänge 12.
 - WebAuthn/FIDO2 als zweiter Faktor ist vorgesehen, aber nicht Phase 1.
 
 ### 3.2 API-Keys
@@ -91,27 +91,27 @@ Lesen und Schreiben erfolgen mit getrennten Immoware24-Nutzern der Hausverwaltun
 - Übergabe: Header Authorization: Bearer hub_live_.... Kein Schlüssel in Query-Strings.
 - Pflichtfelder: name, scopes, expires_at (maximal 12 Monate), erstellende Person. Optional allowed_ips (CIDR-Liste).
 - Widerruf sofort wirksam (revoked_at). Letzte Nutzung wird protokolliert (last_used_at, gerundet auf Minute, um Schreiblast zu begrenzen).
-- Jeder Key gehört genau einer Organisation und wird von einem Nutzer der Rolle admin angelegt (api_keys.created_by). Keys sind eigene Akteure (audit_logs.actor_type = api_key) und erhalten nur Scopes, die admin vergeben darf; Schreib- oder Freigabescopes für Immoware24 außer documents:create existieren nicht.
-- Rate Limit je Key: 600 Requests pro Minute lesend, 60 pro Minute für documents:create. Bei Überschreitung 429 mit Retry-After.
+- Jeder Key gehört genau einer Organisation und wird von einem Nutzer der Rolle admin angelegt (api_keys.created_by). Keys sind eigene Akteure (audit_logs.actor_type = api_key) und erhalten nur Scopes, die admin vergeben darf; Schreib- oder Freigabescopes für Immoware24 außer documents:write (im Code so benannt, früher documents:create) existieren nicht. API-Keys sind insgesamt nur nutzbar, wenn HUB_API_KEYS_ENABLED=true ist (Standard false, Änderungsvermerk 12.09.2026); bei false liefert die API 403 api_keys_disabled.
+- Rate Limit je Key: 600 Requests pro Minute lesend, 60 pro Minute für schreibende Endpunkte (documents:write, cases:write, contacts:write, webhooks:manage), zusätzlich api_keys.rate_limit_per_minute (Standard 60) je Key. Bei Überschreitung 429 mit Retry-After.
 - Ausgabe von Keys erst ab Phase 4 (Architekturentscheidung Abschnitt 9). In Phase 1 bis 3 existiert die Tabelle, aber kein aktiver Key.
 
 ## 4. Rollen
 
-Verbindlich sind die vier Rollen viewer, operator, admin, release aus der Architekturentscheidung, dem Datenmodell (users.role) und dem Implementierungsplan (AP 1.3). Die Klarnamen in der ersten Spalte sind Anzeigenamen. Die Zeilen Developer und API Client beschreiben keine Rollen der Phase 1 bis 3, sondern zurückgestellte Erweiterungen; bis zu einer Entscheidung in Phase 4 gilt: Entwicklungszugriff erfolgt ausschließlich in einer Staging-Umgebung mit Rolle admin, API-Keys werden von admin angelegt und sind durch Scopes, Ablauf und IP-Allowlist begrenzt, ohne eigene Nutzerrolle.
+Verbindlich sind die sechs Rollen aus App\Core\Enums\Role und config/hub/security.php (permissions), Änderungsvermerk 12.09.2026. Die Werte von users.role sind die Enum-Werte der Spalte users.role. Ältere Fassungen dieses Dokuments nannten vier Rollen (viewer, operator, admin, release); die Zuordnung steht in der letzten Spalte. Rechte werden als feingranulare Gates vergeben (permission_catalog: connections.manage, sync.run, writes.request, writes.approve, api_keys.manage, users.manage, audit.view, exports.run, imports.run, conflicts.resolve, webhooks.manage).
 
-| Rolle | Zweck | Darf | Darf nicht | users.role |
+| Rolle | Zweck | Rechte (config/hub/security.php) | Darf nicht | users.role (früher) |
 |---|---|---|---|---|
-| Owner | Geschäftsführung bzw. deren Vertretung, zweite Person im Vier-Augen-Prinzip | Alles lesen; write_enabled als zweite Person bestätigen; degraded auf active zurücksetzen; Rollen admin und release vergeben (ausschließlich release darf diese beiden Rollen vergeben); Freigabedokument hinterlegen; Audit-Anker prüfen | Keine technische Konfiguration im Alltag; nicht dieselbe Person wie write_enabled_by; darf write_enabled nicht als erste Person beantragen | release |
-| Administrator | Technischer Betrieb | Connections, Capabilities, Formate, Nutzer der Rollen viewer und operator, API-Keys, Webhooks verwalten; Rotation; write_enabled als erste Person beantragen; Replay und Restore auslösen | Freigabe des Schreibpfads allein; Rollen admin oder release vergeben oder eigene Rolle ändern; Audit-Einträge ändern (technisch unmöglich); Hard-Lock aufheben (technisch unmöglich) | admin |
-| Developer (zurückgestellt, keine Rolle in Phase 1 bis 3) | Entwicklung und Integration | Bis zur Entscheidung in Phase 4: Rolle admin ausschließlich in Staging | Produktiv-Connections ändern; Produktiv-Keys anlegen; Konflikte fachlich entscheiden | keine eigene Ausprägung |
-| Operator | Fachliche Sachbearbeitung | Importe hochladen, Konflikte und proposed_change bearbeiten, Merges (merged_into_id) durchführen und rückgängig machen, Uploads in den Posteingang beantragen, Export-Erinnerungen quittieren | Connections, Capabilities, Nutzer, Keys ändern; Formatversionen aktivieren | operator |
-| Read Only | Einsicht | Spiegel lesen, Datenalter und Status sehen, Reports exportieren, Audit lesen (ohne before_json/after_json personenbezogener Felder) | Jede schreibende Aktion, Payload-Rohdaten | viewer |
-| API Client (zurückgestellt, keine Nutzerrolle) | Technischer Akteur für Fremdsysteme | Nur, was die Scopes des Keys erlauben; Key wird von admin angelegt und ist kein users-Datensatz | Login in die UI; Aktionen ohne Scope | actor_type api_key im Audit, kein users.role |
+| Owner | Geschäftsführung bzw. deren Vertretung, zweite Person im Vier-Augen-Prinzip | alle Rechte des Katalogs (*); write_enabled als zweite Person bestätigen (Role::canConfirmWriteEnable); degraded aufheben; Rollen owner und administrator vergeben | write_enabled als erste Person beantragen; dieselbe Person wie write_enabled_by sein | owner (release) |
+| Administrator | Technischer Betrieb | connections.manage, sync.run, api_keys.manage, users.manage, audit.view, exports.run, writes.request, imports.run, conflicts.resolve, webhooks.manage; write_enabled als erste Person beantragen (Role::canRequestWriteEnable) | Schreibpfad allein freigeben; Rollen owner oder administrator vergeben; eigene Rolle ändern; Passwörter von Nutzern setzen, deren Rolle er nicht vergeben darf (assertAssignable); Audit ändern (technisch unmöglich); Hard-Lock aufheben (technisch unmöglich) | administrator (admin) |
+| Developer | Entwicklung und Integration, Staging | sync.run, audit.view, exports.run | Connections, Nutzer, Keys ändern; Konflikte fachlich entscheiden; Schreibpfad | developer (keine) |
+| Operator | Fachliche Sachbearbeitung | imports.run, conflicts.resolve, writes.request, exports.run | Connections, Capabilities, Nutzer, Keys ändern; Formatversionen aktivieren | operator |
+| Read Only | Einsicht | audit.view, exports.run (Exporte nur mit bestätigter 2FA, keine Befreiung mehr) | jede schreibende Aktion; Payload-Rohdaten nur mit Recht und Auditeintrag | read_only (viewer) |
+| API Client | Technischer Akteur für Fremdsysteme | keine UI-Rechte (Role::canLogin false); nur die Scopes des Keys | Login in die UI; Aktionen ohne Scope | api_client |
 
 Grundsätze:
 - Rollen sind exklusiv, ein Nutzer hat genau eine Rolle. Bedarf an zwei Rollen wird über zwei Konten gelöst, damit das Vier-Augen-Prinzip nicht durch Rollenhäufung unterlaufen wird.
-- Datenbank-Trigger und Anwendungslogik prüfen write_enabled_by <> write_confirmed_by, Rolle admin beim Beantragenden und Rolle release beim Bestätigenden. Zwei release-Nutzer ohne admin können den Schreibpfad nicht freigeben, ein admin kann ohne release nicht freigeben.
-- Rollenvergabe: Die Rollen admin und release werden ausschließlich durch einen Nutzer der Rolle release vergeben oder entzogen (PATCH /api/v1/users/{id}/role, 09-api-documentation.md Abschnitt 3.10). admin vergibt nur viewer und operator. Damit kann ein admin nicht durch Anlage eines zweiten Kontos mit Rolle release die Schreibfreigabe allein herbeiführen.
+- Anwendungslogik prüft write_enabled_by <> write_confirmed_by, Rolle administrator beim Beantragenden und Rolle owner beim Bestätigenden. Zwei owner ohne administrator können den Schreibpfad nicht freigeben, ein administrator kann ohne owner nicht freigeben. Ein Datenbank-Trigger für diese Prüfung ist nicht umgesetzt (02-data-model.md, Abgleich 12.09.2026); die umgesetzten Trigger stehen in docs/architecture/03-mariadb-triggers.sql.
+- Rollenvergabe: Die Rollen owner und administrator werden ausschließlich durch einen owner vergeben oder entzogen (Admin-Oberfläche Benutzer, assertAssignable; ein REST-Endpunkt ist geplant, 09-api-documentation.md Abschnitt 3.10). administrator vergibt nur developer, operator und read_only. Passwortänderungen fremder Nutzer unterliegen derselben Prüfung und beenden die Sitzungen des Zielnutzers. Damit kann ein admin nicht durch Anlage eines zweiten Kontos mit Rolle release die Schreibfreigabe allein herbeiführen.
 - Rollenwechsel und Kontosperren werden auditiert und lösen einen Sitzungsabbruch aus.
 
 ## 5. Scopes
@@ -144,12 +144,15 @@ Es gibt keine Scopes contacts:write, units:write, finance:write, calendar:write,
 
 ## 6. Auditlog
 
-- Tabelle audit_logs, append-only. Anwendungs-DB-Nutzer hat INSERT und SELECT, kein UPDATE, kein DELETE. Trigger BEFORE UPDATE und BEFORE DELETE mit SIGNAL. Migrationen laufen mit einem separaten DB-Nutzer.
+- Tabelle audit_logs, append-only. Anwendungs-DB-Nutzer hat INSERT und SELECT, kein UPDATE, kein DELETE (Rechtevergabe im Betrieb, Go-live-Checkliste). Trigger BEFORE UPDATE und BEFORE DELETE mit SIGNAL seit Migration 2026_09_12_130000 (nur MariaDB/MySQL, docs/architecture/03-mariadb-triggers.sql; SQLite in Tests ohne Trigger). Hash-Kette: prev_hash wird unter Sperre gelesen, Unique-Index auf prev_hash verhindert Verzweigungen. Migrationen laufen mit einem separaten DB-Nutzer.
 - Hash-Kette: row_hash = SHA-256(prev_hash || kanonisches JSON aller Felder ohne row_hash). prev_hash der ersten Zeile ist 64 Nullen. Kettenprüfung per Artisan-Kommando hub:audit:verify, täglich im Scheduler, Ergebnis im Health-Endpoint.
 - Verankerung: Wöchentlich schreibt hub:audit:anchor die letzte id und den Kettenwert nach audit_anchors und exportiert ihn in einen Object-Lock-Speicher (WORM, Aufbewahrung 10 Jahre). Ab Phase 2 täglich.
-- Pflichtereignisse: Login, Logout, fehlgeschlagener Login, 2FA-Einrichtung, Wiederherstellungscode verbraucht, Rollenänderung, Nutzer angelegt oder gesperrt, API-Key angelegt, genutzt (erste Nutzung je Tag), widerrufen, Connection angelegt oder geändert, Secret rotiert, write_enabled beantragt und bestätigt, degraded gesetzt und aufgehoben, Capability geändert, Formatversion aktiviert, jede write_operation mit jedem Statuswechsel, jede Konfliktentscheidung, jeder Merge und Undo, jeder Replay, jede Pseudonymisierung, jeder Download eines Dokuments oder Payloads, jeder Export.
+- Pflichtereignisse: Login, Logout, fehlgeschlagener Login, erneute Authentifizierung (erfolgreich und fehlgeschlagen), Aufruf einer Datenherkunft-Detailseite (admin.records.viewed) und jeder Payload-Abruf (admin.records.payload_viewed, Änderungsvermerk 12.09.2026), 2FA-Einrichtung, Wiederherstellungscode verbraucht, Rollenänderung, Nutzer angelegt oder gesperrt, API-Key angelegt, genutzt (erste Nutzung je Tag), widerrufen, Connection angelegt oder geändert, Secret rotiert, write_enabled beantragt und bestätigt, degraded gesetzt und aufgehoben, Capability geändert, Formatversion aktiviert, jede write_operation mit jedem Statuswechsel, jede Konfliktentscheidung, jeder Merge und Undo, jeder Replay, jede Pseudonymisierung, jeder Download eines Dokuments oder Payloads, jeder Export.
 - Inhalt: before_json und after_json ohne Geheimnisse; personenbezogene Felder werden im Audit nur als Feldname plus Hash gespeichert, nicht als Wert, damit das Löschkonzept (7.3) nicht am Audit scheitert. Die Quell-IP-Adresse ist ein personenbezogenes Datum und wird ausschließlich als HMAC-SHA256 mit Pepper gespeichert (audit_logs.ip_address_hash); Gleichheitsvergleiche bleiben möglich, eine Rückrechnung nicht.
 - Zugriff: Rolle Read Only sieht Audit ohne before_json/after_json. Owner und Administrator sehen alles.
+- Datenherkunft (Änderungsvermerk 12.09.2026): Recht records.view (Detailseiten des Spiegels) für Owner, Administrator, Developer, Operator, Read Only; Recht payloads.view (archivierte Rohnutzlasten mit personenbezogenen Daten) nur für Owner, Administrator, Developer. Beide Aufrufe werden auditiert.
+- Hash-Kette (Änderungsvermerk 12.09.2026): Das Anhängen ist über den prozessübergreifenden Lock audit:chain plus lockForUpdate auf die letzte Zeile serialisiert; ein Unique-Index auf prev_hash verhindert jede Verzweigung. Die Kette ist eine einzige Kette je Installation, nicht je Organisation, weil hub:audit:verify und die Anker über alle Zeilen prüfen.
+- Passwörter fremder Nutzer (Änderungsvermerk 12.09.2026): Ein Passwort setzt nur, wer die Rolle des Zielnutzers vergeben darf (Administrator nie für Owner oder Administrator); danach enden alle Sitzungen des Zielnutzers. Der letzte aktive Owner einer Organisation kann weder herabgestuft noch deaktiviert werden.
 - Aufbewahrung: unbefristet (Architekturentscheidung Abschnitt G), mit Rechtsanwalt gegen Löschpflichten der DSGVO abzuwägen; deshalb Hash statt Wert bei personenbezogenen Feldern.
 
 ## 7. Datenschutz
@@ -248,7 +251,7 @@ Technische Durchsetzung: MCP-Server als eigener Prozess mit eigenem API-Key, ohn
 
 ## 9. Technische und organisatorische Maßnahmen (Kurzliste)
 
-- Netzwerk: Hub nur über HTTPS (TLS 1.2 und höher, HSTS), ausgehend nur zu den Immoware24-DAV-Hosts, dem Blob-Speicher, dem KMS und den registrierten Webhook-Endpunkten (Egress-Allowlist). Admin-UI zusätzlich hinter VPN oder IP-Allowlist.
+- Netzwerk: Hub nur über HTTPS (TLS 1.2 und höher, HSTS), ausgehend nur zu den Immoware24-DAV-Hosts, dem Blob-Speicher, dem KMS und den registrierten Webhook-Endpunkten (Egress-Allowlist auf Netzwerkebene; zusätzlich im Code Host-Prüfung der Connection-Basis-URL und der Webhook-URLs gegen private, Link-Local- und Loopback-Bereiche ohne Redirects, Änderungsvermerk 12.09.2026). Reverse Proxy nur mit TRUSTED_PROXIES auf die Proxy-Adresse, nie *. Admin-UI zusätzlich hinter VPN oder IP-Allowlist.
 - Methoden-Guard im HTTP-Client (05-write-capabilities.md) als Code-Ebene unabhängig von Konfiguration.
 - Abhängigkeiten: composer audit im CI, Renovate, keine unsignierten Pakete.
 - Secrets-Scanning im CI (gitleaks), Pre-Commit-Hook.
@@ -269,4 +272,19 @@ Technische Durchsetzung: MCP-Server als eigener Prozess mit eigenem API-Key, ohn
 | Exportregelung bei Vertragsende in den AGB | zu verifizieren (AGB-Original) | Wortlaut sichern, Exit-Strategie anpassen |
 | Aufbewahrungsfristen Finanzdaten | mit Steuerberater abstimmen | Fristen im Löschkonzept fixieren |
 | Datenschutz-Folgenabschätzung erforderlich | Entscheidung Datenschutzbeauftragter oder Rechtsanwalt | vor Phase 1 |
-| Erweiterung von users.role um developer und api_client | zurückgestellt | Entscheidung frühestens Phase 4; bis dahin vier Rollen verbindlich |
+| Erweiterung von users.role um developer und api_client | umgesetzt (Änderungsvermerk 12.09.2026, sechs Rollen in App\Core\Enums\Role) | erledigt |
+
+## 11. Security-Review 12.09.2026
+
+Interner Code-Review des Gesamtstands (Branch claude/vibrant-lovelace-c624qw) gegen die Konzeptdokumente 01, 02, 05, 07, 08, 09 und CLAUDE.md. Ergebnis: 85 Findings gemeldet, 57 bestätigt, 28 verworfen (nicht reproduzierbar oder bereits abgedeckt). Alle bestätigten Findings werden im Fix-Lauf 12.09.2026 behoben; jeder Fix erhält einen Test, der den Fehler vorher reproduziert. Details (Datei, Zeile, Maßnahme) liegen im internen Review-Protokoll, nicht in diesem Dokument. Keine Zugangsdaten oder Mandantendaten waren betroffen; kein System außer der Entwicklungsumgebung war erreichbar.
+
+| Themenfeld | kritisch | hoch | mittel | Summe | Status |
+|---|---|---|---|---|---|
+| Zugriffsschutz, Authentifizierung, Audit (Rechteprüfung, 2FA-Ausnahme, Proxy-Konfiguration, SSRF, Feature-Flag API-Keys, Rechteausweitung, TOTP-Replay, Sitzungsschutz, Re-Authentifizierung, Scope-Prüfung, Rate Limit, CSV-Injection, Audit-Kette, Vier-Augen-Prinzip, Sperrebenen) | 0 | 11 | 8 | 19 | behoben in Lauf 12.09.2026 |
+| Nebenläufigkeit, Idempotenz, Queue (Cursor-Endlosschleife, Idempotenz-Race, Locks, Doppelzustellung, Queue-Konfiguration, Circuit Breaker, DLQ) | 3 | 7 | 7 | 17 | behoben in Lauf 12.09.2026 |
+| Datenintegrität Spiegel (Mark-and-Sweep, Soft Delete beim ersten Fehlen, Schutzgrenzen, Snapshot-Abgleich, Unique-Ebene) | 1 | 3 | 3 | 7 | behoben in Lauf 12.09.2026 |
+| Dokument-Code-Abgleich und Schreibpfad-Status (Statusmaschine, Capability-Schlüssel, Endpunkte, connector_type, unknown und pending) | 1 | 2 | 5 | 8 | behoben in Lauf 12.09.2026 |
+| Betrieb (Scheduler systemd, Healthchecks, Deploy-Kriterium, Health-Endpunkt, Correlation-ID im Worker) | 0 | 2 | 4 | 6 | behoben in Lauf 12.09.2026 |
+| Summe | 5 | 25 | 27 | 57 | |
+
+Folgen für dieses Dokument: Abschnitte 0, 3.1, 3.2, 4, 6 und 9 wurden am 12.09.2026 an den Code angeglichen (sechs Rollen, Sperrgrenzen aus config/hub/security.php, Trigger nur für audit_logs und write_operations, Host-Prüfungen, TRUSTED_PROXIES). Aussagen zu Immoware24 selbst sind unverändert; kein Zugang wurde am echten Mandanten getestet (Phase 0 offen).

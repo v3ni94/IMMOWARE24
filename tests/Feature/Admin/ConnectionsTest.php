@@ -218,4 +218,117 @@ final class ConnectionsTest extends TestCase
         $this->assertNull($connection->getAttribute('degraded_reason'));
         $this->assertSame((int) $owner->getKey(), (int) $connection->getAttribute('degraded_cleared_by'));
     }
+
+    public function test_update_of_scope_fields_resets_write_approval(): void
+    {
+        $this->loginAs(Role::Administrator);
+        $requester = User::factory()->role(Role::Administrator)->for($this->organization)->create();
+        $confirmer = User::factory()->role(Role::Owner)->for($this->organization)->create();
+        $read = ImmowareConnection::factory()->for($this->organization)->create(['connector_type' => 'webdav_documents', 'purpose' => 'read']);
+        $connection = ImmowareConnection::factory()->for($this->organization)->create([
+            'connector_type' => 'webdav_documents',
+            'purpose' => 'write',
+            'paired_read_connection_id' => $read->getKey(),
+            'base_url' => 'https://dav.example.test/share',
+            'allowed_write_prefix' => '/Posteingang/',
+            'write_enabled' => true,
+            'write_enabled_by' => $requester->getKey(),
+            'write_confirmed_by' => $confirmer->getKey(),
+            'write_approval_document_id' => 7,
+            'write_enabled_at' => now(),
+        ]);
+        $this->assertNull($connection->writeApprovalIncompleteReason());
+
+        $payload = static fn (array $overrides): array => $overrides + [
+            'name' => 'Schreib-Connection',
+            'connector_type' => 'webdav_documents',
+            'purpose' => 'write',
+            'base_url' => 'https://dav.example.test/share',
+            'poll_interval_seconds' => 1800,
+            'rate_limit_rps' => '2',
+            'allowed_write_prefix' => '/Posteingang/',
+            'paired_read_connection_id' => $read->getKey(),
+        ];
+
+        // Namensänderung lässt die Freigabe bestehen.
+        $this->put('/admin/connections/'.$connection->getKey(), $payload(['name' => 'Umbenannt']))->assertRedirect();
+        $connection->refresh();
+        $this->assertTrue((bool) $connection->getAttribute('write_enabled'));
+        $this->assertDatabaseMissing('audit_logs', ['action' => 'admin.connections.write_approval_reset']);
+
+        // Änderung des Schreibpräfixes hebt die Freigabe samt Vier-Augen-Nachweis auf.
+        $this->put('/admin/connections/'.$connection->getKey(), $payload(['name' => 'Umbenannt', 'allowed_write_prefix' => '/Posteingang/Hub/']))->assertRedirect();
+        $connection->refresh();
+        $this->assertFalse((bool) $connection->getAttribute('write_enabled'));
+        $this->assertNull($connection->getAttribute('write_enabled_by'));
+        $this->assertNull($connection->getAttribute('write_confirmed_by'));
+        $this->assertNull($connection->getAttribute('write_approval_document_id'));
+        $this->assertNull($connection->getAttribute('write_enabled_at'));
+
+        $reset = AuditLog::query()->where('action', 'admin.connections.write_approval_reset')->firstOrFail();
+        $this->assertSame(['allowed_write_prefix'], $reset->getAttribute('after_json')['fields']);
+        $updated = AuditLog::query()->where('action', 'admin.connections.updated')->orderByDesc('id')->firstOrFail();
+        $this->assertTrue($updated->getAttribute('after_json')['write_approval_reset']);
+    }
+
+    public function test_write_prefix_and_purpose_are_validated(): void
+    {
+        $this->loginAs(Role::Administrator);
+
+        $read = ImmowareConnection::factory()->for($this->organization)->create(['connector_type' => 'webdav_documents', 'purpose' => 'read']);
+        $base = [
+            'name' => 'Prüfung',
+            'connector_type' => 'webdav_documents',
+            'purpose' => 'write',
+            'base_url' => 'https://dav.example.test/share',
+            'poll_interval_seconds' => 1800,
+            'rate_limit_rps' => '2',
+            'paired_read_connection_id' => $read->getKey(),
+        ];
+
+        foreach (['/', '/Dokumente/', '/Dokumente/2026/', 'Posteingang/', '/Posteingang', '/Posteingang/../Dokumente/', ''] as $prefix) {
+            $this->from('/admin/connections/create')->post('/admin/connections', $base + ['allowed_write_prefix' => $prefix])
+                ->assertRedirect('/admin/connections/create')->assertSessionHasErrors('allowed_write_prefix');
+        }
+
+        // Zweck write nur für WebDAV (05-write-capabilities.md 2.2 Nr. 1).
+        $this->from('/admin/connections/create')->post('/admin/connections', ['connector_type' => 'carddav_contacts', 'allowed_write_prefix' => '/Posteingang/'] + $base)
+            ->assertRedirect('/admin/connections/create')->assertSessionHasErrors('purpose');
+
+        $this->post('/admin/connections', $base + ['allowed_write_prefix' => '/Posteingang/'])->assertRedirect();
+        $this->assertDatabaseHas('immoware_connections', ['name' => 'Prüfung', 'allowed_write_prefix' => '/Posteingang/', 'write_enabled' => false, 'paired_read_connection_id' => $read->getKey()]);
+    }
+
+    public function test_write_connection_requires_paired_read_connection_of_same_tenant(): void
+    {
+        $this->loginAs(Role::Administrator);
+        $foreignRead = ImmowareConnection::factory()->create(['connector_type' => 'webdav_documents', 'purpose' => 'read']);
+        $carddav = ImmowareConnection::factory()->for($this->organization)->create(['connector_type' => 'carddav_contacts', 'purpose' => 'read']);
+        $ownWrite = ImmowareConnection::factory()->for($this->organization)->create(['connector_type' => 'webdav_documents', 'purpose' => 'write', 'allowed_write_prefix' => '/Posteingang/']);
+        $base = [
+            'name' => 'Schreib-Connection',
+            'connector_type' => 'webdav_documents',
+            'purpose' => 'write',
+            'base_url' => 'https://dav.example.test/share',
+            'poll_interval_seconds' => 1800,
+            'rate_limit_rps' => '2',
+            'allowed_write_prefix' => '/Posteingang/',
+        ];
+
+        // Ohne, mit fremder, mit falschem Typ oder mit einer Schreib-Connection als Partner: Validierungsfehler.
+        foreach ([null, $foreignRead->getKey(), $carddav->getKey(), $ownWrite->getKey(), 999999] as $paired) {
+            $this->from('/admin/connections/create')->post('/admin/connections', $base + ['paired_read_connection_id' => $paired])
+                ->assertRedirect('/admin/connections/create')->assertSessionHasErrors('paired_read_connection_id');
+        }
+
+        // Eine Schreib-Connection darf beim Bearbeiten nicht sich selbst zuordnen.
+        $this->from('/admin/connections/'.$ownWrite->getKey().'/edit')->put('/admin/connections/'.$ownWrite->getKey(), $base + ['paired_read_connection_id' => $ownWrite->getKey()])
+            ->assertRedirect('/admin/connections/'.$ownWrite->getKey().'/edit')->assertSessionHasErrors('paired_read_connection_id');
+
+        // Lese-Connection darf keinen Partner tragen.
+        $this->from('/admin/connections/create')->post('/admin/connections', ['purpose' => 'read', 'paired_read_connection_id' => $ownWrite->getKey()] + $base)
+            ->assertRedirect('/admin/connections/create')->assertSessionHasErrors('paired_read_connection_id');
+
+        $this->assertDatabaseMissing('immoware_connections', ['name' => 'Schreib-Connection']);
+    }
 }

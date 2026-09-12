@@ -7,6 +7,7 @@ namespace App\Modules\Documents\Services;
 use App\Core\Contracts\AuditLoggerInterface;
 use App\Core\Contracts\CapabilityRegistryInterface;
 use App\Core\Enums\AuditSource;
+use App\Core\Enums\Role;
 use App\Core\Enums\WriteOperationStatus;
 use App\Core\Exceptions\WriteBlockedException;
 use App\Core\Support\CorrelationId;
@@ -17,6 +18,7 @@ use App\Modules\Documents\DTO\UploadRequest;
 use App\Modules\Documents\DTO\UploadResult;
 use App\Modules\Documents\Http\WebDavClient;
 use App\Modules\Documents\Http\WebDavClientFactory;
+use App\Modules\Documents\Jobs\ExecuteWriteOperationJob;
 use App\Modules\Documents\Jobs\ResolveUnknownWriteOperationJob;
 use App\Modules\Documents\Models\Document;
 use App\Modules\Documents\Support\DavEntry;
@@ -53,6 +55,11 @@ final class PosteingangUploadService
 
     public const string CONFLICT_UNKNOWN_UNRESOLVED = 'write_unknown_unresolved';
 
+    /** rejected_reason, wenn der Inhalt eines pending-Antrags nicht gesichert werden konnte (nie stiller Verlust). */
+    public const string REJECTED_CONTENT_NOT_STORED = 'content_storage_failed';
+
+    public const string DENIED_PAIRED_READ_MISSING = 'paired_read_connection_missing';
+
     public function __construct(
         private readonly WebDavClientFactory $clients,
         private readonly CapabilityRegistryInterface $capabilities,
@@ -65,9 +72,24 @@ final class PosteingangUploadService
     ) {}
 
     /**
-     * Nimmt einen Upload-Antrag an und führt ihn, sofern freigegeben, unmittelbar aus.
+     * Nimmt einen Upload-Antrag an und führt ihn, sofern freigegeben, unmittelbar im aufrufenden Prozess aus (UI, Kommando).
      */
     public function upload(UploadRequest $request): UploadResult
+    {
+        return $this->accept($request, false);
+    }
+
+    /**
+     * Nimmt einen Upload-Antrag an, sichert den Inhalt im Blob-Speicher und führt ihn asynchron über die Queue write
+     * aus (ExecuteWriteOperationJob). Für API-Aufrufer: Antwort 202 mit operation_uuid, Ausführung im Worker.
+     * Anträge aus einem API-Key-Kontext bleiben pending bis zur menschlichen Freigabe (approve).
+     */
+    public function submit(UploadRequest $request): UploadResult
+    {
+        return $this->accept($request, true);
+    }
+
+    private function accept(UploadRequest $request, bool $async): UploadResult
     {
         /** @var ImmowareConnection $connection */
         $connection = ImmowareConnection::query()->withoutGlobalScopes()->findOrFail($request->connectionId);
@@ -127,10 +149,14 @@ final class PosteingangUploadService
         }
 
         // Freigaben (Flags, Capability, Connection, Vier-Augen): Antrag bleibt pending, Inhalt im Blob-Speicher, kein Verlust.
+        // Kann der Inhalt nicht gesichert werden, endet der Antrag als rejected mit Grund (nie stiller Verlust).
         $denial = $this->denialReason($connection);
 
         if ($denial !== null) {
-            $this->keepPending($operation, $request, ['denied_reason' => $denial]);
+            if (! $this->keepPending($operation, $request, ['denied_reason' => $denial])) {
+                return new UploadResult($operation, UploadResult::OUTCOME_REJECTED);
+            }
+
             $this->audit($denial === 'write_disabled_global' ? 'write.denied_global' : 'write.denied', $operation, [], ['denied_reason' => $denial], $request->requestedVia);
 
             return new UploadResult($operation, UploadResult::OUTCOME_DENIED);
@@ -138,10 +164,24 @@ final class PosteingangUploadService
 
         // Anträge aus einem API-Key-Kontext führt erst ein Mensch aus (approve), nie der Request selbst.
         if ($this->requiresHumanApproval($request->requestedVia)) {
-            $this->keepPending($operation, $request, ['approval_required' => true, 'requested_via' => $request->requestedVia]);
+            if (! $this->keepPending($operation, $request, ['approval_required' => true, 'requested_via' => $request->requestedVia])) {
+                return new UploadResult($operation, UploadResult::OUTCOME_REJECTED);
+            }
+
             $this->audit('write.approval_required', $operation, [], ['requested_via' => $request->requestedVia], $request->requestedVia);
 
             return new UploadResult($operation, UploadResult::OUTCOME_PENDING_APPROVAL);
+        }
+
+        if ($async) {
+            if (! $this->keepPending($operation, $request, ['queued' => true])) {
+                return new UploadResult($operation, UploadResult::OUTCOME_REJECTED);
+            }
+
+            $this->bus->dispatch(new ExecuteWriteOperationJob((int) $operation->getKey(), $this->correlation->current()));
+            $this->audit('write.dispatched', $operation, [], ['queue' => (string) $this->config->get('hub.documents.queues.write', 'write')], $request->requestedVia);
+
+            return new UploadResult($operation, UploadResult::OUTCOME_QUEUED);
         }
 
         return $this->execute($operation, $connection, $request);
@@ -153,7 +193,7 @@ final class PosteingangUploadService
      */
     public function approve(WriteOperation $operation, User $approver, ?string $content = null, bool $dryRun = false): UploadResult
     {
-        if (! $approver->role->canLogin() || $approver->role === \App\Core\Enums\Role::ReadOnly) {
+        if (! $approver->role->canLogin() || $approver->role === Role::ReadOnly) {
             throw new WriteBlockedException('Freigabe eines Uploads erfordert die Rolle operator oder höher.', 'PUT');
         }
 
@@ -211,22 +251,34 @@ final class PosteingangUploadService
     }
 
     /**
+     * Hält den Antrag pending und sichert den Inhalt im Blob-Speicher. Scheitert die Ablage, wird der Antrag mit
+     * rejected_reason content_storage_failed beendet und false geliefert: Ein pending-Antrag ohne Inhalt wäre eine Leiche,
+     * die nie ausgeführt werden könnte (05-write-capabilities.md 3.3, Änderungsvermerk 12.09.2026).
+     *
      * @param  array<string, mixed>  $precheck
      */
-    private function keepPending(WriteOperation $operation, UploadRequest $request, array $precheck): void
+    private function keepPending(WriteOperation $operation, UploadRequest $request, array $precheck): bool
     {
         if ($operation->getAttribute('source_storage_key') === null) {
             try {
                 $operation->setAttribute('source_storage_key', $this->contents->store($operation, $request->content));
             } catch (Throwable $e) {
-                Log::error('Inhalt des Upload-Antrags konnte nicht im Blob-Speicher abgelegt werden.', ['operation_id' => $operation->getKey(), 'error' => $this->masker->maskString($e->getMessage())]);
-                $precheck['content_stored'] = false;
+                Log::error('Inhalt des Upload-Antrags konnte nicht im Blob-Speicher abgelegt werden, Antrag wird abgelehnt.', ['operation_id' => $operation->getKey(), 'error' => $this->masker->maskString($e->getMessage())]);
+                $this->transition($operation, WriteOperationStatus::Rejected, [
+                    'precheck_result' => [...(array) ($operation->getAttribute('precheck_result') ?? []), ...$precheck, 'rejected_reason' => self::REJECTED_CONTENT_NOT_STORED, 'content_stored' => false],
+                    'failed_at' => CarbonImmutable::now(),
+                    'last_error' => 'Inhalt konnte nicht im Blob-Speicher gesichert werden: '.$e::class,
+                ], $request->requestedVia);
+
+                return false;
             }
         }
 
         $existing = (array) ($operation->getAttribute('precheck_result') ?? []);
         $operation->setAttribute('precheck_result', [...$existing, ...$precheck]);
         $operation->save();
+
+        return true;
     }
 
     /**
@@ -261,7 +313,19 @@ final class PosteingangUploadService
         $denial = $this->denialReason($connection);
 
         if ($denial !== null) {
+            $precheck = (array) ($operation->getAttribute('precheck_result') ?? []);
+            $operation->setAttribute('precheck_result', [...$precheck, 'denied_reason' => $denial]);
+            $operation->save();
+            $this->audit($denial === 'write_disabled_global' ? 'write.denied_global' : 'write.denied', $operation, [], ['denied_reason' => $denial], (string) $operation->getAttribute('requested_via'));
+
             return new UploadResult($operation, UploadResult::OUTCOME_DENIED);
+        }
+
+        // Anträge aus einem API-Key-Kontext werden auch aus dem Worker heraus nie ohne menschliche Freigabe ausgeführt.
+        $precheck = (array) ($operation->getAttribute('precheck_result') ?? []);
+
+        if ($this->requiresHumanApproval((string) $operation->getAttribute('requested_via')) && ! isset($precheck['approved_by'])) {
+            return new UploadResult($operation, UploadResult::OUTCOME_PENDING_APPROVAL);
         }
 
         $request = new UploadRequest(
@@ -273,7 +337,13 @@ final class PosteingangUploadService
             dryRun: $dryRun,
         );
 
-        return $this->execute($operation, $connection, $request);
+        $result = $this->execute($operation, $connection, $request);
+
+        if ($result->status()->mayHaveReachedRemote() || in_array($result->status(), [WriteOperationStatus::Failed, WriteOperationStatus::Rejected], true)) {
+            $this->contents->forget($operation);
+        }
+
+        return $result;
     }
 
     /**
@@ -415,9 +485,9 @@ final class PosteingangUploadService
         }
 
         if ($status === 412) {
-            // Race mit Scanner: Ziel existiert. Nach sent ist laut Statusmaschine nur failed erreichbar (kein Rücksprung),
-            // fachlich entspricht das skipped_exists; Konflikt write_target_exists, kein zweites PUT.
-            $this->transition($operation, WriteOperationStatus::Failed, [
+            // Race mit Scanner: Ziel existiert, das PUT hat nicht gewirkt (If-None-Match: *). Status rejected mit Konflikt
+            // write_target_exists (05 3.3: skipped_exists), kein zweites PUT (Änderungsvermerk 12.09.2026).
+            $this->transition($operation, WriteOperationStatus::Rejected, [
                 'failed_at' => CarbonImmutable::now(),
                 'last_error' => '412 Precondition Failed: Ziel existiert bereits (If-None-Match: *).',
                 'precheck_result' => ['status' => 404, 'put_status' => 412, 'conflict' => self::CONFLICT_TARGET_EXISTS, 'rejected_reason' => 'precondition_failed'],
@@ -576,9 +646,15 @@ final class PosteingangUploadService
      */
     private function mirrorUploadedDocument(WriteOperation $operation, ImmowareConnection $connection, ?DavEntry $entry): void
     {
-        $readConnectionId = $connection->getAttribute('paired_read_connection_id') !== null
-            ? (int) $connection->getAttribute('paired_read_connection_id')
-            : (int) $connection->getKey();
+        if ($connection->getAttribute('paired_read_connection_id') === null) {
+            // Ohne gekoppelte Lese-Connection (denialReason greift vorher) keine Spiegelzeile auf der Schreib-Connection:
+            // der nächste Scan der Lese-Connection würde sonst ein Duplikat mit origin immoware anlegen.
+            Log::warning('Upload verifiziert, aber keine paired_read_connection_id: keine Dokumentzeile angelegt.', ['operation_id' => $operation->getKey()]);
+
+            return;
+        }
+
+        $readConnectionId = (int) $connection->getAttribute('paired_read_connection_id');
 
         $path = (string) $operation->getAttribute('target_path');
         $pathHash = Document::hashPath($path);
@@ -663,6 +739,12 @@ final class PosteingangUploadService
 
         if (! $connection->isWritePurpose()) {
             return 'connection_purpose_not_write';
+        }
+
+        // 02-data-model.md: paired_read_connection_id ist bei purpose write Pflicht, damit der Zielscan dieselbe
+        // Dokumentzeile aktualisiert statt ein Duplikat anzulegen. Kein Rückfall auf die Schreib-Connection.
+        if ($connection->getAttribute('paired_read_connection_id') === null) {
+            return self::DENIED_PAIRED_READ_MISSING;
         }
 
         // Vier-Augen-Prinzip: write_enabled_by (admin) und write_confirmed_by (release/Owner) verschieden, Freigabedokument gesetzt.

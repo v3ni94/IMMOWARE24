@@ -7,8 +7,10 @@ namespace App\Modules\Api\Health;
 use App\Modules\Api\Support\Provenance;
 use App\Modules\Connector\Models\ImmowareConnection;
 use App\Modules\Sync\Models\SyncState;
+use App\Modules\Sync\Support\Heartbeat;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 
@@ -84,37 +86,84 @@ final class HealthService
     public function queue(): array
     {
         try {
-            $depth = Schema::hasTable('jobs') ? (int) DB::table('jobs')->count() : 0;
-            $oldest = Schema::hasTable('jobs') ? DB::table('jobs')->min('created_at') : null;
+            $connection = (string) config('queue.default');
+            $driver = (string) config('queue.connections.'.$connection.'.driver', $connection);
+            $oldestAge = null;
+            $redis = null;
+
+            if ($driver === 'redis') {
+                // Änderungsvermerk 12.09.2026: Bei Redis-Queue liegt die Tiefe in Redis, nicht in der Tabelle jobs.
+                // PING plus LLEN je Queue und ZCARD der delayed- und reserved-Mengen; ein Verbindungsfehler ist down.
+                $redis = $this->redisQueueDepth($connection);
+                $depth = (int) $redis['depth'];
+            } else {
+                $depth = Schema::hasTable('jobs') ? (int) DB::table('jobs')->count() : 0;
+                $oldest = Schema::hasTable('jobs') ? DB::table('jobs')->min('created_at') : null;
+
+                if ($oldest !== null) {
+                    $oldestAge = is_numeric($oldest)
+                        ? max(0, time() - (int) $oldest)
+                        : (int) CarbonImmutable::parse((string) $oldest)->diffInSeconds(CarbonImmutable::now(), true);
+                }
+            }
+
             $failed = Schema::hasTable('failed_jobs') ? (int) DB::table('failed_jobs')->count() : 0;
             $lastFailed = Schema::hasTable('failed_jobs') ? DB::table('failed_jobs')->max('failed_at') : null;
             $dlqOpen = Schema::hasTable('dlq_items') ? (int) DB::table('dlq_items')->whereNull('replayed_at')->count() : 0;
 
-            $oldestAge = null;
-
-            if ($oldest !== null) {
-                $oldestAge = is_numeric($oldest)
-                    ? max(0, time() - (int) $oldest)
-                    : (int) CarbonImmutable::parse((string) $oldest)->diffInSeconds(CarbonImmutable::now(), true);
-            }
+            $heartbeat = app(Heartbeat::class);
+            $workerAge = $heartbeat->ageSeconds(Heartbeat::WORKER);
+            $workerStale = $workerAge !== null && $workerAge > Heartbeat::DEFAULT_MAX_AGE_SECONDS;
 
             $warning = (int) config('hub.api.health.queue_depth_warning', 1000);
-            $status = $depth > $warning || $dlqOpen > 0 ? self::DEGRADED : self::OK;
+            $status = $depth > $warning || $dlqOpen > 0 || $workerStale ? self::DEGRADED : self::OK;
 
             return [
                 'status' => $status,
                 'details' => [
-                    'connection' => (string) config('queue.default'),
+                    'connection' => $connection,
+                    'driver' => $driver,
                     'depth' => $depth,
+                    'depth_by_queue' => $redis['by_queue'] ?? null,
                     'oldest_job_age_seconds' => $oldestAge,
                     'failed_jobs' => $failed,
                     'last_failed_at' => is_string($lastFailed) ? $lastFailed : null,
                     'dlq_open' => $dlqOpen,
+                    'worker_heartbeat_age_seconds' => $workerAge,
+                    'worker_heartbeat_stale' => $workerStale,
                 ],
             ];
         } catch (Throwable $e) {
             return ['status' => self::DOWN, 'details' => ['error_class' => $e::class]];
         }
+    }
+
+    /**
+     * @return array{depth: int, by_queue: array<string, int>}
+     */
+    private function redisQueueDepth(string $connection): array
+    {
+        $redisConnection = (string) config('queue.connections.'.$connection.'.connection', 'default');
+        $client = Redis::connection($redisConnection);
+        $client->command('ping');
+
+        $prefix = (string) config('database.redis.options.prefix', '');
+        $configured = (string) config('queue.connections.'.$connection.'.queue', 'default');
+        $queues = array_values(array_unique(array_merge([$configured], array_values((array) config('hub.core.queues', [])))));
+        $byQueue = [];
+        $total = 0;
+
+        foreach ($queues as $queue) {
+            $queue = (string) $queue;
+            $key = $prefix.'queues:'.$queue;
+            $count = (int) $client->command('llen', [$key])
+                + (int) $client->command('zcard', [$key.':delayed'])
+                + (int) $client->command('zcard', [$key.':reserved']);
+            $byQueue[$queue] = $count;
+            $total += $count;
+        }
+
+        return ['depth' => $total, 'by_queue' => $byQueue];
     }
 
     /**

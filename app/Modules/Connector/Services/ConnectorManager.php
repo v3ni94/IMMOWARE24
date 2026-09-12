@@ -98,6 +98,7 @@ final class ConnectorManager
             technicalUserId: $connection->getAttribute('technical_user_id') !== null ? (int) $connection->getAttribute('technical_user_id') : null,
             rateLimitRps: (float) ($connection->getAttribute('rate_limit_rps') ?? 2.0),
             maxConcurrency: (int) ($connection->getAttribute($connection->isWritePurpose() ? 'max_concurrency_write' : 'max_concurrency_read') ?? 2),
+            allowedWritePrefix: $this->nullableString($connection->getAttribute('allowed_write_prefix')),
         );
     }
 

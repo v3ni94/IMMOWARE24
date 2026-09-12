@@ -67,10 +67,14 @@ final class WebhooksTest extends TestCase
 
     public function test_read_only_is_forbidden(): void
     {
-        $user = User::factory()->role(Role::ReadOnly)->withoutTotp()->create();
+        $user = User::factory()->role(Role::ReadOnly)->create();
 
-        $this->actingAs($user)->get('/admin/webhooks')->assertForbidden();
-        $this->actingAs($user)->post('/admin/webhooks', ['name' => 'x', 'url' => 'https://example.test/h', 'events' => ['document.created']])->assertForbidden();
+        $this->login($user)->get('/admin/webhooks')->assertForbidden();
+        $this->login($user)->post('/admin/webhooks', ['name' => 'x', 'url' => 'https://example.test/h', 'events' => ['document.created']])->assertForbidden();
+
+        // Ohne eingerichtete 2FA erreicht keine Rolle die Admin-Oberfläche (08-security.md 3.1).
+        $withoutTotp = User::factory()->role(Role::ReadOnly)->withoutTotp()->create();
+        $this->actingAs($withoutTotp)->get('/admin/webhooks')->assertRedirect(route('security.two-factor.setup'));
     }
 
     public function test_store_shows_secret_once_and_audits(): void
@@ -110,6 +114,21 @@ final class WebhooksTest extends TestCase
             'url' => 'http://hooks.example.test/hub',
             'events' => ['unbekannt.event'],
         ])->assertRedirect('/admin/webhooks/create')->assertSessionHasErrors(['url', 'events.0']);
+    }
+
+    public function test_store_rejects_private_and_local_targets_like_the_api(): void
+    {
+        $user = User::factory()->role(Role::Administrator)->create();
+
+        foreach (['https://127.0.0.1/hub', 'https://10.0.0.5/hub', 'https://intern.local/hub', 'https://user:pw@hooks.example.test/hub'] as $url) {
+            $this->login($user)->from('/admin/webhooks/create')->post('/admin/webhooks', [
+                'name' => 'SSRF',
+                'url' => $url,
+                'events' => ['document.created'],
+            ])->assertRedirect('/admin/webhooks/create')->assertSessionHasErrors(['url']);
+        }
+
+        $this->assertSame(0, WebhookEndpoint::query()->where('name', 'SSRF')->count());
     }
 
     public function test_update_deactivate_and_redeliver_write_audit_entries(): void

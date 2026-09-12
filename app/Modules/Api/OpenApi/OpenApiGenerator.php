@@ -126,12 +126,12 @@ final class OpenApiGenerator
                 'name' => $name,
                 'in' => 'path',
                 'required' => true,
-                'schema' => ['type' => 'integer'],
+                'schema' => $name === 'uuid' ? ['type' => 'string', 'format' => 'uuid'] : ['type' => 'integer'],
             ];
         }
 
         if ($isList) {
-            foreach (['page', 'per_page', 'sort', 'fields', 'q', 'updated_since', 'external_id', 'status', 'include_deleted'] as $ref) {
+            foreach (['page', 'per_page', 'cursor', 'sort', 'fields', 'q', 'updated_since', 'external_id', 'status', 'include_deleted'] as $ref) {
                 $operation['parameters'][] = ['$ref' => '#/components/parameters/'.$ref];
             }
 
@@ -191,6 +191,10 @@ final class OpenApiGenerator
 
         if (is_string($name) && $this->resources->has($name)) {
             return $this->resources->get($name);
+        }
+
+        if (str_starts_with($route->uri(), 'api/v1/documents/uploads')) {
+            return null;
         }
 
         foreach ($this->resources->all() as $definition) {
@@ -261,6 +265,7 @@ final class OpenApiGenerator
             $path === '/api/v1/me' => 'Aktueller Aufrufer',
             $path === '/api/v1/sync/status' => 'Synchronisationsstatus je Connection',
             $path === '/api/v1/capabilities' => 'Capability Registry',
+            str_starts_with($path, '/api/v1/documents/uploads/') => 'Status eines Upload-Antrags (write_operation) lesen',
             $path === '/api/v1/directory' => 'Telefonbuch',
             $path === '/api/v1/directory/search' => 'Telefonbuch durchsuchen',
             $path === '/health' => 'Aggregierter Health-Status',
@@ -318,6 +323,7 @@ final class OpenApiGenerator
             '401' => $problem('Unauthenticated'),
             '403' => $problem('Forbidden'),
             '429' => $problem('RateLimited'),
+            '503' => $problem('ServiceUnavailable'),
         ];
 
         if ($definition !== null && $method === 'GET') {
@@ -357,6 +363,13 @@ final class OpenApiGenerator
             return $responses;
         }
 
+        if (str_starts_with($path, '/api/v1/documents/uploads/')) {
+            $responses['200'] = ['description' => 'Status des Upload-Antrags', 'content' => ['application/json' => ['schema' => ['type' => 'object', 'properties' => ['data' => ['$ref' => '#/components/schemas/DocumentUploadResult']]]]]];
+            $responses['404'] = $problem('NotFound');
+
+            return $responses;
+        }
+
         if (str_starts_with($path, '/api/v1/directory')) {
             $responses['200'] = ['description' => 'Verzeichnis', 'content' => [
                 'application/json' => ['schema' => ['type' => 'object', 'properties' => ['data' => ['type' => 'array', 'items' => ['$ref' => '#/components/schemas/DirectoryEntry']], 'meta' => ['$ref' => '#/components/schemas/PageMeta']]]],
@@ -390,7 +403,8 @@ final class OpenApiGenerator
 
         return [
             'page' => ['name' => 'page', 'in' => 'query', 'schema' => ['type' => 'integer', 'minimum' => 1, 'default' => 1]],
-            'per_page' => ['name' => 'per_page', 'in' => 'query', 'schema' => ['type' => 'integer', 'minimum' => 1, 'maximum' => $max, 'default' => (int) config('hub.api.pagination.default_per_page', 100)], 'description' => 'Maximal '.$max.'.'],
+            'per_page' => ['name' => 'per_page', 'in' => 'query', 'schema' => ['type' => 'integer', 'minimum' => 1, 'maximum' => $max, 'default' => (int) config('hub.api.pagination.default_per_page', 100)], 'description' => 'Maximal '.$max.'. Gilt für Offset- und Cursor-Pagination.'],
+            'cursor' => ['name' => 'cursor', 'in' => 'query', 'schema' => ['type' => 'string'], 'allowEmptyValue' => true, 'description' => 'Cursor-Pagination statt page: leer für die erste Seite, danach meta.next_cursor. Opaque (Base64url-JSON aus Sortierschlüssel und id), an sort und Filter gebunden; ungültig liefert 400 invalid_cursor. Antwort ohne total, mit meta.next_cursor und meta.prev_cursor.'],
             'sort' => ['name' => 'sort', 'in' => 'query', 'schema' => ['type' => 'string', 'default' => '-updated_at'], 'description' => 'Feld, optional mit führendem Minus für absteigend. Erlaubte Felder je Ressource.'],
             'fields' => ['name' => 'fields', 'in' => 'query', 'schema' => ['type' => 'string'], 'description' => 'Sparse Fieldsets, kommagetrennt. id und provenance werden immer ausgegeben.'],
             'q' => ['name' => 'q', 'in' => 'query', 'schema' => ['type' => 'string'], 'description' => 'Volltextsuche über die suchbaren Spalten der Ressource.'],
@@ -414,14 +428,15 @@ final class OpenApiGenerator
         ]);
 
         return [
-            'BadRequest' => $problem('400 bad_request, invalid_filter, idempotency_key_required'),
+            'BadRequest' => $problem('400 bad_request, invalid_filter, invalid_cursor, idempotency_key_required'),
             'Unauthenticated' => $problem('401 unauthenticated, key_expired, key_revoked', ['WWW-Authenticate' => ['schema' => ['type' => 'string']]]),
             'Forbidden' => $problem('403 insufficient_scope, role_forbidden, ip_not_allowed, write_disabled, connection_degraded, capability_locked'),
             'NotFound' => $problem('404 not_found'),
-            'Conflict' => $problem('409 conflict, write_target_exists, idempotency_mismatch'),
+            'Conflict' => $problem('409 conflict, write_target_exists, idempotency_mismatch, idempotency_in_progress'),
             'ValidationFailed' => $problem('422 validation_failed mit Array errors'),
             'RateLimited' => $problem('429 rate_limited', ['Retry-After' => ['$ref' => '#/components/headers/Retry-After'], 'RateLimit-Limit' => ['$ref' => '#/components/headers/RateLimit-Limit']]),
             'NotImplemented' => $problem('501 not_implemented, Hinweis WAITING_FOR_MODULE im Feld hint'),
+            'ServiceUnavailable' => $problem('503 api_keys_disabled (HUB_API_KEYS_ENABLED=false), Header Retry-After'),
         ];
     }
 
@@ -481,7 +496,7 @@ final class OpenApiGenerator
         return implode("\n\n", [
             'Alle Ressourcen liefern Spiegeldaten mit Herkunftsblock provenance (source_system, external_id, last_synced_at, connector, mapping_version, data_age_seconds, stale). Immoware24 ist Master; der Hub schreibt ausschließlich neue Dateien in den WebDAV-Posteingang (POST /api/v1/documents) und legt für alle anderen Änderungswünsche Änderungsvorschläge an.',
             '**Authentifizierung**: Authorization: Bearer hub_live_<prefix>_<secret>. Jede Operation nennt in x-scope die benötigten Scopes; admin umfasst alle Scopes.',
-            '**Pagination**: page und per_page (maximal '.(int) config('hub.api.pagination.max_per_page', 500).'), Antwort {data, meta:{page, per_page, total}, links}. Sortierung über sort=-updated_at, Feldauswahl über fields=.',
+            '**Pagination**: Offset über page und per_page (maximal '.(int) config('hub.api.pagination.max_per_page', 500).'), Antwort {data, meta:{page, per_page, total}, links}. Alternativ Cursor über cursor= (leer für die erste Seite, danach meta.next_cursor), Antwort {data, meta:{per_page, count, next_cursor, prev_cursor}, links}. Sortierung über sort=-updated_at, Feldauswahl über fields=.',
             '**Fehler**: application/problem+json nach RFC 7807 mit type unter https://immoware.muellerhv.de/errors/<code>, request_id entspricht X-Correlation-Id.',
             sprintf('**Rate Limits**: %d Requests pro Minute lesend, %d pro Minute schreibend je Key. Header RateLimit-Limit, RateLimit-Remaining, bei 429 Retry-After.', $read, $write),
             '**Idempotenz**: Header Idempotency-Key ist für POST und PATCH Pflicht. Antworten werden 24 Stunden gespeichert und mit Idempotent-Replayed: true wiederholt.',

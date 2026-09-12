@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Modules\Connector\Http;
 
 use App\Core\Exceptions\HubException;
+use App\Core\Exceptions\RateLimitedException;
 use App\Core\Exceptions\WriteBlockedException;
+use App\Modules\Connector\Enums\ConnectorType;
 use App\Modules\Connector\Enums\RemoteRequestOutcome;
 use App\Modules\Connector\Services\CircuitBreaker;
 use App\Modules\Connector\Services\RateLimitManager;
@@ -33,6 +35,15 @@ final class HttpClientFactory
 
     /** Guzzle-Option: 401 ist erwartet (unauthentifizierte Auth-Challenge der Probe) und öffnet den Breaker nicht. */
     public const string OPTION_EXPECT_UNAUTHORIZED = 'hub_expect_unauthorized';
+
+    /**
+     * Gegenüber Immoware24 hart gesperrte Methoden. Fest verdrahtet, keine Konfigurationsoption
+     * (05-write-capabilities.md 2.3, 01-architecture-decision.md Abschnitt 6; Änderungsvermerk 12.09.2026).
+     */
+    public const array BLOCKED_METHODS = ['DELETE', 'MOVE', 'COPY', 'PROPPATCH', 'LOCK', 'UNLOCK', 'MKCOL', 'POST', 'PATCH'];
+
+    /** CardDAV und CalDAV sind ausschließlich lesend: nur diese Methoden passieren den Guard. */
+    public const array DAV_READ_METHODS = ['OPTIONS', 'PROPFIND', 'REPORT', 'GET', 'HEAD'];
 
     public function __construct(
         private readonly ConfigRepository $config,
@@ -63,10 +74,18 @@ final class HttpClientFactory
             ->timeout($timeout)
             ->withOptions(['allow_redirects' => false, 'http_errors' => false, self::OPTION_EXPECT_UNAUTHORIZED => ! $withAuth])
             ->withMiddleware($this->observationMiddleware($context, $channel, $rateKey, $breakerKey))
-            ->beforeSending(function (Request $request) use ($rateKey, $breakerKey): void {
-                $this->guardMethod($request);
+            ->beforeSending(function (Request $request) use ($context, $rateKey, $breakerKey): void {
+                $this->guardMethod($request, $context);
                 $this->breaker->assertAvailable($breakerKey);
-                $this->rateLimiter->acquire($rateKey);
+
+                try {
+                    $this->rateLimiter->acquire($rateKey);
+                } catch (RateLimitedException $e) {
+                    // Kein Request gesendet: ein im half_open reservierter Testrequest wird wieder freigegeben.
+                    $this->breaker->abortTrial($breakerKey);
+
+                    throw $e;
+                }
             });
 
         if ($context->baseUrl !== null) {
@@ -83,22 +102,60 @@ final class HttpClientFactory
     }
 
     /**
-     * Methoden-Guard: DELETE, MOVE, COPY, PROPPATCH, LOCK, UNLOCK, MKCOL sowie PUT ohne
-     * If-None-Match: * werden unabhängig von jeder Konfiguration abgebrochen.
+     * Methoden-Guard, unabhängig von jeder Konfiguration (05-write-capabilities.md 2.3):
+     * 1. BLOCKED_METHODS werden immer abgebrochen.
+     * 2. CardDAV- und CalDAV-Kontexte lassen nur lesende Methoden passieren.
+     * 3. PUT nur mit If-None-Match: *, nur aus einer Connection mit purpose write und nur auf Pfade unterhalb
+     *    des Schreibpräfixes der Connection (allowed_write_prefix).
      *
      * @throws WriteBlockedException
      */
-    public function guardMethod(Request $request): void
+    public function guardMethod(Request $request, ?ConnectorContext $context = null): void
     {
         $method = strtoupper($request->method());
-        $blocked = array_map('strtoupper', (array) $this->config->get('hub.connector.http.blocked_methods', []));
 
-        if (in_array($method, $blocked, true)) {
+        if (in_array($method, self::BLOCKED_METHODS, true)) {
             throw new WriteBlockedException(sprintf('HTTP-Methode %s ist gegenüber Immoware24 hart gesperrt.', $method), $method);
         }
 
-        if ($method === 'PUT' && trim((string) ($request->header('If-None-Match')[0] ?? '')) !== '*') {
+        if ($context !== null && in_array($context->type, [ConnectorType::CardDav, ConnectorType::CalDav], true) && ! in_array($method, self::DAV_READ_METHODS, true)) {
+            throw new WriteBlockedException(sprintf('HTTP-Methode %s ist für %s hart gesperrt (nur lesend).', $method, $context->type->label()), $method);
+        }
+
+        if ($method !== 'PUT') {
+            return;
+        }
+
+        if (trim((string) ($request->header('If-None-Match')[0] ?? '')) !== '*') {
             throw new WriteBlockedException('PUT ohne If-None-Match: * ist gesperrt (nur create-only).', 'PUT');
+        }
+
+        if ($context === null) {
+            return;
+        }
+
+        if ($context->purpose !== 'write') {
+            throw new WriteBlockedException('PUT ist nur über eine Connection mit purpose write zulässig.', 'PUT');
+        }
+
+        $prefix = $context->allowedWritePrefix !== null ? '/'.trim($context->allowedWritePrefix, '/').'/' : null;
+
+        if ($prefix === null || $prefix === '//') {
+            throw new WriteBlockedException('PUT ohne Schreibpräfix der Connection (allowed_write_prefix) ist gesperrt.', 'PUT');
+        }
+
+        $path = parse_url($request->url(), PHP_URL_PATH);
+        $path = rawurldecode(is_string($path) ? $path : '/');
+        $basePath = $context->basePath();
+
+        if ($basePath !== '' && str_starts_with($path, $basePath)) {
+            $path = substr($path, strlen($basePath));
+        }
+
+        $path = '/'.ltrim($path, '/');
+
+        if (str_contains($path, '/../') || str_ends_with($path, '/..') || ! str_starts_with($path, $prefix) || $path === $prefix) {
+            throw new WriteBlockedException(sprintf('PUT außerhalb des Schreibpräfixes %s ist gesperrt.', $prefix), 'PUT');
         }
     }
 

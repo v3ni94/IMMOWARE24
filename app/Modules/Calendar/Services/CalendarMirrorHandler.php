@@ -6,8 +6,8 @@ namespace App\Modules\Calendar\Services;
 
 use App\Modules\Calendar\ICal\ICalendarParser;
 use App\Modules\Calendar\Mapping\ICalEventMapper;
+use App\Modules\Connector\Support\DavResponse;
 use App\Modules\Contacts\Contracts\DavMirrorHandlerInterface;
-use App\Modules\Contacts\Dav\DavResource;
 use App\Modules\Contacts\Services\CollectionStateStore;
 
 final class CalendarMirrorHandler implements DavMirrorHandlerInterface
@@ -22,7 +22,7 @@ final class CalendarMirrorHandler implements DavMirrorHandlerInterface
         private readonly CollectionStateStore $states,
     ) {}
 
-    public function handleResource(DavResource $resource): array
+    public function handleResource(DavResponse $resource): array
     {
         $events = $this->parser->parseAll((string) $resource->data);
 
@@ -54,8 +54,8 @@ final class CalendarMirrorHandler implements DavMirrorHandlerInterface
         $this->mirror->markMissingByHref($this->connectionId, $href);
     }
 
-    public function sweep(array $seenHrefs): array
+    public function sweep(array $seenHrefs, bool $healthOk = true): array
     {
-        return $this->mirror->sweep($this->connectionId, $seenHrefs, $this->states, $this->collectionPath);
+        return $this->mirror->sweep($this->connectionId, $seenHrefs, $this->states, $this->collectionPath, $healthOk);
     }
 }

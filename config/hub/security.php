@@ -29,8 +29,9 @@ return [
         // Rollen, die ohne bestätigte 2FA auf Admin-Routen zugreifen dürfen. 08-security.md Abschnitt 3.1 verlangt
         // 2FA für alle Rollen; read_only besitzt exports.run und audit.view. Leer, Änderungsvermerk 12.09.2026.
         'exempt_roles' => [],
-        // Sicherheitskritische Aktionen (Middleware 2fa.fresh) verlangen eine TOTP-Bestätigung, die höchstens so alt ist.
-        'fresh_minutes' => (int) env('HUB_TOTP_FRESH_MINUTES', 5),
+        // Sicherheitskritische Aktionen (Middleware 2fa.fresh, Äquivalent zu password.confirm) verlangen eine erneute
+        // Authentifizierung (TOTP-Code oder Passwort), die höchstens so alt ist (Änderungsvermerk 12.09.2026: 15 Minuten).
+        'fresh_minutes' => (int) env('HUB_TOTP_FRESH_MINUTES', 15),
     ],
 
     'sessions' => [
@@ -69,6 +70,10 @@ return [
     'permission_catalog' => [
         'connections.manage', 'sync.run', 'writes.request', 'writes.approve', 'api_keys.manage', 'users.manage',
         'audit.view', 'exports.run', 'imports.run', 'conflicts.resolve', 'webhooks.manage',
+        // Datenherkunft: records.view = Detailseiten des Spiegels; payloads.view = archivierte Rohnutzlasten
+        // (vCard, iCalendar, PROPFIND) mit personenbezogenen Daten, nur Owner, Administrator, Developer
+        // (08-security.md Abschnitt 4: Read Only ohne Payload-Rohdaten, Änderungsvermerk 12.09.2026).
+        'records.view', 'payloads.view',
     ],
 
     /*
@@ -78,11 +83,11 @@ return [
         'owner' => ['*'],
         'administrator' => [
             'connections.manage', 'sync.run', 'api_keys.manage', 'users.manage', 'audit.view', 'exports.run',
-            'writes.request', 'imports.run', 'conflicts.resolve', 'webhooks.manage',
+            'writes.request', 'imports.run', 'conflicts.resolve', 'webhooks.manage', 'records.view', 'payloads.view',
         ],
-        'developer' => ['sync.run', 'audit.view', 'exports.run'],
-        'operator' => ['imports.run', 'conflicts.resolve', 'writes.request', 'exports.run'],
-        'read_only' => ['audit.view', 'exports.run'],
+        'developer' => ['sync.run', 'audit.view', 'exports.run', 'records.view', 'payloads.view'],
+        'operator' => ['imports.run', 'conflicts.resolve', 'writes.request', 'exports.run', 'records.view'],
+        'read_only' => ['audit.view', 'exports.run', 'records.view'],
         'api_client' => [],
     ],
 ];

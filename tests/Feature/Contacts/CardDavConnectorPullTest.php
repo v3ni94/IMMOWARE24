@@ -8,13 +8,19 @@ use App\Core\DTO\SyncRequest;
 use App\Core\DTO\SyncResult;
 use App\Core\Enums\SyncMode;
 use App\Core\Exceptions\WriteBlockedException;
+use App\Modules\Connector\Http\HttpClientFactory;
 use App\Modules\Connector\Models\ImmowareConnection;
+use App\Modules\Connector\Models\RemoteRequest;
+use App\Modules\Connector\Services\ConnectorManager;
 use App\Modules\Contacts\Dav\HttpDavTransport;
 use App\Modules\Contacts\Models\Contact;
 use App\Modules\Contacts\Models\ContactIdentifier;
 use App\Modules\Contacts\Models\ContactMerge;
 use App\Modules\Contacts\Models\ContactRole;
 use App\Modules\Contacts\Services\CardDavConnector;
+use App\Modules\Contacts\Services\DavClientFactory;
+use App\Modules\Sync\Models\Conflict;
+use App\Modules\Sync\Models\SyncState;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -40,6 +46,8 @@ final class CardDavConnectorPullTest extends TestCase
             'base_url' => $this->server->url(),
             'base_url_hash' => hash('sha256', $this->server->url()),
             'status' => 'active',
+            'rate_limit_rps' => 50,
+            'last_health_ok' => true,
         ]);
     }
 
@@ -172,18 +180,39 @@ final class CardDavConnectorPullTest extends TestCase
         $this->assertSame(3, $this->requestCount('REPORT', 'addressbook-multiget'));
     }
 
-    public function test_sweep_soft_deletes_missing_contacts(): void
+    public function test_sweep_marks_missing_first_and_soft_deletes_only_in_second_healthy_run(): void
     {
         $this->server->put(self::PATH.'c1.vcf', 'e1', $this->fixture('umlaute.vcf'));
         $this->server->put(self::PATH.'c2.vcf', 'e2', $this->fixture('quoted-printable.vcf'));
         $this->server->install();
         $this->pull();
 
+        // Erstes Fehlen: nur missing_since (07-sync-strategy.md Abschnitt 4 Punkt 3), kein Soft Delete.
         unset($this->server->resources[self::PATH.'c2.vcf']);
         $this->server->ctag = 'ctag-2';
         Http::fake();
         $this->server->install();
+        $result = $this->pull();
 
+        $this->assertSame(0, $result->deleted, 'Eine einzelne unvollständige Liste darf nichts löschen.');
+        $this->assertSame(2, Contact::query()->count());
+        $missing = Contact::query()->where('vcard_uid', 'c2-qp')->firstOrFail();
+        $this->assertNotNull($missing->missing_since);
+        $this->assertNull($missing->deleted_at);
+
+        // Zweites Fehlen ohne bestätigten Health-Check: weiterhin kein Soft Delete (Punkt 5).
+        $this->connection->forceFill(['last_health_ok' => false])->save();
+        $this->server->ctag = 'ctag-3';
+        Http::fake();
+        $this->server->install();
+        $this->assertSame(0, $this->pull()->deleted);
+        $this->assertSame(2, Contact::query()->count());
+
+        // Zweites Fehlen im gesunden Lauf: Soft Delete mit deletion_reason missing_twice (Punkt 4).
+        $this->connection->forceFill(['last_health_ok' => true])->save();
+        $this->server->ctag = 'ctag-4';
+        Http::fake();
+        $this->server->install();
         $result = $this->pull();
 
         $this->assertSame(1, $result->deleted);
@@ -191,8 +220,65 @@ final class CardDavConnectorPullTest extends TestCase
         $gone = Contact::query()->withTrashed()->where('vcard_uid', 'c2-qp')->firstOrFail();
         $this->assertNotNull($gone->deleted_at);
         $this->assertNotNull($gone->missing_since);
-        $this->assertSame('missing_remote', $gone->deletion_reason);
+        $this->assertSame('missing_twice', $gone->deletion_reason);
         $this->assertSame(2, Contact::query()->withTrashed()->count(), 'kein Hard Delete');
+    }
+
+    public function test_sweep_counts_misses_even_without_state_row(): void
+    {
+        $this->server->put(self::PATH.'c1.vcf', 'e1', $this->fixture('umlaute.vcf'));
+        $this->server->put(self::PATH.'c2.vcf', 'e2', $this->fixture('quoted-printable.vcf'));
+        $this->server->install();
+        $this->pull();
+
+        // Ressourcenzeile fehlt (z. B. älterer Spiegelstand): markMissing legt sie an, statt dauerhaft 1 zu liefern.
+        SyncState::query()->where('scope', 'resource')->delete();
+        unset($this->server->resources[self::PATH.'c2.vcf']);
+
+        foreach (['ctag-2', 'ctag-3'] as $ctag) {
+            $this->server->ctag = $ctag;
+            Http::fake();
+            $this->server->install();
+            $result = $this->pull();
+        }
+
+        $this->assertSame(1, $result->deleted);
+        $this->assertSame(1, Contact::query()->count());
+    }
+
+    public function test_mass_missing_blocks_sweep_degrades_connection_and_opens_conflict(): void
+    {
+        config()->set('hub.contacts.sweep.min_count_for_ratio', 5);
+
+        for ($i = 1; $i <= 10; $i++) {
+            $this->server->put(self::PATH.'m'.$i.'.vcf', 'e'.$i, str_replace('c1-mueller', 'm-'.$i, $this->fixture('umlaute.vcf')));
+        }
+
+        $this->server->install();
+        $this->pull();
+        $this->assertSame(10, Contact::query()->count());
+
+        // Teilantwort: nur noch 5 von 10 Kontakten gelistet, zwei Läufe hintereinander.
+        for ($i = 6; $i <= 10; $i++) {
+            unset($this->server->resources[self::PATH.'m'.$i.'.vcf']);
+        }
+
+        foreach (['ctag-2', 'ctag-3'] as $ctag) {
+            $this->server->ctag = $ctag;
+            Http::fake();
+            $this->server->install();
+            $result = $this->pull();
+            $this->assertSame(0, $result->deleted);
+        }
+
+        $this->assertSame(10, Contact::query()->count(), 'Schutzgrenze: kein Soft Delete');
+        $this->assertSame(5, Contact::query()->whereNotNull('missing_since')->count());
+        $this->assertSame('sweep_blocked_mass_missing', $result->errors[0]['reason'] ?? null);
+
+        $fresh = ImmowareConnection::query()->findOrFail($this->connection->getKey());
+        $this->assertSame('degraded', $fresh->getAttribute('status'));
+        $this->assertSame('mass_missing', $fresh->getAttribute('degraded_reason'));
+        $this->assertSame(1, Conflict::query()->where('conflict_type', 'uncertain_identity')->where('entity_type', 'contact_collection')->count());
     }
 
     public function test_missing_uid_uses_href_as_external_id_with_flag(): void
@@ -313,8 +399,41 @@ final class CardDavConnectorPullTest extends TestCase
 
     public function test_transport_rejects_write_methods(): void
     {
-        $this->expectException(WriteBlockedException::class);
+        $this->server->install();
+        $transport = $this->app->make(DavClientFactory::class)->transport($this->connection);
+        $this->assertInstanceOf(HttpDavTransport::class, $transport);
 
-        (new HttpDavTransport('u', 'p'))->request('PUT', $this->server->url().'x.vcf', [], 'BEGIN:VCARD');
+        try {
+            $transport->request('PUT', $this->server->url().'x.vcf', ['If-None-Match' => '*'], 'BEGIN:VCARD');
+            $this->fail('PUT muss für CardDAV gesperrt sein.');
+        } catch (WriteBlockedException) {
+            Http::assertNothingSent();
+        }
+
+        // Der Methoden-Guard der HttpClientFactory sperrt PUT für CardDAV-Kontexte auch ohne den Transport.
+        $context = $this->app->make(ConnectorManager::class)->contextFor($this->connection);
+        $this->expectException(WriteBlockedException::class);
+        $this->app->make(HttpClientFactory::class)->for($context, 'write')->withHeaders(['If-None-Match' => '*'])->withBody('x', 'text/vcard')->send('PUT', '/x.vcf');
+    }
+
+    public function test_transport_runs_through_connector_infrastructure_and_respects_auth_scheme(): void
+    {
+        $this->server->put(self::PATH.'c1.vcf', 'e1', $this->fixture('umlaute.vcf'));
+        $this->server->install();
+
+        $this->pull();
+
+        // Jeder Request ist in remote_requests protokolliert (RemoteRequestLogger über HttpClientFactory), mit User-Agent
+        // und Basic-Auth aus dem ConnectorContext (auth_scheme unknown oder basic).
+        $logged = RemoteRequest::query()->where('connection_id', $this->connection->getKey())->get();
+        $this->assertGreaterThanOrEqual(3, $logged->count(), 'PROPFIND, addressbook-query, multiget');
+        $this->assertSame(['carddav:read'], $logged->pluck('connector_name')->unique()->values()->all());
+        Http::assertSent(fn (Request $request): bool => str_starts_with((string) ($request->header('User-Agent')[0] ?? ''), 'ImmowareHub/') && str_starts_with((string) ($request->header('Authorization')[0] ?? ''), 'Basic '));
+
+        // auth_scheme der Connection (Probe-Ergebnis) fließt in den Kontext des Transports ein, nichts ist fest verdrahtet.
+        $this->connection->forceFill(['auth_scheme' => 'digest'])->save();
+        $context = $this->app->make(ConnectorManager::class)->contextFor($this->connection->fresh() ?? $this->connection);
+        $this->assertSame('digest', $context->authScheme);
+        $this->assertInstanceOf(HttpDavTransport::class, $this->app->make(DavClientFactory::class)->transport($this->connection->fresh() ?? $this->connection));
     }
 }

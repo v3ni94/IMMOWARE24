@@ -37,6 +37,8 @@ final class CalDavConnectorPullTest extends TestCase
             'base_url' => $this->server->url(),
             'base_url_hash' => hash('sha256', $this->server->url()),
             'status' => 'active',
+            'rate_limit_rps' => 50,
+            'last_health_ok' => true,
         ]);
     }
 
@@ -93,8 +95,17 @@ final class CalDavConnectorPullTest extends TestCase
         $this->pull();
         Http::assertSentCount(1);
 
+        // Erstes Fehlen: nur missing_since; Soft Delete erst im zweiten gesunden Lauf (07 Abschnitt 4).
         unset($this->server->resources[self::PATH.'e3.ics']);
         $this->server->ctag = 'ctag-2';
+        Http::fake();
+        $this->server->install();
+        $first = $this->pull();
+        $this->assertSame(0, $first->deleted);
+        $this->assertSame(2, CalendarEvent::query()->count());
+        $this->assertNotNull(CalendarEvent::query()->where('ical_uid', 'ev-3-utc')->firstOrFail()->missing_since);
+
+        $this->server->ctag = 'ctag-3';
         Http::fake();
         $this->server->install();
         $result = $this->pull();

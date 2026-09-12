@@ -119,6 +119,7 @@ final class ConnectionsController extends AdminController
             'connection' => null,
             'technicalUsers' => $this->technicalUserOptions(),
             'connectorTypes' => self::CONNECTOR_TYPES,
+            'readConnections' => $this->readConnectionOptions(),
         ]);
     }
 
@@ -149,6 +150,7 @@ final class ConnectionsController extends AdminController
             'connection' => $this->findConnection($id),
             'technicalUsers' => $this->technicalUserOptions(),
             'connectorTypes' => self::CONNECTOR_TYPES,
+            'readConnections' => $this->readConnectionOptions(),
         ]);
     }
 
@@ -162,9 +164,30 @@ final class ConnectionsController extends AdminController
 
         $before = $this->auditable($connection);
         $connection->forceFill($this->attributesFrom($data, $connection));
+
+        // Die Schreibfreigabe gilt nur für den freigegebenen Zustand (05-write-capabilities.md 2.2): Änderung von
+        // Zweck, Typ, Freigabe-URL oder Schreibpräfix hebt write_enabled samt Vier-Augen-Nachweis auf.
+        // Vergleich über die gecasteten Werte (base_url ist verschlüsselt, ein Chiffratvergleich wäre immer "geändert").
+        $scopeChanged = array_values(array_filter(
+            ImmowareConnection::WRITE_APPROVAL_SCOPE_FIELDS,
+            static fn (string $field): bool => (string) ($connection->getOriginal($field) ?? '') !== (string) ($connection->getAttribute($field) ?? ''),
+        ));
+        $approvalReset = $scopeChanged !== [] && (bool) $connection->getOriginal('write_enabled');
+
+        if ($scopeChanged !== [] && ($approvalReset || $connection->getAttribute('write_enabled_by') !== null || $connection->getAttribute('write_confirmed_by') !== null)) {
+            $connection->resetWriteApproval();
+        }
+
         $connection->save();
 
-        $this->audit('connections.updated', $connection, $before, $this->auditable($connection), (int) $connection->getKey());
+        $after = $this->auditable($connection) + ['write_approval_reset' => $approvalReset, 'write_scope_changed' => $scopeChanged];
+        $this->audit('connections.updated', $connection, $before, $after, (int) $connection->getKey());
+
+        if ($approvalReset) {
+            $this->audit('connections.write_approval_reset', $connection, ['write_enabled' => true], ['write_enabled' => false, 'reason' => 'scope_changed', 'fields' => $scopeChanged], (int) $connection->getKey());
+
+            return $this->redirectWithWarning('admin.connections.show', 'Connection gespeichert. Die Schreibfreigabe wurde aufgehoben, weil '.implode(', ', $scopeChanged).' geändert wurde; sie muss im Vier-Augen-Prinzip neu erteilt werden.', ['id' => $connection->getKey()]);
+        }
 
         return $this->redirectWithStatus('admin.connections.show', 'Connection gespeichert.', ['id' => $connection->getKey()]);
     }
@@ -277,11 +300,13 @@ final class ConnectionsController extends AdminController
             'connector_type' => (string) $data['connector_type'],
             'purpose' => (string) $data['purpose'],
             'base_url' => $baseUrl,
-            'base_url_hash' => $baseUrl !== null ? $this->hasher->hash('base_url:'.$baseUrl) : null,
+            // base_url_hash (HMAC mit Pepper) leitet das Modell im saving-Hook aus base_url ab.
+            'base_url_hash' => $this->hasher->hashBaseUrl($baseUrl),
             'technical_user_id' => isset($data['technical_user_id']) && $data['technical_user_id'] !== '' ? (int) $data['technical_user_id'] : null,
             'poll_interval_seconds' => (int) $data['poll_interval_seconds'],
             'rate_limit_rps' => round((float) $data['rate_limit_rps'], 2),
             'allowed_write_prefix' => isset($data['allowed_write_prefix']) && $data['allowed_write_prefix'] !== '' ? (string) $data['allowed_write_prefix'] : null,
+            'paired_read_connection_id' => (string) $data['purpose'] === 'write' && isset($data['paired_read_connection_id']) && $data['paired_read_connection_id'] !== '' ? (int) $data['paired_read_connection_id'] : null,
         ];
 
         // Zugangsdaten direkt an der Connection: Passwort nur setzen, wenn eingegeben (Schreibfeld).
@@ -319,6 +344,25 @@ final class ConnectionsController extends AdminController
     }
 
     /**
+     * Lese-Connections (WebDAV Dokumente) des eigenen Mandanten als Auswahl für paired_read_connection_id.
+     *
+     * @return array<int, string>
+     */
+    private function readConnectionOptions(): array
+    {
+        $organizationId = $this->currentUser(request())->getAttribute('organization_id');
+
+        return ImmowareConnection::query()
+            ->where('organization_id', $organizationId)
+            ->where('purpose', 'read')
+            ->where('connector_type', 'webdav_documents')
+            ->orderBy('name')
+            ->pluck('name', 'id')
+            ->map(static fn (mixed $name): string => (string) $name)
+            ->all();
+    }
+
+    /**
      * @return array<int, string>
      */
     private function technicalUserOptions(): array
@@ -350,6 +394,9 @@ final class ConnectionsController extends AdminController
             'credentials_username' => is_array($credentials) ? ($credentials['username'] ?? null) : null,
             'poll_interval_seconds' => $connection->getAttribute('poll_interval_seconds'),
             'rate_limit_rps' => $connection->getAttribute('rate_limit_rps'),
+            'allowed_write_prefix' => $connection->getAttribute('allowed_write_prefix'),
+            'paired_read_connection_id' => $connection->getAttribute('paired_read_connection_id'),
+            'write_enabled' => (bool) $connection->getAttribute('write_enabled'),
             'status' => $connection->getAttribute('status'),
         ];
     }

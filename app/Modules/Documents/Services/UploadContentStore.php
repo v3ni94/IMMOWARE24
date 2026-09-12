@@ -7,6 +7,7 @@ namespace App\Modules\Documents\Services;
 use App\Modules\Sync\Models\WriteOperation;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Filesystem\Factory as FilesystemFactory;
+use Illuminate\Contracts\Filesystem\Filesystem;
 
 /**
  * Blob-Ablage des Quellinhalts eines Upload-Antrags (write_operations.source_storage_key), damit ein Antrag,
@@ -61,7 +62,7 @@ final class UploadContentStore
         return trim((string) $this->config->get('hub.core.write.storage_prefix', 'write-operations'), '/').'/'.$uuid.'.bin';
     }
 
-    private function disk(): \Illuminate\Contracts\Filesystem\Filesystem
+    private function disk(): Filesystem
     {
         return $this->filesystems->disk((string) $this->config->get('hub.core.write.storage_disk', 'local'));
     }

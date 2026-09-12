@@ -68,6 +68,17 @@
             <label for="allowed_write_prefix">Erlaubter Schreibpfad (nur Schreib-Connection)</label>
             <input id="allowed_write_prefix" type="text" name="allowed_write_prefix" maxlength="512" value="{{ $value('allowed_write_prefix') }}">
         </div>
+        <div>
+            <label for="paired_read_connection_id">Zugeordnete Lese-Connection (nur Schreib-Connection)</label>
+            <select id="paired_read_connection_id" name="paired_read_connection_id">
+                <option value="">keine</option>
+                @foreach ($readConnections as $id => $label)
+                    @if ($connection === null || (int) $connection->getKey() !== (int) $id)
+                        <option value="{{ $id }}" @selected((string) $value('paired_read_connection_id') === (string) $id)>{{ $label }} (#{{ $id }})</option>
+                    @endif
+                @endforeach
+            </select>
+        </div>
     </div>
 
     <div class="hub-form-actions">

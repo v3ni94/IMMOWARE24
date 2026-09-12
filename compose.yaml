@@ -97,8 +97,13 @@ services:
             - --max-time=3600
             - --memory=256
             - --timeout=1800
+        # Healthcheck (Aenderungsvermerk 12.09.2026): queue:monitor endet immer mit Exit 0 und prueft den Worker-Prozess
+        # nicht. Der Scheduler stellt minuetlich (hub:worker:heartbeat) den WorkerHeartbeatJob auf die Queue high,
+        # der storage/framework/worker-heartbeat schreibt (docs/operations/03-monitoring.md Abschnitt 5). Der
+        # Healthcheck prueft das Alter der Datei (unhealthy ab 180 s, Exit 1), restart startet den Worker neu.
+        # Voraussetzung: storage ist ein gemeinsames Volume von Scheduler und Worker.
         healthcheck:
-            test: ["CMD", "php", "artisan", "queue:monitor", "redis:high,redis:default,redis:sync,redis:write,redis:documents,redis:low", "--max=5000"]
+            test: ["CMD", "php", "artisan", "hub:heartbeat:check", "worker", "--max-age=180"]
             interval: 60s
             timeout: 20s
             retries: 3
@@ -110,9 +115,11 @@ services:
         <<: *app-base
         container_name: immoware-hub-scheduler
         command: ["php", "artisan", "schedule:work", "--no-ansi"]
+        # hub:worker:heartbeat schreibt minuetlich storage/framework/scheduler-heartbeat; der Healthcheck prueft das
+        # Alter (unhealthy ab 180 s). schedule:list allein beweist nicht, dass schedule:work laeuft.
         healthcheck:
-            test: ["CMD", "php", "artisan", "schedule:list", "--no-ansi"]
-            interval: 120s
+            test: ["CMD", "php", "artisan", "hub:heartbeat:check", "scheduler", "--max-age=180"]
+            interval: 60s
             timeout: 20s
             retries: 3
             start_period: 30s

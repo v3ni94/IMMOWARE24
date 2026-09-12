@@ -33,7 +33,7 @@
         <env name="IMMOWARE_WRITE_CARDDAV_ENABLED" value="false"/>
         <env name="IMMOWARE_WRITE_CALDAV_ENABLED" value="false"/>
         <env name="HUB_WEBHOOKS_ENABLED" value="false"/>
-        <env name="HUB_API_KEYS_ENABLED" value="false"/>
+        <env name="HUB_API_KEYS_ENABLED" value="true"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>

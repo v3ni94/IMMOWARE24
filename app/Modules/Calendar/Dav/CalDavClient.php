@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Modules\Calendar\Dav;
 
+use App\Modules\Connector\Support\DavMultistatusParser;
 use App\Modules\Contacts\Dav\AbstractDavClient;
-use App\Modules\Contacts\Dav\DavMultistatusParser;
 
 /**
  * Lesender CalDAV-Client (RFC 4791): calendar-query (nur VEVENT), calendar-multiget, sync-collection.

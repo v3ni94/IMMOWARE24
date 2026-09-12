@@ -34,6 +34,7 @@ final class ContactMirrorService
         private readonly ConfigRepository $config,
         private readonly ContactDuplicateDetector $duplicates,
         private readonly WebhookDispatcherInterface $webhooks,
+        private readonly SweepGuard $guard,
     ) {}
 
     /**
@@ -110,49 +111,65 @@ final class ContactMirrorService
     }
 
     /**
-     * Soft Delete für Kontakte der Connection, deren href in der vollständigen Enumeration nicht mehr vorkommt.
+     * Mark-and-Sweep für Kontakte der Connection, deren href in der vollständigen Enumeration nicht mehr vorkommt:
+     * erstes Fehlen nur missing_since, Soft Delete erst ab required_misses (Default 2) und nur bei bestätigtem
+     * Health-Check; über der Schutzgrenze kein Soft Delete, Connection degraded (SweepGuard).
      *
      * @param  array<string, true>  $seenHrefs  href => true
-     * @return array{missing: int, deleted: int}
+     * @return array{missing: int, deleted: int, blocked: bool}
      */
-    public function sweep(int $connectionId, array $seenHrefs, CollectionStateStore $states, string $collectionPath): array
+    public function sweep(int $connectionId, array $seenHrefs, CollectionStateStore $states, string $collectionPath, bool $healthOk = true): array
     {
-        $required = max(1, (int) $this->config->get('hub.contacts.sweep.required_misses', 1));
+        $required = $this->guard->requiredMisses('hub.contacts.sweep');
         $now = CarbonImmutable::now();
-        $missing = 0;
-        $deleted = 0;
 
-        $rows = Contact::query()
+        $base = Contact::query()
             ->withoutGlobalScope('organization')
             ->where('connection_id', $connectionId)
             ->where('source_system', Contact::SOURCE_IMMOWARE24)
-            ->whereNotNull('vcard_href')
-            ->select(['id', 'vcard_href', 'missing_since'])
-            ->lazyById(500);
+            ->whereNotNull('vcard_href');
 
-        /** @var Contact $row */
-        foreach ($rows as $row) {
-            $href = (string) $row->vcard_href;
+        $total = (clone $base)->count();
+        $candidates = [];
 
-            if (isset($seenHrefs[$href])) {
-                continue;
+        foreach ((clone $base)->select(['id', 'vcard_href', 'missing_since'])->lazyById(500) as $row) {
+            if ($row instanceof Contact && ! isset($seenHrefs[(string) $row->vcard_href])) {
+                $candidates[] = $row;
+            }
+        }
+
+        $missing = count($candidates);
+
+        if ($missing === 0) {
+            return ['missing' => 0, 'deleted' => 0, 'blocked' => false];
+        }
+
+        if ($this->guard->exceeded('hub.contacts.sweep', $missing, $total)) {
+            foreach ($candidates as $row) {
+                Contact::query()->withoutGlobalScope('organization')->whereKey($row->getKey())->whereNull('missing_since')->update(['missing_since' => $now]);
             }
 
-            $misses = $states->markMissing($connectionId, $collectionPath, $href);
-            $missing++;
+            $this->guard->recordMassMissing($connectionId, 'contact', $collectionPath, $missing, $total);
 
+            return ['missing' => $missing, 'deleted' => 0, 'blocked' => true];
+        }
+
+        $deleted = 0;
+
+        foreach ($candidates as $row) {
+            $misses = $states->markMissing($connectionId, $collectionPath, (string) $row->vcard_href, 'contact');
             $update = ['missing_since' => $row->missing_since ?? $now];
 
-            if ($misses >= $required) {
+            if ($misses >= $required && $healthOk) {
                 $update['deleted_at'] = $now;
-                $update['deletion_reason'] = 'missing_remote';
+                $update['deletion_reason'] = 'missing_twice';
                 $deleted++;
             }
 
             Contact::query()->withoutGlobalScope('organization')->whereKey($row->getKey())->update($update);
         }
 
-        return ['missing' => $missing, 'deleted' => $deleted];
+        return ['missing' => $missing, 'deleted' => $deleted, 'blocked' => false];
     }
 
     /**

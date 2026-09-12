@@ -38,6 +38,7 @@ class WebhookDelivery extends Model
             'last_response_code' => 'integer',
             'duration_ms' => 'integer',
             'next_attempt_at' => 'immutable_datetime',
+            'queued_at' => 'immutable_datetime',
             'delivered_at' => 'immutable_datetime',
             'last_attempt_at' => 'immutable_datetime',
             'dead_at' => 'immutable_datetime',

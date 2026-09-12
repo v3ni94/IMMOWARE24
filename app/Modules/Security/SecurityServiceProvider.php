@@ -86,8 +86,8 @@ class SecurityServiceProvider extends ServiceProvider
         $router->aliasMiddleware('throttle.apikey', ThrottleApiKey::class);
         $router->aliasMiddleware('2fa', RequireTwoFactor::class);
         $router->aliasMiddleware('2fa.fresh', RequireFreshTwoFactor::class);
-        // Absolute Sitzungsdauer für alle Web-Routen (08-security.md Abschnitt 3.1).
-        $router->pushMiddlewareToGroup('web', EnforceAbsoluteSessionLifetime::class);
+        // EnforceAbsoluteSessionLifetime hängt in bootstrap/app.php an der Gruppe web (pushMiddlewareToGroup aus einem
+        // Provider wird beim Auflösen des HTTP-Kernels durch dessen Gruppen ersetzt und wäre wirkungslos).
 
         $this->registerGates();
 

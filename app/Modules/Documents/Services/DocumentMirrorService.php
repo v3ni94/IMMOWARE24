@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Modules\Documents\Services;
 
 use App\Core\Contracts\WebhookDispatcherInterface;
+use App\Core\Enums\ConflictState;
+use App\Modules\Connector\Models\ImmowareConnection;
 use App\Modules\Documents\DTO\FolderScanResult;
 use App\Modules\Documents\DTO\ScanContext;
 use App\Modules\Documents\Http\WebDavClient;
@@ -14,8 +16,6 @@ use App\Modules\Documents\Support\DavEntry;
 use App\Modules\Documents\Support\DocumentAssignmentResolver;
 use App\Modules\Documents\Support\DocumentTypeClassifier;
 use App\Modules\Documents\Support\WebDavPath;
-use App\Modules\Connector\Models\ImmowareConnection;
-use App\Core\Enums\ConflictState;
 use App\Modules\Sync\Models\Conflict;
 use App\Modules\Sync\Models\SyncEvent;
 use Carbon\CarbonImmutable;
@@ -35,9 +35,19 @@ final class DocumentMirrorService
 
     public const string ORIGIN_HUB_UPLOAD = 'hub_upload';
 
-    public const string DELETION_REMOTE_DELETED = 'remote_deleted';
+    /** deletion_reason nach zweitem Fehlen in einem gesunden Folgelauf (07-sync-strategy.md Abschnitt 4 Punkt 4). */
+    public const string DELETION_MISSING_TWICE = 'missing_twice';
 
     public const string DELETION_FOLDER_REMOVED = 'folder_removed';
+
+    /** degraded_reason der Connection bei Überschreiten der Schutzgrenze (07 Abschnitt 4 Punkt 6). */
+    public const string DEGRADED_MASS_MISSING = 'mass_missing';
+
+    /** conflict_type auf Collection-Ebene bei Überschreiten der Schutzgrenze. */
+    public const string CONFLICT_MASS_MISSING = 'uncertain_identity';
+
+    /** conflict_type, wenn eine Depth-1-Antwort auf max_entries_per_folder gekappt wurde (kein Sweep möglich). */
+    public const string CONFLICT_LISTING_TRUNCATED = 'listing_truncated';
 
     /** degraded_reason der Connection bei 404 auf Ordner-Ebene (07-sync-strategy.md Abschnitt 6.1). */
     public const string DEGRADED_FOLDER_MISSING = 'folder_missing';
@@ -75,7 +85,11 @@ final class DocumentMirrorService
 
         $folder = $this->upsertFolder($folderPath, $context, $result->self(), $scanStartedAt);
 
-        $children = array_slice($result->children(), 0, $context->maxEntriesPerFolder);
+        $allChildren = $result->children();
+        // Kappung: alles oberhalb der Grenze wird nicht verarbeitet. Die Auflistung ist dann unvollständig und darf
+        // keinen Sweep auslösen, sonst würden nie gelistete Dateien dauerhaft soft-gelöscht (Änderungsvermerk 12.09.2026).
+        $truncated = count($allChildren) > $context->maxEntriesPerFolder;
+        $children = $truncated ? array_slice($allChildren, 0, $context->maxEntriesPerFolder) : $allChildren;
         $childFolders = [];
         $seenFolderIds = [];
         $created = $updated = $moved = $unchanged = $failed = 0;
@@ -123,7 +137,20 @@ final class DocumentMirrorService
         $folder->setAttribute('missing_since', null);
         $folder->save();
 
-        [$deleted, $sweepBlocked] = $this->sweep($folder, $seenFolderIds, $scanStartedAt, $context);
+        if ($truncated) {
+            $this->recordFolderConflict($folder, $context, $scanStartedAt, self::CONFLICT_LISTING_TRUNCATED, [
+                'listed' => count($allChildren), 'processed' => count($children), 'max_entries_per_folder' => $context->maxEntriesPerFolder,
+            ]);
+            Log::warning('Depth-1-Auflistung gekappt: Ordner als truncated markiert, kein Sweep.', [
+                'connection_id' => $context->connectionId,
+                'folder' => $folderPath,
+                'listed' => count($allChildren),
+                'limit' => $context->maxEntriesPerFolder,
+            ]);
+            [$deleted, $sweepBlocked] = [0, true];
+        } else {
+            [$deleted, $sweepBlocked] = $this->sweep($folder, $seenFolderIds, $scanStartedAt, $context);
+        }
 
         return new FolderScanResult(
             path: $folderPath,
@@ -138,6 +165,7 @@ final class DocumentMirrorService
             failed: $failed,
             childFolders: $childFolders,
             sweepBlocked: $sweepBlocked,
+            truncated: $truncated,
         );
     }
 
@@ -312,9 +340,11 @@ final class DocumentMirrorService
     }
 
     /**
-     * Mark-and-Sweep je Ordner: Dokumente und Unterordner, die in diesem Scan nicht gelistet wurden,
-     * erhalten deleted_at (Soft Delete) und ein sync_event remote_deleted. Schutzgrenze verhindert
-     * Massenlöschungen bei geänderter Freigabe.
+     * Mark-and-Sweep je Ordner in zwei Stufen (07-sync-strategy.md Abschnitt 4 Punkte 3 bis 6): Dokumente und
+     * Unterordner, die in diesem Scan nicht gelistet wurden, erhalten beim ersten Fehlen nur missing_since. Erst ein
+     * Folgelauf mit gesundem Health-Check (health_ok_before) setzt deleted_at (deletion_reason missing_twice,
+     * sync_event soft_deleted). Über der Schutzgrenze wird nichts gelöscht, die Connection erhält degraded_reason
+     * mass_missing und einen Konflikt uncertain_identity auf Ordnerebene.
      *
      * @param  array<int, int>  $seenFolderIds
      * @return array{0: int, 1: bool} Anzahl Soft Deletes, Sweep blockiert
@@ -339,31 +369,6 @@ final class DocumentMirrorService
 
         $missingCount = (clone $documentsQuery)->count();
 
-        if ($missingCount === 0 && $seenFolderIds === [] && $folder->children()->whereNull('deleted_at')->count() === 0) {
-            return [0, false];
-        }
-
-        if ($this->sweepGuardTriggered($missingCount, $totalInFolder, $context)) {
-            (clone $documentsQuery)->whereNull('missing_since')->update(['missing_since' => $scanStartedAt]);
-            Log::warning('Sweep blockiert: Schutzgrenze für fehlende Dokumente überschritten.', [
-                'connection_id' => $context->connectionId,
-                'folder' => $folder->getAttribute('path'),
-                'missing' => $missingCount,
-                'total' => $totalInFolder,
-            ]);
-
-            return [0, true];
-        }
-
-        $deleted = 0;
-
-        foreach ($documentsQuery->orderBy('id')->lazyById(200) as $document) {
-            if ($document instanceof Document) {
-                $this->softDeleteDocument($document, $scanStartedAt, $context, self::DELETION_REMOTE_DELETED);
-                $deleted++;
-            }
-        }
-
         $missingFolders = DocumentFolder::query()
             ->withoutGlobalScopes()
             ->where('connection_id', $context->connectionId)
@@ -374,8 +379,74 @@ final class DocumentMirrorService
             $missingFolders->whereNotIn('id', $seenFolderIds);
         }
 
+        if ($missingCount === 0 && (clone $missingFolders)->count() === 0) {
+            return [0, false];
+        }
+
+        if ($this->sweepGuardTriggered($missingCount, $totalInFolder, $context)) {
+            (clone $documentsQuery)->whereNull('missing_since')->update(['missing_since' => $scanStartedAt]);
+            $this->degradeConnection($context, self::DEGRADED_MASS_MISSING);
+            $this->recordFolderConflict($folder, $context, $scanStartedAt, self::CONFLICT_MASS_MISSING, ['missing' => $missingCount, 'total' => $totalInFolder]);
+            Log::warning('Sweep blockiert: Schutzgrenze für fehlende Dokumente überschritten, Connection degraded.', [
+                'connection_id' => $context->connectionId,
+                'folder' => $folder->getAttribute('path'),
+                'missing' => $missingCount,
+                'total' => $totalInFolder,
+                'reason' => self::DEGRADED_MASS_MISSING,
+            ]);
+
+            return [0, true];
+        }
+
+        $deleted = 0;
+        $healthOk = $context->healthOk === true;
+
+        foreach ($documentsQuery->orderBy('id')->lazyById(200) as $document) {
+            if (! $document instanceof Document) {
+                continue;
+            }
+
+            $missingSince = $document->getAttribute('missing_since');
+
+            if ($missingSince === null) {
+                // Erstes Fehlen: nur markieren.
+                $document->setAttribute('missing_since', $scanStartedAt);
+                $document->timestamps = false;
+                $document->saveQuietly();
+                $document->timestamps = true;
+                $this->event($context, $document, 'missing', 'sweep', $document->getAttribute('checksum'), $document->getAttribute('checksum'));
+
+                continue;
+            }
+
+            if (! $healthOk) {
+                continue;
+            }
+
+            $this->softDeleteDocument($document, $scanStartedAt, $context, self::DELETION_MISSING_TWICE);
+            $deleted++;
+        }
+
+        if (! $healthOk && $missingCount > 0) {
+            Log::info('Sweep: Health-Check nicht bestätigt, fehlende Dokumente bleiben nur markiert.', [
+                'connection_id' => $context->connectionId,
+                'folder' => $folder->getAttribute('path'),
+                'missing' => $missingCount,
+            ]);
+        }
+
         foreach ($missingFolders->orderBy('id')->lazyById(100) as $child) {
-            if ($child instanceof DocumentFolder) {
+            if (! $child instanceof DocumentFolder) {
+                continue;
+            }
+
+            if ($child->getAttribute('missing_since') === null) {
+                DocumentFolder::query()->withoutGlobalScopes()->whereKey($child->getKey())->update(['missing_since' => $scanStartedAt]);
+
+                continue;
+            }
+
+            if ($healthOk) {
                 $deleted += $this->softDeleteFolderTree($child, $scanStartedAt, $context);
             }
         }
@@ -429,7 +500,9 @@ final class DocumentMirrorService
 
         if ($below > $context->sweepMaxMissingCount) {
             DocumentFolder::query()->withoutGlobalScopes()->whereKey($folder->getKey())->whereNull('missing_since')->update(['missing_since' => $at]);
-            Log::warning('Teilbaum-Löschung blockiert: Schutzgrenze überschritten.', [
+            $this->degradeConnection($context, self::DEGRADED_MASS_MISSING);
+            $this->recordFolderConflict($folder, $context, $at, self::CONFLICT_MASS_MISSING, ['documents_below' => $below, 'limit' => $context->sweepMaxMissingCount]);
+            Log::warning('Teilbaum-Löschung blockiert: Schutzgrenze überschritten, Connection degraded.', [
                 'connection_id' => $context->connectionId,
                 'folder' => $prefix,
                 'documents_below' => $below,
@@ -471,7 +544,16 @@ final class DocumentMirrorService
         $document->setAttribute('deleted_at', $at);
         $document->save();
 
-        $this->event($context, $document, 'remote_deleted', 'sweep', $document->getAttribute('checksum'), null);
+        $this->event($context, $document, 'soft_deleted', 'sweep', $document->getAttribute('checksum'), null);
+    }
+
+    private function degradeConnection(ScanContext $context, string $reason): void
+    {
+        ImmowareConnection::query()
+            ->withoutGlobalScopes()
+            ->whereKey($context->connectionId)
+            ->where('status', 'active')
+            ->update(['status' => 'degraded', 'degraded_reason' => $reason]);
     }
 
     private function markFolderUnreachable(string $path, int $status, ScanContext $context, CarbonImmutable $at): void
@@ -498,13 +580,8 @@ final class DocumentMirrorService
             $folder->save();
         }
 
-        ImmowareConnection::query()
-            ->withoutGlobalScopes()
-            ->whereKey($context->connectionId)
-            ->where('status', 'active')
-            ->update(['status' => 'degraded', 'degraded_reason' => self::DEGRADED_FOLDER_MISSING]);
-
-        $this->recordFolderMissingConflict($folder, $context, $at);
+        $this->degradeConnection($context, self::DEGRADED_FOLDER_MISSING);
+        $this->recordFolderConflict($folder, $context, $at, self::CONFLICT_FOLDER_MISSING, ['path' => $folder->getAttribute('path'), 'missing_since' => $at->toIso8601String(), 'http_status' => 404]);
 
         Log::warning('Ordner per 404 nicht erreichbar: Connection degraded, kein Sweep.', [
             'connection_id' => $context->connectionId,
@@ -514,14 +591,16 @@ final class DocumentMirrorService
     }
 
     /**
-     * Höchstens ein offener Konflikt folder_missing je Ordner; Wiederholungen erhöhen occurrences.
+     * Höchstens ein offener Konflikt je Ordner und Typ; Wiederholungen erhöhen occurrences (07 Abschnitt 7).
+     *
+     * @param  array<string, mixed>  $snapshot
      */
-    private function recordFolderMissingConflict(DocumentFolder $folder, ScanContext $context, CarbonImmutable $at): void
+    private function recordFolderConflict(DocumentFolder $folder, ScanContext $context, CarbonImmutable $at, string $type, array $snapshot): void
     {
         $existing = Conflict::query()
             ->where('entity_type', 'document_folder')
             ->where('entity_id', $folder->getKey())
-            ->where('conflict_type', self::CONFLICT_FOLDER_MISSING)
+            ->where('conflict_type', $type)
             ->where('open_key', true)
             ->first();
 
@@ -541,9 +620,9 @@ final class DocumentMirrorService
             'sync_run_id' => $context->syncRunId,
             'entity_type' => 'document_folder',
             'entity_id' => $folder->getKey(),
-            'conflict_type' => self::CONFLICT_FOLDER_MISSING,
+            'conflict_type' => $type,
             'conflict_state' => ConflictState::RemoteNewer,
-            'local_snapshot_json' => ['path' => $folder->getAttribute('path'), 'missing_since' => $at->toIso8601String(), 'http_status' => 404],
+            'local_snapshot_json' => ['path' => $folder->getAttribute('path'), ...$snapshot],
             'status' => 'open',
             'open_key' => true,
             'occurrences' => 1,

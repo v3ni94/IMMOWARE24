@@ -32,17 +32,25 @@ final class ScanDocumentFoldersJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 5;
+    /** tries 0: Releases durch WithoutOverlapping zählen nicht als Fehlversuch, nur maxExceptions (Änderungsvermerk 12.09.2026). */
+    public int $tries = 0;
+
+    public int $maxExceptions = 5;
 
     public int $timeout = 900;
+
+    private ?string $activeLockOwner = null;
 
     public function __construct(
         public readonly int $connectionId,
         public readonly SyncMode $mode = SyncMode::Incremental,
         public readonly ?string $cursor = null,
         public readonly ?string $correlationId = null,
+        public readonly ?string $lockOwner = null,
     ) {
         $this->onQueue((string) config('hub.documents.queues.scan', 'documents'));
+        $this->maxExceptions = max(1, (int) config('hub.sync.jobs.tries', 5));
+        $this->timeout = max(60, (int) config('hub.sync.jobs.timeout_seconds', 900));
     }
 
     /**
@@ -93,7 +101,7 @@ final class ScanDocumentFoldersJob implements ShouldQueue
         ];
     }
 
-    public function handle(ConnectorManager $connectors, CorrelationId $correlation): void
+    public function handle(ConnectorManager $connectors, CorrelationId $correlation, SyncLockManager $locks): void
     {
         if ($this->correlationId !== null) {
             $correlation->set($this->correlationId);
@@ -116,18 +124,45 @@ final class ScanDocumentFoldersJob implements ShouldQueue
             return;
         }
 
-        $result = $connector->pull(new SyncRequest($this->connectionId, WebDavConnector::ENTITY_TYPE, $this->mode, null, $this->cursor));
+        // Derselbe Lock wie RunSyncJob (Connection plus Adapter): kein zweiter Mark-and-Sweep neben einem laufenden Sync.
+        $lockOwner = $this->lockOwner ?? SyncLockManager::ownerForJob($this->job?->uuid());
+
+        if (! $locks->acquireOrResume($this->connectionId, WebDavConnector::ENTITY_TYPE, $lockOwner)) {
+            Log::info('ScanDocumentFoldersJob: Scan übersprungen, Sync-Lock der Connection wird von einem anderen Lauf gehalten.', ['connection_id' => $this->connectionId]);
+
+            return;
+        }
+
+        $this->activeLockOwner = $lockOwner;
+
+        try {
+            $result = $connector->pull(new SyncRequest($this->connectionId, WebDavConnector::ENTITY_TYPE, $this->mode, null, $this->cursor));
+        } catch (Throwable $exception) {
+            if ($this->job === null) {
+                $locks->release($this->connectionId, WebDavConnector::ENTITY_TYPE, $lockOwner);
+            }
+
+            throw $exception;
+        }
 
         Log::info('Dokumenten-Scan-Chunk abgeschlossen.', ['connection_id' => $this->connectionId, ...$result->toArray(), 'cursor' => $result->cursor !== null ? 'pending' : null]);
 
         if ($result->cursor !== null && $result->cursor === $this->cursor) {
             // Cursor-Vertrag verletzt: kein Fortschritt, sonst Endlos-Kette (vgl. RunSyncJob).
+            $locks->release($this->connectionId, WebDavConnector::ENTITY_TYPE, $lockOwner);
+            $this->activeLockOwner = null;
+
             throw new RuntimeException(sprintf('Adapter lieferte unveränderten Cursor "%s", Scan-Kette abgebrochen.', mb_substr($this->cursor, 0, 80)));
         }
 
         if ($result->cursor !== null) {
-            self::dispatch($this->connectionId, $this->mode, $result->cursor, $correlation->current());
+            self::dispatch($this->connectionId, $this->mode, $result->cursor, $correlation->current(), $lockOwner);
+
+            return;
         }
+
+        $locks->release($this->connectionId, WebDavConnector::ENTITY_TYPE, $lockOwner);
+        $this->activeLockOwner = null;
     }
 
     public function failed(?Throwable $exception): void
@@ -140,6 +175,9 @@ final class ScanDocumentFoldersJob implements ShouldQueue
         ]);
 
         // 07-sync-strategy.md Abschnitt 6.1 Stufe 5: erschöpfte Jobs in die DLQ, Wiederaufnahme über fromDlqArguments().
-        app(DlqService::class)->store(static::class, $this->dlqArguments(), $exception, $this->connectionId, WebDavConnector::ENTITY_TYPE, (string) $this->queue);
+        app(DlqService::class)->store(self::class, $this->dlqArguments(), $exception, $this->connectionId, WebDavConnector::ENTITY_TYPE, (string) $this->queue);
+
+        $owner = $this->activeLockOwner ?? $this->lockOwner ?? ($this->job !== null ? SyncLockManager::ownerForJob($this->job->uuid()) : null);
+        app(SyncLockManager::class)->release($this->connectionId, WebDavConnector::ENTITY_TYPE, $owner);
     }
 }

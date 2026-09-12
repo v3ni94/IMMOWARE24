@@ -98,6 +98,7 @@ final class WebhookDispatcher implements WebhookDispatcherInterface
                     'attempts' => 0,
                     'status' => WebhookDelivery::STATUS_PENDING,
                     'next_attempt_at' => $occurredAt,
+                    'queued_at' => $occurredAt,
                 ]);
                 $delivery->save();
 

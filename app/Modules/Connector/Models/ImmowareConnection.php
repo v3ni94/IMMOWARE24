@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Modules\Connector\Models;
 
+use App\Core\Support\HashedIdentifier;
 use App\Core\Traits\BelongsToOrganization;
 use App\Modules\Documents\Models\Document;
 use App\Modules\Documents\Models\DocumentFolder;
@@ -47,6 +48,20 @@ class ImmowareConnection extends Model
             'last_health_ok' => 'boolean',
             'last_health_result' => 'array',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        // base_url_hash ist HMAC-SHA256 mit Pepper (02-data-model.md, 08-security.md 2.2) und wird immer aus der
+        // aktuellen base_url abgeleitet; explizit gesetzte Werte (Factory, Import) werden überschrieben.
+        static::saving(function (self $connection): void {
+            if (! $connection->isDirty('base_url') && $connection->getAttribute('base_url_hash') !== null) {
+                return;
+            }
+
+            $baseUrl = $connection->getAttribute('base_url');
+            $connection->setAttribute('base_url_hash', is_string($baseUrl) ? app(HashedIdentifier::class)->baseUrl($baseUrl) : null);
+        });
     }
 
     public function isReadPurpose(): bool

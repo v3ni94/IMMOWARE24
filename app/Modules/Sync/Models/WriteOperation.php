@@ -60,7 +60,9 @@ class WriteOperation extends Model
             $original = $original instanceof WriteOperationStatus ? $original : WriteOperationStatus::tryFrom((string) $original);
             $new = $operation->getAttribute('status');
 
-            if ($original?->mayHaveReachedRemote() && $new instanceof WriteOperationStatus && ! $new->mayHaveReachedRemote() && $new !== WriteOperationStatus::Failed) {
+            // Aus sent, unknown oder verified sind nur Endzustände erreichbar: failed, oder rejected bei 412 (Ziel existiert,
+            // kein PUT hat gewirkt). Rücksprung auf pending oder prechecked ist verboten (Änderungsvermerk 12.09.2026).
+            if ($original?->mayHaveReachedRemote() && $new instanceof WriteOperationStatus && ! $new->mayHaveReachedRemote() && ! in_array($new, [WriteOperationStatus::Failed, WriteOperationStatus::Rejected], true)) {
                 throw new WriteBlockedException(sprintf('Statuswechsel von %s nach %s ist verboten.', $original->value, $new->value), self::OPERATION_WEBDAV_CREATE);
             }
         });

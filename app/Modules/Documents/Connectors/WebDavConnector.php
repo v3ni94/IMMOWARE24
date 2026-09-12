@@ -238,6 +238,7 @@ final class WebDavConnector implements ImmowareConnectorInterface
             sweepMaxMissingRatio: (float) $this->config->get('hub.documents.sweep.max_missing_ratio', 0.2),
             sweepMinCountForRatio: (int) $this->config->get('hub.documents.sweep.min_count_for_ratio', 10),
             sweepMaxMissingCount: (int) $this->config->get('hub.documents.sweep.max_missing_count', 500),
+            healthOk: $connection?->getAttribute('last_health_ok') !== null ? (bool) $connection->getAttribute('last_health_ok') : null,
         );
     }
 

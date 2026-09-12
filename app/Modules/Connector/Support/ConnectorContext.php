@@ -24,7 +24,23 @@ final readonly class ConnectorContext
         public ?int $technicalUserId = null,
         public float $rateLimitRps = 2.0,
         public int $maxConcurrency = 2,
+        /** Schreibpräfix der Connection (allowed_write_prefix); nur für PUT einer Schreib-Connection relevant. */
+        public ?string $allowedWritePrefix = null,
     ) {}
+
+    /**
+     * Pfad der Freigabe-URL (base_url), normalisiert ohne abschließenden Schrägstrich.
+     */
+    public function basePath(): string
+    {
+        if ($this->baseUrl === null) {
+            return '';
+        }
+
+        $path = parse_url($this->baseUrl, PHP_URL_PATH);
+
+        return is_string($path) ? rtrim($path, '/') : '';
+    }
 
     public function host(): ?string
     {
@@ -50,6 +66,7 @@ final readonly class ConnectorContext
             'host' => $this->host(),
             'auth_scheme' => $this->authScheme,
             'purpose' => $this->purpose,
+            'allowed_write_prefix' => $this->allowedWritePrefix,
         ];
     }
 }

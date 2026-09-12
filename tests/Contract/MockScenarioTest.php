@@ -61,8 +61,6 @@ final class MockScenarioTest extends TestCase
         // Client-Timeout unter der Wartezeit des Szenarios timeout (3 s), damit der Test schnell bleibt.
         config()->set('hub.connector.http.timeout_seconds', 1);
         config()->set('hub.connector.http.connect_timeout_seconds', 2);
-        config()->set('hub.contacts.http.timeout_seconds', 1);
-        config()->set('hub.contacts.http.connect_timeout_seconds', 2);
     }
 
     // ------------------------------------------------------------ WebDAV

@@ -15,8 +15,8 @@ return [
         'connect_timeout_seconds' => (int) env('IMMOWARE_HTTP_CONNECT_TIMEOUT', 10),
         'timeout_seconds' => (int) env('IMMOWARE_HTTP_TIMEOUT', 60),
         'download_timeout_seconds' => (int) env('IMMOWARE_HTTP_DOWNLOAD_TIMEOUT', 300),
-        // Methoden, die der Client unabhängig von jeder Konfiguration vor dem Senden abbricht.
-        'blocked_methods' => ['DELETE', 'MOVE', 'COPY', 'PROPPATCH', 'LOCK', 'UNLOCK', 'MKCOL'],
+        // Gesperrte Methoden sind fest verdrahtet (HttpClientFactory::BLOCKED_METHODS), keine Konfigurationsoption
+        // (05-write-capabilities.md 2.3, Änderungsvermerk 12.09.2026).
     ],
 
     /*
@@ -51,6 +51,9 @@ return [
         // ab dem dritten Fehlzyklus
         'extended_open_seconds' => 3600,
         'extended_after_cycles' => 3,
+        // Ein im half_open reservierter Testrequest verfällt nach dieser Zeit (HTTP-Timeout plus Reserve), damit ein
+        // abgebrochener Request den Breaker nicht dauerhaft blockiert.
+        'trial_timeout_seconds' => (int) env('IMMOWARE_HTTP_TIMEOUT', 60) + 30,
     ],
 
     'remote_requests' => [
@@ -79,6 +82,8 @@ return [
         'documents.read' => ['config_flag' => 'hub.core.read.enabled', 'hard_locked' => false, 'connector' => 'webdav'],
         // create-only PUT in den Posteingang, beide Flags müssen true sein
         'documents.write' => ['config_flag' => ['hub.core.write.enabled', 'hub.core.write.webdav_create_enabled'], 'hard_locked' => false, 'connector' => 'webdav'],
+        // Overwrite (PUT ohne If-None-Match: *) ist hard_locked; die Doku nennt den Schlüssel webdav.overwrite (05 2.2).
+        'documents.overwrite' => ['config_flag' => 'hub.core.write.webdav_overwrite_enabled', 'hard_locked' => true, 'connector' => 'webdav'],
         'documents.delete' => ['config_flag' => 'hub.core.write.webdav_delete_enabled', 'hard_locked' => true, 'connector' => 'webdav'],
         'documents.move' => ['config_flag' => 'hub.core.write.webdav_move_enabled', 'hard_locked' => true, 'connector' => 'webdav'],
         'properties.read' => ['config_flag' => 'hub.core.read.enabled', 'hard_locked' => false, 'connector' => 'file_import'],

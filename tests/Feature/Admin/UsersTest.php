@@ -10,6 +10,7 @@ use App\Modules\Security\Models\AuditLog;
 use App\Modules\Security\Models\User;
 use App\Modules\Security\Services\LoginService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 final class UsersTest extends TestCase
@@ -125,5 +126,71 @@ final class UsersTest extends TestCase
         $this->assertMatchesRegularExpression('/data-cell="owner:users\.manage">\s*<span class="hub-badge hub-badge-ok">ja/', $html);
 
         $this->login(User::factory()->role(Role::ReadOnly)->create())->get('/admin/roles')->assertForbidden();
+    }
+
+    public function test_administrator_cannot_set_password_of_owner_or_administrator(): void
+    {
+        $organization = Organization::factory()->create();
+        $admin = User::factory()->role(Role::Administrator)->for($organization)->create();
+        $owner = User::factory()->role(Role::Owner)->for($organization)->create();
+        $otherAdmin = User::factory()->role(Role::Administrator)->for($organization)->create();
+        $ownerHash = (string) $owner->getAttribute('password');
+
+        $payload = ['password' => 'NeuesPasswort2026', 'password_confirmation' => 'NeuesPasswort2026'];
+
+        $this->login($admin)->put('/admin/users/'.$owner->getKey(), ['name' => $owner->name] + $payload)->assertForbidden();
+        $this->login($admin)->put('/admin/users/'.$otherAdmin->getKey(), ['name' => $otherAdmin->name] + $payload)->assertForbidden();
+
+        $this->assertSame($ownerHash, (string) $owner->fresh()->getAttribute('password'));
+        $this->assertDatabaseMissing('audit_logs', ['action' => 'admin.users.updated']);
+    }
+
+    public function test_password_change_of_other_user_terminates_their_sessions(): void
+    {
+        $organization = Organization::factory()->create();
+        $admin = User::factory()->role(Role::Administrator)->for($organization)->create();
+        $target = User::factory()->role(Role::Operator)->for($organization)->create();
+
+        DB::table('sessions')->insert([
+            ['id' => 'target-a', 'user_id' => $target->getKey(), 'ip_address' => '10.0.0.1', 'user_agent' => 'Firefox', 'payload' => '', 'last_activity' => time()],
+            ['id' => 'target-b', 'user_id' => $target->getKey(), 'ip_address' => '10.0.0.2', 'user_agent' => 'Safari', 'payload' => '', 'last_activity' => time()],
+            ['id' => 'admin-s', 'user_id' => $admin->getKey(), 'ip_address' => '10.0.0.3', 'user_agent' => 'Chrome', 'payload' => '', 'last_activity' => time()],
+        ]);
+
+        $this->login($admin)->put('/admin/users/'.$target->getKey(), [
+            'name' => $target->name,
+            'password' => 'NeuesPasswort2026',
+            'password_confirmation' => 'NeuesPasswort2026',
+        ])->assertRedirect('/admin/users');
+
+        $this->assertDatabaseMissing('sessions', ['id' => 'target-a']);
+        $this->assertDatabaseMissing('sessions', ['id' => 'target-b']);
+        $this->assertDatabaseHas('sessions', ['id' => 'admin-s']);
+
+        $log = AuditLog::query()->where('action', 'admin.users.updated')->firstOrFail();
+        $this->assertTrue($log->after_json['login_reset']);
+        $this->assertSame(2, $log->after_json['sessions_terminated']);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'security.sessions.all_terminated', 'entity_id' => $target->getKey()]);
+    }
+
+    public function test_last_active_owner_cannot_be_demoted_or_disabled(): void
+    {
+        $organization = Organization::factory()->create();
+        $owner = User::factory()->role(Role::Owner)->for($organization)->create();
+        $disabledOwner = User::factory()->role(Role::Owner)->for($organization)->create(['disabled_at' => now()]);
+
+        // Eigene Rolle und eigenes Konto sind ohnehin geschützt; der Schutz des letzten Owners greift zusätzlich.
+        $this->login($owner)->put('/admin/users/'.$owner->getKey(), ['name' => $owner->name, 'role' => 'administrator'])->assertForbidden();
+        $this->assertSame(Role::Owner, $owner->fresh()->role);
+
+        // Zweiter Owner vorhanden: Herabstufung des anderen Owners ist zulässig, danach ist der verbliebene Owner der letzte.
+        $second = User::factory()->role(Role::Owner)->for($organization)->create();
+        $this->login($owner)->put('/admin/users/'.$second->getKey(), ['name' => $second->name, 'role' => 'administrator'])->assertRedirect('/admin/users');
+        $this->assertSame(Role::Administrator, $second->fresh()->role);
+
+        // Ein deaktivierter Owner zählt nicht: der letzte aktive Owner bleibt geschützt.
+        $this->login($second->fresh())->put('/admin/users/'.$owner->getKey(), ['name' => $owner->name, 'disabled' => '1'])->assertForbidden();
+        $this->assertFalse($owner->fresh()->isDisabled());
+        $this->assertTrue($disabledOwner->fresh()->isDisabled());
     }
 }

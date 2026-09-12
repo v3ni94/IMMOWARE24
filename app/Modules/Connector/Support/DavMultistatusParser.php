@@ -6,11 +6,13 @@ namespace App\Modules\Connector\Support;
 
 use DOMDocument;
 use DOMElement;
+use DOMNode;
 use DOMXPath;
 
 /**
- * Minimaler, sicherer Parser für WebDAV-Multistatus-Antworten (RFC 4918, 6578, 6352, 4791).
- * Keine externen Entitäten, kein Netzwerkzugriff, kein DOCTYPE.
+ * Minimaler, sicherer Parser für DAV-Multistatus-Antworten (RFC 4918, 6578, 6352, 4791) für WebDAV, CardDAV
+ * und CalDAV. Keine externen Entitäten, kein Netzwerkzugriff, kein DOCTYPE. Einzige Implementierung im Hub
+ * (Änderungsvermerk 12.09.2026: die Kopie im Modul Contacts wurde entfernt).
  */
 final class DavMultistatusParser
 {
@@ -33,9 +35,7 @@ final class DavMultistatusParser
             return [];
         }
 
-        $xpath = new DOMXPath($document);
-        $xpath->registerNamespace('d', self::NS_DAV);
-        $xpath->registerNamespace('cs', self::NS_CALENDARSERVER);
+        $xpath = $this->xpath($document);
 
         $responses = [];
 
@@ -51,7 +51,11 @@ final class DavMultistatusParser
             }
 
             $href = trim($this->text($xpath, 'd:href', $node) ?? '');
-            $statusLine = $this->text($xpath, 'd:propstat/d:status', $node) ?? $this->text($xpath, 'd:status', $node);
+            // Status des Eintrags: DAV:status direkt am response (z. B. 404 im sync-collection REPORT), sonst der erste
+            // propstat mit Properties, sonst irgendein propstat-Status.
+            $statusLine = $this->text($xpath, 'd:status', $node)
+                ?? $this->text($xpath, 'd:propstat[d:prop/*][1]/d:status', $node)
+                ?? $this->text($xpath, 'd:propstat/d:status', $node);
             $status = $statusLine !== null && preg_match('/\s(\d{3})\s/', ' '.$statusLine.' ', $m) === 1 ? (int) $m[1] : null;
 
             $resourceType = $xpath->query('d:propstat/d:prop/d:resourcetype/d:collection', $node);
@@ -80,6 +84,7 @@ final class DavMultistatusParser
                 lastModified: $this->text($xpath, 'd:propstat/d:prop/d:getlastmodified', $node),
                 contentLength: $contentLength !== null && is_numeric(trim($contentLength)) ? (int) trim($contentLength) : null,
                 supportedReports: array_values(array_unique($reports)),
+                data: $this->text($xpath, 'd:propstat/d:prop/card:address-data', $node) ?? $this->text($xpath, 'd:propstat/d:prop/cal:calendar-data', $node),
             );
         }
 
@@ -97,10 +102,7 @@ final class DavMultistatusParser
             return null;
         }
 
-        $xpath = new DOMXPath($document);
-        $xpath->registerNamespace('d', self::NS_DAV);
-
-        return $this->normalizeToken($this->text($xpath, '/d:multistatus/d:sync-token', $document->documentElement));
+        return $this->normalizeToken($this->text($this->xpath($document), '/d:multistatus/d:sync-token', $document->documentElement));
     }
 
     public function isMultistatus(string $xml): bool
@@ -111,6 +113,17 @@ final class DavMultistatusParser
             && $document->documentElement !== null
             && $document->documentElement->namespaceURI === self::NS_DAV
             && $document->documentElement->localName === 'multistatus';
+    }
+
+    private function xpath(DOMDocument $document): DOMXPath
+    {
+        $xpath = new DOMXPath($document);
+        $xpath->registerNamespace('d', self::NS_DAV);
+        $xpath->registerNamespace('cs', self::NS_CALENDARSERVER);
+        $xpath->registerNamespace('card', self::NS_CARDDAV);
+        $xpath->registerNamespace('cal', self::NS_CALDAV);
+
+        return $xpath;
     }
 
     private function load(string $xml): ?DOMDocument
@@ -134,7 +147,7 @@ final class DavMultistatusParser
         return $loaded ? $document : null;
     }
 
-    private function text(DOMXPath $xpath, string $query, ?\DOMNode $context): ?string
+    private function text(DOMXPath $xpath, string $query, ?DOMNode $context): ?string
     {
         if ($context === null) {
             return null;

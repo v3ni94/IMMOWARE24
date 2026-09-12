@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Modules\Webhooks\Http\Requests;
 
+use App\Modules\Webhooks\Rules\SafeWebhookUrl;
+use App\Modules\Webhooks\Services\WebhookUrlGuard;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -23,7 +25,7 @@ final class StoreWebhookEndpointRequest extends FormRequest
 
         return [
             'name' => ['required', 'string', 'max:120'],
-            'url' => ['required', 'string', 'max:1024', 'url:https'],
+            'url' => ['required', 'string', 'max:1024', 'url:https', new SafeWebhookUrl($this->container->make(WebhookUrlGuard::class))],
             'events' => ['required', 'array', 'min:1'],
             'events.*' => ['string', Rule::in($events)],
             'active' => ['sometimes', 'boolean'],

@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Tests\Feature\Documents;
 
 use App\Core\Enums\CapabilityStatus;
+use App\Core\Enums\Role;
 use App\Modules\Connector\Models\Capability;
 use App\Modules\Connector\Models\ImmowareConnection;
 use App\Modules\Connector\Models\Organization;
+use App\Modules\Security\Models\User;
 use Illuminate\Http\Client\Request;
 
 /**
@@ -80,7 +82,7 @@ trait DocumentsTestHelpers
 
     protected function readConnection(?Organization $organization = null): ImmowareConnection
     {
-        return $this->createConnection($organization, ['rate_limit_rps' => 50, 'status' => 'active']);
+        return $this->createConnection($organization, ['rate_limit_rps' => 50, 'status' => 'active', 'last_health_ok' => true]);
     }
 
     /**
@@ -90,8 +92,8 @@ trait DocumentsTestHelpers
     {
         $paired ??= $this->readConnection();
 
-        $requester = \App\Modules\Security\Models\User::factory()->role(\App\Core\Enums\Role::Administrator)->for($paired->organization)->create();
-        $confirmer = \App\Modules\Security\Models\User::factory()->role(\App\Core\Enums\Role::Owner)->for($paired->organization)->create();
+        $requester = User::factory()->role(Role::Administrator)->for($paired->organization)->create();
+        $confirmer = User::factory()->role(Role::Owner)->for($paired->organization)->create();
 
         $connection = $this->createConnection($paired->organization, [
             'name' => 'WebDAV Schreib-Connection',

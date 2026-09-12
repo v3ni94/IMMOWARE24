@@ -84,7 +84,7 @@ final class WebDavToApiTest extends TestCase
         $this->assertEqualsCanonicalizing(['Scan_001.pdf', 'Rechnung Müller.pdf', 'Protokoll ETV 2026.pdf'], $filenames);
         $this->assertSame('immoware24', $response->json('data.0.provenance.source_system'));
         $this->assertSame('/Posteingang/Scan_001.pdf', $response->json('data.0.provenance.external_id'));
-        $this->assertSame('webdav_documents', $response->json('data.0.provenance.connector'));
+        $this->assertSame('webdav', $response->json('data.0.provenance.connector'), 'connector = Adaptername des ConnectorManagers');
 
         // Ohne passenden Scope wird der Zugriff verweigert.
         $this->getJson('/api/v1/documents', ['Authorization' => 'Bearer '.$this->issueKey(['contacts:read'])])->assertStatus(403);
@@ -117,7 +117,7 @@ final class WebDavToApiTest extends TestCase
         $contacts->assertOk()
             ->assertJsonPath('meta.total', 2)
             ->assertJsonStructure(['data' => [['id', 'first_name', 'last_name', 'provenance' => ['source_system', 'external_id', 'connector']]]]);
-        $this->assertSame('carddav_contacts', $contacts->json('data.0.provenance.connector'));
+        $this->assertSame('carddav', $contacts->json('data.0.provenance.connector'), 'connector = Adaptername des ConnectorManagers');
         $this->assertContains('Müller-Lüdenscheidt', array_column($contacts->json('data'), 'last_name'));
 
         $directory = $this->getJson('/api/v1/directory', $headers);

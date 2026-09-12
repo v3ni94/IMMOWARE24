@@ -157,6 +157,27 @@ final class DlqService
         $item->save();
     }
 
+    /**
+     * Schließt einen Replay ab, der durch Timeout oder Worker-Abbruch endete (ProcessDlqRetryJob::failed).
+     */
+    public function markReplayFailed(int $id, Throwable $exception): void
+    {
+        /** @var DlqItem|null $item */
+        $item = DlqItem::query()->find($id);
+
+        if ($item === null || $item->getAttribute('status') !== DlqStatus::Retrying) {
+            return;
+        }
+
+        $item->forceFill([
+            'status' => DlqStatus::Failed,
+            'replayed_at' => CarbonImmutable::now(),
+            'replay_result' => 'failed',
+            'exception' => $this->describe($exception),
+        ]);
+        $item->save();
+    }
+
     public function rebuild(DlqItem $item): ShouldQueue
     {
         $payload = (array) $item->getAttribute('payload_json');

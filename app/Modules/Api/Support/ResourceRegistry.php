@@ -14,6 +14,8 @@ use App\Modules\Estate\Models\OpenItem;
 use App\Modules\Estate\Models\Property;
 use App\Modules\Estate\Models\Transaction;
 use App\Modules\Estate\Models\Unit;
+use App\Modules\Sync\Models\Conflict;
+use App\Modules\Sync\Models\ProposedChange;
 use InvalidArgumentException;
 
 /**
@@ -196,6 +198,36 @@ final class ResourceRegistry
                 searchable: ['summary', 'location'],
                 description: 'Kalendereinträge aus dem CalDAV-Spiegel (lesend, Phase 3).',
                 phase: 3,
+            ),
+            new ResourceDefinition(
+                name: 'proposals',
+                model: ProposedChange::class,
+                entityType: 'proposed_change',
+                scope: 'conflicts:read',
+                accessPath: 'manual',
+                evidenceStatus: 'HUB',
+                attributes: ['id', 'connection_id', 'entity_type', 'entity_id', 'field', 'old_value', 'new_value', 'reason', 'status', 'requested_by', 'transferred_at', 'transferred_by', 'confirmed_by_sync_run_id', 'confirmed_at', 'rejected_at', 'correlation_id', 'created_at', 'updated_at'],
+                filters: ['entity_type' => 'entity_type', 'entity_id' => 'entity_id', 'connection_id' => 'connection_id', 'field' => 'field'],
+                sortable: ['updated_at', 'id', 'created_at', 'status'],
+                searchable: ['field', 'reason'],
+                hubOwned: true,
+                description: 'Änderungsvorschläge (Human-in-the-Loop-Rückweg), lesend. Anlage über PATCH /contacts/{id}; Umsetzung erfolgt manuell in Immoware24 und wird durch den nächsten Sync bestätigt.',
+                organizationColumn: 'organization_id',
+                organizationVia: 'connection',
+            ),
+            new ResourceDefinition(
+                name: 'conflicts',
+                model: Conflict::class,
+                entityType: 'conflict',
+                scope: 'conflicts:read',
+                accessPath: 'manual',
+                evidenceStatus: 'HUB',
+                attributes: ['id', 'connection_id', 'sync_run_id', 'entity_type', 'entity_id', 'conflict_type', 'conflict_state', 'local_snapshot_json', 'proposed_change_json', 'remote_payload_id', 'status', 'assigned_to', 'resolved_by', 'resolved_at', 'resolution_note', 'confirmed_by_sync_run_id', 'occurrences', 'last_seen_at', 'created_at', 'updated_at'],
+                filters: ['conflict_type' => 'conflict_type', 'entity_type' => 'entity_type', 'entity_id' => 'entity_id', 'connection_id' => 'connection_id', 'assigned_to' => 'assigned_to'],
+                sortable: ['updated_at', 'id', 'created_at', 'status', 'occurrences'],
+                hubOwned: true,
+                description: 'Sync-Konflikte, lesend. Zuweisung und Auflösung erfolgen in der Admin-Oberfläche (Endpunkte assign und resolve sind geplant).',
+                organizationVia: 'connection',
             ),
         ];
 

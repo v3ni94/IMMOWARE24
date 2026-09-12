@@ -28,7 +28,8 @@ return [
     ],
 
     'locks' => [
-        // TTL des Full-Sync-Locks in Sekunden (mindestens 30 Minuten laut Konzept).
+        // TTL des Sync-Locks je Connection und Adapter (alle Modi). Effektiv gilt max(full_ttl_seconds, 2 mal
+        // jobs.timeout_seconds, 1800), Verlängerung je Chunk (07-sync-strategy.md Abschnitt 5).
         'full_ttl_seconds' => (int) env('HUB_SYNC_FULL_LOCK_TTL', 7200),
         'overlap_ttl_seconds' => (int) env('HUB_SYNC_OVERLAP_TTL', 3600),
     ],
@@ -54,14 +55,25 @@ return [
         'retention_days' => (int) env('HUB_SYNC_DLQ_RETENTION_DAYS', 180),
     ],
 
+    /*
+     * Zeitpläne gemäß 07-sync-strategy.md Abschnitt 1.5 (einzige verbindliche Quelle für Intervalle, Europe/Berlin),
+     * Änderungsvermerk 12.09.2026:
+     *   Incremental Posteingang (WebDAV) alle 30 Minuten; der Incremental-Lauf für Dokumente traversiert alle
+     *   konfigurierten Wurzeln (hub.documents.scan.roots), ein getrennter Tageslauf 03:00 nur für den Ordner
+     *   Dokumente ist noch nicht umgesetzt (offener Punkt, siehe Runbook).
+     *   Incremental CardDAV alle 60 Minuten, Incremental CalDAV alle 4 Stunden.
+     *   Full Reconcile wöchentlich in der Nacht von Samstag auf Sonntag, Start 22:00 (Nachtfenster bis 05:00).
+     *   Health-Check je Connection alle 15 Minuten (stale_check). Die wöchentliche Probe (Samstag 21:30) läuft über
+     *   hub:probe {connection} je Connection und ist noch nicht im Scheduler hinterlegt (offener Punkt).
+     */
     'schedule' => [
         'enabled' => (bool) env('HUB_SYNC_SCHEDULE_ENABLED', true),
         'timezone' => 'Europe/Berlin',
-        'contact' => env('HUB_SYNC_CRON_CONTACTS', '*/5 * * * *'),
-        'document' => env('HUB_SYNC_CRON_DOCUMENTS', '*/5 * * * *'),
-        'calendar_event' => env('HUB_SYNC_CRON_CALENDAR', '*/15 * * * *'),
-        'full' => env('HUB_SYNC_CRON_FULL', '30 2 * * *'),
-        'stale_check' => env('HUB_SYNC_CRON_STALE', '*/10 * * * *'),
+        'contact' => env('HUB_SYNC_CRON_CONTACTS', '0 * * * *'),
+        'document' => env('HUB_SYNC_CRON_DOCUMENTS', '*/30 * * * *'),
+        'calendar_event' => env('HUB_SYNC_CRON_CALENDAR', '0 */4 * * *'),
+        'full' => env('HUB_SYNC_CRON_FULL', '0 22 * * 6'),
+        'stale_check' => env('HUB_SYNC_CRON_STALE', '*/15 * * * *'),
         'payload_prune' => env('HUB_SYNC_CRON_PAYLOAD_PRUNE', '15 4 * * *'),
     ],
 

@@ -163,8 +163,8 @@ fi
 HEALTH_BASE="${HEALTH_URL%/health}"
 log "Health-Check $HEALTH_BASE/health/database und $HEALTH_BASE/health/queue"
 for attempt in 1 2 3 4 5 6; do
-    db_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_BASE/health/database" || echo 000)"
-    queue_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_BASE/health/queue" || echo 000)"
+    db_code="$(curl -sS -o /tmp/immoware-health-database.json -w '%{http_code}' --max-time 15 "$HEALTH_BASE/health/database" || echo 000)"
+    queue_code="$(curl -sS -o /tmp/immoware-health-queue.json -w '%{http_code}' --max-time 15 "$HEALTH_BASE/health/queue" || echo 000)"
     http_code="$db_code/$queue_code"
     if [[ "$db_code" == "200" && "$queue_code" == "200" ]]; then
         log "Health database und queue ok."
@@ -177,13 +177,19 @@ for attempt in 1 2 3 4 5 6; do
         break
     fi
     if [[ "$attempt" -eq 6 ]]; then
-        cat /tmp/immoware-health.json 2>/dev/null || true
+        # Bei 503 die Health-Details (checks, ohne Secrets) ausgeben, damit die Ursache vor dem Rollback sichtbar ist.
+        log "Health-Details /health/database (HTTP $db_code):"
+        cat /tmp/immoware-health-database.json 2>/dev/null || true
+        echo
+        log "Health-Details /health/queue (HTTP $queue_code):"
+        cat /tmp/immoware-health-queue.json 2>/dev/null || true
+        echo
         fail "Health-Check fehlgeschlagen (HTTP $http_code). Rollback pruefen: deploy/scripts/deploy.sh --rollback"
     fi
     log "Health noch nicht ok (HTTP $http_code), Versuch $attempt von 6, warte 10 s"
     sleep 10
 done
-rm -f /tmp/immoware-health.json
+rm -f /tmp/immoware-health.json /tmp/immoware-health-database.json /tmp/immoware-health-queue.json
 
 # ---------------------------------------------------------------------------
 # 8. Alte Releases aufraeumen

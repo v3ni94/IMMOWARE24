@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace App\Modules\Sync;
 
+use App\Core\Support\CorrelationId;
 use App\Modules\Sync\Console\BootstrapSyncCommand;
 use App\Modules\Sync\Console\DispatchSyncCommand;
+use App\Modules\Sync\Console\HeartbeatCheckCommand;
 use App\Modules\Sync\Console\PrunePayloadsCommand;
 use App\Modules\Sync\Console\RefreshStalenessCommand;
 use App\Modules\Sync\Console\RunSyncCommand;
+use App\Modules\Sync\Console\WorkerHeartbeatCommand;
 use App\Modules\Sync\Services\BootstrapService;
 use App\Modules\Sync\Services\ConflictDetector;
 use App\Modules\Sync\Services\ConflictService;
@@ -24,7 +27,12 @@ use App\Modules\Sync\Services\SyncStateService;
 use App\Modules\Sync\Support\ConnectorResolver;
 use App\Modules\Sync\Support\SyncLockManager;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Queue\Events\JobExceptionOccurred;
+use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Queue\Events\JobProcessed;
+use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 
 class SyncServiceProvider extends ServiceProvider
@@ -76,9 +84,36 @@ class SyncServiceProvider extends ServiceProvider
                 BootstrapSyncCommand::class,
                 PrunePayloadsCommand::class,
                 RefreshStalenessCommand::class,
+                WorkerHeartbeatCommand::class,
+                HeartbeatCheckCommand::class,
             ]);
         }
 
         // Die Zeitpläne (SyncSchedule) registriert routes/console.php zentral, damit sie nur einmal angelegt werden.
+
+        $this->registerCorrelationReset();
+    }
+
+    /**
+     * Correlation-ID je Job zurücksetzen (Änderungsvermerk 12.09.2026): Der Worker ist ein langlebiger Prozess, der
+     * CorrelationId-Singleton würde sonst die ID des ersten Jobs in alle folgenden Log-Zeilen, remote_requests und
+     * Audit-Einträge tragen. Vor jedem Job eine frische ID (Jobs mit eigener correlationId setzen sie in handle()),
+     * nach Abschluss oder Fehler den Kontext leeren.
+     */
+    private function registerCorrelationReset(): void
+    {
+        Queue::before(function (JobProcessing $event): void {
+            $correlation = $this->app->make(CorrelationId::class);
+            $correlation->clear();
+            $correlation->set(CorrelationId::generate());
+        });
+
+        $clear = function (JobProcessed|JobFailed|JobExceptionOccurred $event): void {
+            $this->app->make(CorrelationId::class)->clear();
+        };
+
+        Queue::after($clear);
+        Queue::failing($clear);
+        Queue::exceptionOccurred($clear);
     }
 }

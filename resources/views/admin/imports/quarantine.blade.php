@@ -59,7 +59,7 @@
                     </div>
                 </x-admin.confirm-form>
             </div>
-        @elseif ($format->status === 'confirmed')
+        @elseif ($format->status === \App\Modules\Imports\Enums\ImportFormatStatus::Confirmed->value)
             <div class="hub-alert hub-alert-info">Das Format ist bereits bestätigt. Die Datei wird beim nächsten Lauf von hub:imports:scan --process erneut verarbeitet.</div>
         @else
             <div class="hub-alert hub-alert-warning">Für den Exporttyp ist kein mapping-basierter Importer registriert, eine Bestätigung über die Oberfläche ist nicht möglich.</div>
