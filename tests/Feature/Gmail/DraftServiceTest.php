@@ -115,6 +115,29 @@ final class DraftServiceTest extends TestCase
         $this->assertStringContainsString('Zweite Fassung', (string) $this->gmail->drafts((int) $this->box->getKey())[$draft->getAttribute('gmail_draft_id')]['mime']['raw']);
     }
 
+    public function test_stale_hub_revision_is_rejected_instead_of_overwriting(): void
+    {
+        $draft = $this->service()->createReplyDraft($this->original, 'Fassung A', null, $this->alias);
+        $this->assertSame(1, (int) $draft->getAttribute('revision'));
+
+        // Bearbeiter 1 speichert auf Basis von Revision 1.
+        $this->service()->updateDraft($draft, ['body_text' => 'Fassung B'], [], null, expectedRevision: 1);
+        $this->assertSame(2, (int) $draft->refresh()->getAttribute('revision'));
+
+        // Bearbeiter 2 hatte ebenfalls Revision 1 offen: kein last write wins.
+        try {
+            $this->service()->updateDraft(MailMessage::query()->exists() ? $draft : $draft, ['body_text' => 'Fassung C'], [], null, expectedRevision: 1);
+            $this->fail('Veraltete Revision muss abgelehnt werden.');
+        } catch (DraftConflictException $exception) {
+            $this->assertSame(DraftService::STATUS_STALE_REVISION, $exception->state);
+        }
+
+        $draft->refresh();
+        $this->assertSame('Fassung B', $draft->getAttribute('body_text'));
+        $this->assertSame(2, (int) $draft->getAttribute('revision'));
+        $this->assertCount(1, $this->gmail->calls('updateDraft'), 'Keine zweite Übertragung nach Gmail.');
+    }
+
     public function test_alias_of_other_entity_is_rejected_and_flag_off_keeps_draft_local(): void
     {
         $foreign = MailboxAlias::query()->create(['mailbox_id' => $this->box->getKey(), 'send_as_email' => 'holding@mueller-holding.ag', 'legal_entity_code' => 'MHAG', 'verification_status' => 'accepted']);

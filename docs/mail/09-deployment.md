@@ -57,19 +57,18 @@ server {
     access_log /var/log/nginx/mail.muellerhv.de.access.log;
     error_log  /var/log/nginx/mail.muellerhv.de.error.log warn;
 
-    # Nur die Pfade der Mail-Oberfläche und der Anmeldung; alles andere (z. B. /admin, /api) gehört zu immoware.muellerhv.de.
-    location ~ ^/(mail|login|logout|two-factor|security|css|js|up)(/|$) {
-        try_files $uri $uri/ /index.php?$query_string;
-    }
-    location = / { return 302 /mail; }
+    # Keine Pfad-Allowlist: die Mail-Oberfläche liegt an der Wurzel des Hosts (/, /cases, /approvals, /admin als
+    # Mail-Verwaltung). /api wird in nginx abgewiesen; die vollständige Pfadtrennung erzwingt die Anwendung (unten).
+    location ~* ^/api(/|$) { return 404; }
     location = /favicon.ico { access_log off; log_not_found off; }
     location = /robots.txt  { access_log off; log_not_found off; return 200 "User-agent: *\nDisallow: /\n"; }
-    location / { return 404; }
+    location / { try_files $uri $uri/ /index.php?$query_string; }
 
-    # Push-Endpunkt: kein Access-Log-Inhalt, kurze Timeouts
-    location ~ ^/mail/gmail/push/ {
+    # Push-Endpunkt (POST /mail/gmail/push[/{token}]): kein Access-Log, nur POST
+    location ^~ /mail/gmail/push {
         access_log off;
-        try_files $uri /index.php?$query_string;
+        limit_except POST { deny all; }
+        try_files /index.php?$query_string /index.php?$query_string;
     }
 
     location ~ \.php$ {
@@ -89,7 +88,7 @@ server {
 }
 ```
 
-Zusätzlich prüft die Anwendung den Host (`mail.domain`-Middleware), damit die Pfadliste in nginx nur zweite Verteidigungslinie ist. Container-Variante `docker/nginx/mail.muellerhv.de.conf` ohne TLS (Terminierung im vorgelagerten Proxy), eingebunden in `compose.yaml` als zweite Datei unter `/etc/nginx/conf.d/mail.conf`.
+Pfadtrennung (Stand 12.09.2026, korrigiert): Die im ursprünglichen Konzept vorgesehene Pfad-Allowlist in nginx (`mail|login|...`, `location / { return 404; }`) ist nicht umsetzbar, weil die Mail-Routen ohne Präfix an der Wurzel des Hosts liegen. Stattdessen beendet die Anwendung auf dem Mail-Host jede Route ohne Domainbindung mit 404 (`MailServiceProvider::registerHostGuard`, Listener auf `Route::matched`), ausgenommen Anmeldung, 2FA, Sicherheitsseiten und Health (`hub.mail.host_allowed_route_prefixes`). Hub-Admin-UI und `/api/v1` sind unter mail.muellerhv.de nicht erreichbar (Test `tests/Feature/Mail/MailHostGuardTest`). nginx weist `/api` zusätzlich ab. Umgekehrt prüft die Middleware `mail.domain`, dass Mail-Routen nur auf dem Mail-Host antworten. Die Anwendung setzt außerdem selbst eine Content-Security-Policy auf allen Mail-Routen (`mail.headers`), unabhängig von nginx. Container-Variante `docker/nginx/mail.muellerhv.de.conf` ohne TLS (Terminierung im vorgelagerten Proxy), eingebunden in `compose.yaml` als zweite Datei unter `/etc/nginx/conf.d/mail.conf`.
 
 ## 4. Anwendung
 
@@ -111,7 +110,7 @@ Worker (umgesetzt 12.09.2026): zwei zusätzliche Prozesse neben dem bestehenden 
 | Mail-Worker high | `mail-high` (Notfalleskalation, SLA-Prüfung, freigegebene Aktionen), `--timeout=300` | Service `mail-worker-high` | `deploy/supervisor/immoware-hub-mail-worker.conf`, Programm `immoware-hub-mail-worker-high` | `deploy/systemd/immoware-hub-mail-worker@.service`, Instanz `high` (`/etc/immoware-hub/mail-worker-high.env`) |
 | Mail-Worker sync | `mail-sync,mail-ai` (Import, Abgleich, KI-Vorschläge), `--timeout=600` | Service `mail-worker` | Programm `immoware-hub-mail-worker` | Instanz `sync` (`/etc/immoware-hub/mail-worker-sync.env`) |
 
-Der Redis-`retry_after` (3600) bleibt größer als jeder Mail-Job-Timeout. `hub:doctor` listet Mail-Flags, Provider-Status je Integration, Queues und Bereitschaft (Prüfpunkte `mail.*`).
+Healthcheck der Mail-Worker in `compose.yaml`: Prozessprüfung (`pgrep -f 'queue:work redis --queue=...'`) je Container. Der gemeinsame Worker-Heartbeat (`hub:heartbeat:check worker`) taugt dafür nicht, weil `WorkerHeartbeatJob` auf der Queue `high` des Hub-Workers läuft: ein hängender Mail-Worker bliebe grün, ein Ausfall des Hub-Workers würde gesunde Mail-Worker neu starten. Die Queue-Namen in `compose.yaml` kommen aus denselben Variablen wie die Anwendung (`MAIL_QUEUE_HIGH`, `MAIL_QUEUE_SYNC`, `MAIL_QUEUE_AI`); supervisor und systemd tragen sie fest, `hub:doctor` meldet abweichende Namen als fail (`mail.queues`). Der Redis-`retry_after` (3600) bleibt größer als jeder Mail-Job-Timeout. `hub:doctor` listet Mail-Flags, Provider-Status je Integration, Queues und Bereitschaft (Prüfpunkte `mail.*`).
 
 nginx: eigener Server-Block je Betriebsart, `deploy/nginx/mail.muellerhv.de.conf` (Host, TLS, gleicher php-fpm-Pool) und `docker/nginx/mail.muellerhv.de.conf` (Container `web`, in `compose.yaml` als `/etc/nginx/conf.d/mail.conf` eingebunden). Beide setzen eine Content-Security-Policy für die Mail-Oberfläche, begrenzen den Push-Pfad `/mail/gmail/push` auf POST ohne Zugriffslog und liefern `robots.txt` mit `Disallow: /`.
 
@@ -131,13 +130,13 @@ Umgebungsvariablen: alle `MAIL_*`-Schlüssel stehen als Platzhalter in `.env.exa
 | Datenbank | eigene Instanz, keine Produktionskopie mit Mailinhalten | Produktion |
 | Banner | "Staging: Versand gesperrt" | keins |
 
-Kein Produktions-Refresh-Token darf je in Staging landen; `hub:doctor` warnt bei Produktionsadresse in Staging.
+Kein Produktions-Refresh-Token darf je in Staging landen. `hub:doctor` prüft dafür (Prüfpunkte `mail.*`): Flags mit derselben Logik wie `MailBootGuard::violations` (staging oder production mit abweichender Domain, Verstoß ist fail), `mail.staging_mailboxes` (Postfächer mit Adresse der Produktionsdomänen außerhalb der Produktionsdomain, fail), `mail.staging_redirect_uri` (Produktions-Redirect-URI aktiv), `mail.watch` (Postfächer mit aktivem Import ohne Watch oder Ablauf unter 24 Stunden, warn) und `mail.queues` (Queue-Namen außerhalb von mail-high, mail-sync, mail-ai, fail).
 
 ## 6. Reihenfolge der Inbetriebnahme
 
 1. DNS A/AAAA setzen, Zertifikat ausstellen, nginx-Block aktivieren, `/up` unter mail.muellerhv.de prüfen.
-2. Deploy mit Migrationen (`php artisan migrate --force`), alle Flags false, `hub:doctor` grün.
-3. Anmeldung unter mail.muellerhv.de mit vorhandenem Nutzer und 2FA prüfen; `/admin` unter mail.muellerhv.de liefert 404.
+2. Deploy mit Migrationen (`php artisan migrate --force`), alle Flags false, `hub:doctor` grün. Worker-Reihenfolge in `deploy/scripts/deploy.sh`: vor der Migration `queue:restart`, dann Stop von `immoware-hub-mail-worker-high:*`, `immoware-hub-mail-worker:*`, `immoware-hub-worker:*` (supervisor) bzw. `immoware-hub-mail-worker@*`, `immoware-hub-worker@*` (systemd), Warten auf das Ende aller `queue:work`-Prozesse, Migration, Umschalten, Start in umgekehrter Reihenfolge (Hub-Worker, Mail-Worker sync, Mail-Worker high). Die Mail-Worker haben autorestart bzw. Restart=always und dürfen deshalb nicht nur `queue:restart` erhalten.
+3. Anmeldung unter mail.muellerhv.de mit vorhandenem Nutzer und 2FA prüfen; `/admin` unter mail.muellerhv.de zeigt die Mail-Verwaltung (mail.admin.*), die Hub-Admin-Seiten (z. B. `/admin/connections`, `/admin/users`) und `/api/v1` liefern dort 404.
 4. Google-Cloud-Projekt, Consent Screen intern, Pub/Sub-Topic und Subscription einrichten; OAuth-Verbindung eines Testpostfachs herstellen.
 5. `MAIL_IMPORT_ENABLED=true` (nur Lesen), Watch-Status beobachten, History-Abgleich prüfen.
 6. Nach Abnahmefällen 1 bis 20 und Freigabe der Geschäftsführung: `MAIL_GMAIL_DRAFTS_ENABLED`, dann `MAIL_GMAIL_SEND_ENABLED` mit einem Testempfänger.

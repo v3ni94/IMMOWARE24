@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace App\Modules\MailIntegration;
 
 use App\Modules\Actions\Events\ExecutionVerified;
+use App\Modules\Actions\Models\ActionPlan;
 use App\Modules\Cases\Events\CaseOpened;
 use App\Modules\Gmail\Events\MessageImported;
 use App\Modules\Gmail\Events\SendVerificationCompleted;
 use App\Modules\MailIntegration\Listeners\MarkCommunicationSent;
+use App\Modules\MailIntegration\Listeners\MirrorPlanStatusToCaseItem;
 use App\Modules\MailIntegration\Listeners\OpenCaseFromImportedMessage;
 use App\Modules\MailIntegration\Listeners\QueueAiClassification;
 use App\Modules\MailIntegration\Listeners\UpdateCaseAfterVerification;
@@ -40,6 +42,8 @@ use Illuminate\Support\ServiceProvider;
  * - Cases P0-Regel: löst die EmergencyQueue (mail-high) direkt im CaseService aus (Modul Cases und Sla).
  * - Actions ExecutionVerified: Aufgabenstatus, Geschäftsstatus und Kommunikationsvorschlag; der Antwortentwurf
  *   nennt ausschließlich verifizierte Änderungen.
+ * - Actions Planstatus (Eloquent saved auf ActionPlan): Spiegelung in status_business des Teilanliegens, damit
+ *   Teilfehler und begonnene Aktionen den Abschluss blockieren (CloseConditionChecker).
  * Zeitpläne liegen zentral in routes/console.php.
  */
 class MailIntegrationServiceProvider extends ServiceProvider
@@ -64,5 +68,10 @@ class MailIntegrationServiceProvider extends ServiceProvider
         $events->listen(CaseOpened::class, QueueAiClassification::class);
         $events->listen(ExecutionVerified::class, UpdateCaseAfterVerification::class);
         $events->listen(SendVerificationCompleted::class, MarkCommunicationSent::class);
+
+        // Planstatus (executing, executed, result_unclear, failed, manual_review) in status_business des Teilanliegens spiegeln.
+        ActionPlan::saved(function (ActionPlan $plan): void {
+            $this->app->make(MirrorPlanStatusToCaseItem::class)->handle($plan);
+        });
     }
 }

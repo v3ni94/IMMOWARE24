@@ -117,8 +117,8 @@ services:
     # Mail- und Vorgangsbearbeitung (docs/mail/09-deployment.md Abschnitt 4): eigener Prozess nur fuer mail-high, damit
     # Notfalleskalation (EmergencyAlertJob), SLA-Pruefung (SlaCheckJob) und freigegebene Aktionen (ExecuteActionJob) nie
     # hinter einem Massenimport (mail-sync) oder KI-Aufrufen (mail-ai) warten. Healthcheck wie beim Hub-Worker ueber das
-    # Heartbeat-Alter; der Scheduler stellt den Heartbeat-Job auf die Queue high, deshalb prueft dieser Worker den
-    # gemeinsamen Worker-Heartbeat nur als Lebenszeichen der Queue-Infrastruktur (siehe docs/mail/09-deployment.md).
+    # Healthcheck je Prozess (pgrep), nicht ueber den gemeinsamen Worker-Heartbeat der Queue high: der wuerde bei einem
+    # haengenden Mail-Worker gruen bleiben und bei Ausfall des Hub-Workers gesunde Mail-Worker neu starten (docs/mail/09).
     mail-worker-high:
         <<: *app-base
         container_name: immoware-hub-mail-worker-high
@@ -127,14 +127,16 @@ services:
             - artisan
             - queue:work
             - redis
-            - --queue=mail-high
+            - --queue=${MAIL_QUEUE_HIGH:-mail-high}
             - --sleep=1
             - --tries=1
             - --max-time=3600
             - --memory=256
             - --timeout=300
+        # Prozess-Healthcheck: der Worker-Heartbeat (WorkerHeartbeatJob) laeuft auf der Queue high des Hub-Workers und
+        # sagt nichts ueber diesen Prozess aus. Gepruft wird der eigene queue:work-Prozess mit seiner Queue-Liste.
         healthcheck:
-            test: ["CMD", "php", "artisan", "hub:heartbeat:check", "worker", "--max-age=180"]
+            test: ["CMD-SHELL", "pgrep -f 'queue:work redis --queue=${MAIL_QUEUE_HIGH:-mail-high}' >/dev/null"]
             interval: 60s
             timeout: 20s
             retries: 3
@@ -151,14 +153,14 @@ services:
             - artisan
             - queue:work
             - redis
-            - --queue=mail-sync,mail-ai
+            - --queue=${MAIL_QUEUE_SYNC:-mail-sync},${MAIL_QUEUE_AI:-mail-ai}
             - --sleep=3
             - --tries=1
             - --max-time=3600
             - --memory=256
             - --timeout=600
         healthcheck:
-            test: ["CMD", "php", "artisan", "hub:heartbeat:check", "worker", "--max-age=180"]
+            test: ["CMD-SHELL", "pgrep -f 'queue:work redis --queue=${MAIL_QUEUE_SYNC:-mail-sync},${MAIL_QUEUE_AI:-mail-ai}' >/dev/null"]
             interval: 60s
             timeout: 20s
             retries: 3

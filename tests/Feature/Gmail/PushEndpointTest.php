@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Gmail;
 
+use App\Modules\Gmail\Http\Controllers\PushController;
 use App\Modules\Gmail\Jobs\HistorySyncJob;
 use App\Modules\Gmail\Models\MailSyncState;
 use App\Modules\Gmail\Models\PushEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\Gmail\SignedIdToken;
 use Tests\TestCase;
 
@@ -58,6 +61,37 @@ final class PushEndpointTest extends TestCase
 
         Bus::assertDispatchedTimes(HistorySyncJob::class, 1);
         $this->assertSame(1, PushEvent::query()->count());
+    }
+
+    public function test_redelivery_after_failed_dispatch_queues_history_sync_instead_of_being_a_duplicate(): void
+    {
+        Bus::fake([HistorySyncJob::class]);
+        $mailbox = $this->createMailbox(attributes: ['email_address' => 'verwaltung@muellerhv.de', 'status' => 'active', 'import_enabled' => true]);
+        // Erste Zustellung ist beim Einplanen gescheitert (Redis nicht erreichbar), Pub/Sub stellt erneut zu.
+        PushEvent::query()->create(['mailbox_id' => $mailbox->getKey(), 'pubsub_message_id' => 'retry-1', 'email_address' => 'verwaltung@muellerhv.de', 'history_id' => '4711', 'received_at' => now(), 'auth_result' => 'ok', 'outcome' => 'failed']);
+
+        $this->push('verwaltung@muellerhv.de', '4711', 'retry-1')->assertNoContent();
+
+        Bus::assertDispatchedTimes(HistorySyncJob::class, 1);
+        $this->assertSame(1, PushEvent::query()->count());
+        $this->assertSame('queued', PushEvent::query()->firstOrFail()->getAttribute('outcome'));
+    }
+
+    public function test_controller_refuses_payload_without_middleware_result(): void
+    {
+        Bus::fake([HistorySyncJob::class]);
+        $this->createMailbox(attributes: ['email_address' => 'verwaltung@muellerhv.de', 'status' => 'active', 'import_enabled' => true]);
+        $request = Request::create(self::URL, 'POST', [], [], [], ['CONTENT_TYPE' => 'application/json'], json_encode($this->payload('verwaltung@muellerhv.de', '1', 'no-mw-1'), JSON_THROW_ON_ERROR));
+
+        try {
+            $this->app->make(PushController::class)($request);
+            $this->fail('Ohne Prüfergebnis der Middleware darf nichts verarbeitet werden.');
+        } catch (HttpException $exception) {
+            $this->assertSame(401, $exception->getStatusCode());
+        }
+
+        Bus::assertNothingDispatched();
+        $this->assertSame(0, PushEvent::query()->count());
     }
 
     public function test_unknown_mailbox_answers_204_and_is_logged_as_ignored(): void

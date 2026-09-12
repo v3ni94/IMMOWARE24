@@ -36,8 +36,15 @@ final class DriveApiClient
             'pageSize' => (int) $this->config->get('hub.drive.page_size', 50),
             'supportsAllDrives' => 'true',
             'includeItemsFromAllDrives' => 'true',
-            'corpora' => 'allDrives',
         ];
+
+        // corpora ist im Research nicht belegt (docs/mail/research/lexware-openai-drive.md, offene Frage). Nur senden,
+        // wenn konfiguriert; Wert aus allgemeinem Wissen, am Original zu prüfen.
+        $corpora = trim((string) $this->config->get('hub.drive.corpora', ''));
+
+        if ($corpora !== '' && ! isset($query['corpora'])) {
+            $query['corpora'] = $corpora;
+        }
 
         return $this->json($this->get($connection, '/files', $query));
     }

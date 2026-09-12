@@ -13,9 +13,15 @@ use App\Modules\Gmail\Jobs\InitialImportJob;
 use App\Modules\Gmail\Jobs\ReconcileJob;
 use App\Modules\Gmail\Models\MailMessage;
 use App\Modules\Gmail\Models\MailSyncState;
+use App\Modules\Gmail\Services\Sync\MessageImporter;
+use App\Modules\Gmail\Services\Sync\SyncStateService;
 use App\Modules\Gmail\Testing\FakeGmailProvider;
+use App\Modules\Mail\Exceptions\MailRemoteException;
 use App\Modules\Mail\Models\Mailbox;
+use App\Modules\Sync\Models\DlqItem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Tests\TestCase;
 
@@ -154,6 +160,101 @@ final class HistorySyncTest extends TestCase
         $this->assertCount(1, $this->gmail->calls('getProfile'), 'History-ID wird nur einmal vor dem Import gemerkt.');
         $this->assertNotNull(MailSyncState::query()->firstOrFail()->getAttribute('full_sync_finished_at'));
         $this->assertNull(MailSyncState::query()->firstOrFail()->getAttribute('full_sync_cursor'));
+    }
+
+    public function test_history_page_with_more_added_messages_than_limit_imports_all_before_cursor_advances(): void
+    {
+        InitialImportJob::dispatch($this->id());
+        config()->set('hub.gmail.sync.max_messages_per_run', 2);
+
+        foreach (range(1, 5) as $n) {
+            $this->gmail->seedMessage($this->id(), ['subject' => 'Massenlauf '.$n]);
+        }
+
+        HistorySyncJob::dispatch($this->id());
+
+        $this->assertSame(5, MailMessage::query()->count(), 'Kein Eintrag der Seite wird übersprungen.');
+        $this->assertSame($this->gmail->currentHistoryId($this->id()), MailSyncState::query()->firstOrFail()->getAttribute('last_history_id'));
+        $this->assertGreaterThanOrEqual(3, count($this->gmail->calls('listHistory')), 'Fortsetzung ab dem letzten vollständigen Eintrag.');
+    }
+
+    public function test_message_not_yet_retrievable_keeps_cursor_and_is_imported_on_retry(): void
+    {
+        InitialImportJob::dispatch($this->id());
+        $before = MailSyncState::query()->firstOrFail()->getAttribute('last_history_id');
+        $this->gmail->seedMessage($this->id(), ['subject' => 'Frisch']);
+        $this->gmail->failNext('getMessage', new MailRemoteException('Fake: noch nicht da', 'gmail', 404, null));
+
+        HistorySyncJob::dispatch($this->id());
+
+        $this->assertSame(1, MailMessage::query()->count(), 'Wiederholung importiert die Nachricht.');
+        $this->assertSame($this->gmail->currentHistoryId($this->id()), MailSyncState::query()->firstOrFail()->getAttribute('last_history_id'));
+        $this->assertNotSame($before, MailSyncState::query()->firstOrFail()->getAttribute('last_history_id'));
+        $this->assertCount(3, $this->gmail->calls('listHistory'), 'Übergabe nach Erstimport, erster Lauf, Wiederholung.');
+    }
+
+    public function test_message_missing_after_all_retries_is_given_up_without_blocking_the_cursor(): void
+    {
+        config()->set('hub.gmail.sync.history_missing_retries', 1);
+        InitialImportJob::dispatch($this->id());
+        $ghost = $this->gmail->seedMessage($this->id(), ['subject' => 'Weg']);
+        $this->gmail->deleteMessage($this->id(), $ghost);
+
+        HistorySyncJob::dispatch($this->id());
+
+        $this->assertSame(0, MailMessage::query()->count());
+        $this->assertSame($this->gmail->currentHistoryId($this->id()), MailSyncState::query()->firstOrFail()->getAttribute('last_history_id'), 'Cursor bleibt nicht dauerhaft stehen.');
+    }
+
+    public function test_busy_lock_does_not_release_loop_but_marks_pending_follow_up(): void
+    {
+        InitialImportJob::dispatchSync($this->id());
+        Bus::fake([HistorySyncJob::class]);
+        $lock = Cache::lock(HistorySyncJob::lockKey($this->id()), 60);
+        $this->assertTrue($lock->get());
+
+        $job = new HistorySyncJob($this->id());
+        $job->handle($this->gmail, $this->app->make(MessageImporter::class), $this->app->make(SyncStateService::class));
+
+        Bus::assertNotDispatched(HistorySyncJob::class);
+        $this->assertNotNull(Cache::get(HistorySyncJob::pendingKey($this->id())), 'Push wird als ausstehend vermerkt.');
+        $lock->release();
+
+        // Der nächste Lauf holt den vermerkten Push als Folgelauf nach.
+        (new HistorySyncJob($this->id()))->handle($this->gmail, $this->app->make(MessageImporter::class), $this->app->make(SyncStateService::class));
+        Bus::assertDispatchedTimes(HistorySyncJob::class, 1);
+        $this->assertNull(Cache::get(HistorySyncJob::pendingKey($this->id())));
+    }
+
+    public function test_second_404_during_running_resync_does_not_start_another_resync(): void
+    {
+        Bus::fake([FullResyncJob::class]);
+        InitialImportJob::dispatchSync($this->id());
+        MailSyncState::query()->update(['full_sync_started_at' => now(), 'full_sync_finished_at' => null]);
+        $this->gmail->expireHistoryBefore($this->id(), (string) ((int) $this->gmail->currentHistoryId($this->id()) + 1));
+
+        HistorySyncJob::dispatchSync($this->id());
+
+        Bus::assertNotDispatched(FullResyncJob::class);
+    }
+
+    public function test_failed_initial_import_resets_state_so_it_can_restart_and_lands_in_dlq(): void
+    {
+        MailSyncState::query()->create(['mailbox_id' => $this->id(), 'watch_status' => 'none', 'full_sync_started_at' => now(), 'full_sync_cursor' => '3']);
+
+        (new InitialImportJob($this->id()))->failed(new MailRemoteException('Fake: endgültig', 'gmail', 403, null));
+
+        $state = MailSyncState::query()->firstOrFail();
+        $this->assertNull($state->getAttribute('full_sync_started_at'));
+        $this->assertNull($state->getAttribute('full_sync_cursor'));
+        $this->assertSame('degraded', $this->box->refresh()->getAttribute('status'));
+        $this->assertSame(1, DlqItem::query()->where('job_class', InitialImportJob::class)->where('entity_type', 'mail_gmail')->count());
+
+        // Der nächste History-Abgleich startet den Erstimport erneut.
+        $this->gmail->seedMessage($this->id(), ['subject' => 'Nach Re-Autorisierung']);
+        HistorySyncJob::dispatch($this->id());
+        $this->assertSame(1, MailMessage::query()->count());
+        $this->assertNotNull(MailSyncState::query()->firstOrFail()->getAttribute('full_sync_finished_at'));
     }
 
     private function id(): int

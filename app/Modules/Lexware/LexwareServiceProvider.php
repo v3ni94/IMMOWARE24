@@ -33,7 +33,7 @@ class LexwareServiceProvider extends ServiceProvider
 
         $this->app->singleton(LexwareRateLimiter::class, static fn ($app): LexwareRateLimiter => new LexwareRateLimiter(
             $app->make(CacheRepository::class),
-            max(0.1, (float) config('hub.lexware.rate_limit_rps', 2)),
+            max(0.1, (float) config('hub.lexware.rate_limit_rps', 1)),
         ));
         $this->app->singleton(LexwareConnectionResolver::class);
         $this->app->singleton(LexwareContactRules::class);

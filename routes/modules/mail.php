@@ -47,6 +47,7 @@ Route::prefix('/cases')->name('cases.')->group(static function (): void {
     Route::post('/{case}/drafts', [DraftController::class, 'store'])->whereNumber('case')->name('drafts.store');
     Route::put('/{case}/drafts/{draft}', [DraftController::class, 'update'])->whereNumber('case')->whereNumber('draft')->name('drafts.update');
     Route::post('/{case}/drafts/{draft}/review', [DraftController::class, 'review'])->whereNumber('case')->whereNumber('draft')->name('drafts.review');
+    Route::post('/{case}/drafts/{draft}/approve', [DraftController::class, 'approve'])->whereNumber('case')->whereNumber('draft')->middleware('2fa.fresh')->name('drafts.approve');
     Route::post('/{case}/drafts/{draft}/send', [DraftController::class, 'send'])->whereNumber('case')->whereNumber('draft')->middleware('2fa.fresh')->name('drafts.send');
 });
 

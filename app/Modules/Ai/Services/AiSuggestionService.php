@@ -73,7 +73,7 @@ final class AiSuggestionService
             $untrusted = array_merge($untrusted, $this->documentBlocks($case, $user));
         }
 
-        $masker = new PromptMasker($this->config);
+        $masker = (new PromptMasker($this->config))->withKnownNames($this->knownNames($message));
         $input = $masker->maskArray([
             'trusted' => $this->normalizeTrusted($task, $trusted, $ruleContext),
             'untrusted' => $this->limitUntrusted($untrusted),
@@ -298,5 +298,31 @@ final class AiSuggestionService
         $run->save();
 
         return new AiResult($status, $run, [], $notes);
+    }
+
+    /**
+     * Personennamen aus den Kopfzeilen der Nachricht (Absender, Empfänger, Kopie) für die Namensmaskierung.
+     *
+     * @return array<int, string>
+     */
+    private function knownNames(?MailMessage $message): array
+    {
+        if ($message === null) {
+            return [];
+        }
+
+        $names = [(string) $message->getAttribute('from_name')];
+
+        foreach (['to_json', 'cc_json'] as $column) {
+            foreach ((array) $message->getAttribute($column) as $recipient) {
+                if (is_array($recipient) && isset($recipient['name']) && is_string($recipient['name'])) {
+                    $names[] = $recipient['name'];
+                } elseif (is_string($recipient) && preg_match('/^\s*"?([^"<]+?)"?\s*<[^>]+>/', $recipient, $m) === 1) {
+                    $names[] = $m[1];
+                }
+            }
+        }
+
+        return array_values(array_filter($names, static fn (string $n): bool => trim($n) !== ''));
     }
 }

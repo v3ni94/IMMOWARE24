@@ -6,6 +6,7 @@ namespace App\Modules\Sla\Channels;
 
 use App\Modules\Security\Models\User;
 use App\Modules\Sla\Models\EmergencyAlert;
+use App\Modules\Sla\Support\StagingGuard;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -16,7 +17,10 @@ use Throwable;
  */
 final class WebhookAlertChannel implements AlertChannelInterface
 {
-    public function __construct(private readonly Repository $config) {}
+    public function __construct(
+        private readonly Repository $config,
+        private readonly ?StagingGuard $staging = null,
+    ) {}
 
     public function name(): string
     {
@@ -29,6 +33,10 @@ final class WebhookAlertChannel implements AlertChannelInterface
 
         if ($url === '') {
             return ['channel' => 'webhook', 'status' => 'not_configured', 'detail' => 'Keine Webhook-URL konfiguriert.'];
+        }
+
+        if ($this->staging?->stagingLike() === true) {
+            return ['channel' => 'webhook', 'status' => 'blocked', 'detail' => 'Staging: Webhook-Alarm an externe Systeme gesperrt.'];
         }
 
         try {

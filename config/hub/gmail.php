@@ -70,11 +70,16 @@ return [
         'certs_url' => 'https://www.googleapis.com/oauth2/v3/certs',
         'issuers' => ['https://accounts.google.com', 'accounts.google.com'],
         'certs_cache_seconds' => 3600,
+        // Unbekannte kid: kurzer Negativ-Cache und Mindestabstand zwischen erzwungenen JWKS-Abrufen (Amplifikationsschutz).
+        'unknown_kid_cache_seconds' => 60,
+        'certs_reload_min_seconds' => 60,
         'clock_skew_seconds' => 60,
         'dedup_retention_days' => 30,
         // Watch läuft laut Snippets maximal 7 Tage; Erneuerung täglich, Alarm bei Restlaufzeit unter 24 Stunden.
+        // Scheitert die Erneuerung endgültig, wird sie nach watch_retry_hours erneut eingeplant (nicht erst am Folgetag).
         'watch_renew_hours' => 24,
         'watch_alert_hours' => 24,
+        'watch_retry_hours' => 6,
         'watch_label_ids' => ['INBOX', 'SENT', 'DRAFT'],
     ],
 
@@ -89,6 +94,10 @@ return [
         'history_label_ids' => ['INBOX', 'SENT', 'DRAFT'],
         // Nachrichten je Lauf (History wie Reconcile), danach plant sich der Job selbst erneut ein.
         'max_messages_per_run' => 200,
+        // Nachricht aus messagesAdded bei Abruf noch nicht vorhanden (404, Eventual Consistency): History-ID nicht
+        // fortschreiben, sondern den Lauf bis zu dieser Anzahl mit Verzögerung wiederholen.
+        'history_missing_retries' => 3,
+        'history_missing_retry_seconds' => 120,
         // Regelmäßiger Abgleich INBOX, SENT, DRAFT gegen die Datenbank (Lücken erkennen, nie löschen).
         'reconcile_label_ids' => ['INBOX', 'SENT', 'DRAFT'],
         'reconcile_page_size' => 100,

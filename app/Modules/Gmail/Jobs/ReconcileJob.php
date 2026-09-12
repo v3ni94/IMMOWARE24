@@ -7,6 +7,7 @@ namespace App\Modules\Gmail\Jobs;
 use App\Modules\Gmail\Jobs\Concerns\GmailJobRetries;
 use App\Modules\Gmail\Services\Sync\LabelReconciler;
 use App\Modules\Gmail\Services\Sync\SyncStateService;
+use App\Modules\Gmail\Services\Sync\WatchService;
 use App\Modules\Mail\Models\Mailbox;
 use Carbon\CarbonImmutable;
 use Illuminate\Bus\Queueable;
@@ -19,7 +20,9 @@ use Throwable;
 /**
  * Regelmäßiger Abgleich (Polling-Fallback, Push ist nicht garantiert): erste Seite von INBOX, SENT und DRAFT gegen
  * die Datenbank, fehlende Nachrichten importieren, Lücken zählen. Löscht nie, ändert die History-ID nicht.
- * Ohne Postfach-ID werden alle aktiven Postfächer mit Import einzeln eingeplant.
+ * Ohne Postfach-ID werden alle aktiven Postfächer mit Import einzeln eingeplant. Zusätzlich prüft jeder Lauf den
+ * Ablauf des Watch (alertIfExpiring), damit ein Watch mit Restlaufzeit unter watch_alert_hours unabhängig vom
+ * täglichen Erneuerungslauf gemeldet wird.
  */
 class ReconcileJob implements ShouldQueue
 {
@@ -38,7 +41,7 @@ class ReconcileJob implements ShouldQueue
         return $this->mailboxId === null ? [] : [(new WithoutOverlapping('mail:gmail:reconcile:'.$this->mailboxId))->releaseAfter(60)->expireAfter(600)];
     }
 
-    public function handle(LabelReconciler $reconciler, SyncStateService $states): void
+    public function handle(LabelReconciler $reconciler, SyncStateService $states, WatchService $watches): void
     {
         if ($this->mailboxId === null) {
             Mailbox::query()->withoutGlobalScopes()
@@ -59,6 +62,10 @@ class ReconcileJob implements ShouldQueue
         }
 
         $state = $states->for($mailbox);
+
+        if ($watches->isConfigured() && $state->getAttribute('watch_expiration') !== null) {
+            $watches->alertIfExpiring($mailbox, $state);
+        }
 
         if ($state->getAttribute('last_history_id') === null) {
             // Vor dem Erstimport gibt es nichts abzugleichen.
@@ -91,5 +98,7 @@ class ReconcileJob implements ShouldQueue
             'last_error_at' => now(),
             'last_error_class' => $exception::class,
         ]);
+
+        $this->storeInDlq($exception, ['mailboxId' => $this->mailboxId]);
     }
 }

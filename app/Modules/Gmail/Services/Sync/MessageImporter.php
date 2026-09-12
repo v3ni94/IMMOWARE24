@@ -84,6 +84,8 @@ final class MessageImporter
         $receivedAt = $this->receivedAt($remote, $parsed);
         $rfcMessageId = $parsed->messageId ?? $this->firstMessageId((string) ($remote['headers']['Message-ID'] ?? ''));
         $checksum = hash('sha256', $raw ?? json_encode($remote['headers'] ?? [], JSON_THROW_ON_ERROR));
+        $previous = $existing ?? $this->findWithTrashed($mailbox, (string) ($remote['id'] ?? ''));
+        $previousLabels = $previous === null ? [] : array_values(array_map('strval', (array) $previous->getAttribute('label_ids_json')));
 
         $message = DB::transaction(function () use ($mailbox, $remote, $existing, $parsed, $labels, $fromAddress, $sender, $direction, $receivedAt, $rfcMessageId, $checksum, $raw): MailMessage {
             $thread = $this->upsertThread($mailbox, (string) ($remote['thread_id'] ?? ''), $parsed->subject ?? (string) ($remote['headers']['Subject'] ?? ''), $receivedAt);
@@ -147,9 +149,17 @@ final class MessageImporter
         });
 
         $created = $existing === null && $message->wasRecentlyCreated;
+        $sentBefore = ! $created && in_array('SENT', $previousLabels, true);
 
-        $this->detectCopies($message);
-        $this->detectDirectReply($mailbox, $message, $labels);
+        // Ereignisse nur bei neuer Nachricht oder neu hinzugekommenem SENT: ein erneuter Import derselben Nachricht
+        // (Replay einer History-Seite, Versandabgleich) erzeugt keine doppelte Antworterkennung.
+        if ($created) {
+            $this->detectCopies($message);
+        }
+
+        if ($created || ! $sentBefore) {
+            $this->detectDirectReply($mailbox, $message, $labels);
+        }
 
         event(new MessageImported((int) $mailbox->getKey(), (int) $message->getKey(), $created));
 
@@ -191,6 +201,20 @@ final class MessageImporter
         if ($message !== null && $message->getAttribute('deleted_at') === null) {
             $message->delete();
         }
+    }
+
+    private function findWithTrashed(Mailbox $mailbox, string $gmailMessageId): ?MailMessage
+    {
+        if ($gmailMessageId === '') {
+            return null;
+        }
+
+        $message = MailMessage::query()->withoutGlobalScopes()->withTrashed()
+            ->where('mailbox_id', $mailbox->getKey())
+            ->where('gmail_message_id', $gmailMessageId)
+            ->first();
+
+        return $message instanceof MailMessage ? $message : null;
     }
 
     public function find(Mailbox $mailbox, string $gmailMessageId): ?MailMessage

@@ -14,6 +14,7 @@ use App\Modules\Gmail\Models\MailMessage;
 use App\Modules\Mail\Exceptions\MailRemoteException;
 use App\Modules\Mail\Models\Mailbox;
 use App\Modules\Mail\Models\MailboxAlias;
+use App\Modules\Mail\Services\MailAccess;
 use App\Modules\Mail\Services\MailFeatureFlags;
 use App\Modules\Security\Models\User;
 use App\Modules\Security\Services\AuditLogger;
@@ -26,7 +27,10 @@ use InvalidArgumentException;
  * revision und legt den Entwurf bei aktiviertem Flag gmail_drafts in Gmail an (drafts.create). update prüft zuvor den
  * entfernten Zustand: außerhalb geänderter Entwurf → conflict (kein Überschreiben), verschwundener Entwurf → missing
  * (nie sent). Der Inhaltshash ist kanonisch (Empfänger, Betreff, Text), nicht der rohe MIME-Text, weil Gmail den
- * Rohtext neu serialisiert (aus Snippets abgeleitet, am Original zu prüfen).
+ * Rohtext neu serialisiert (aus Snippets abgeleitet, am Original zu prüfen). Hub-intern schützt die Revision:
+ * updateDraft nimmt die vom Bearbeitenden erwartete Revision an und lehnt veraltete Stände ab (stale_revision), das
+ * Hochzählen erfolgt als bedingtes Update. approve dokumentiert die Freigabe einer zweiten Person (Vier-Augen);
+ * jede Inhaltsänderung setzt die Freigabe zurück.
  */
 final class DraftService
 {
@@ -40,6 +44,8 @@ final class DraftService
 
     public const string REMOTE_OK = 'ok';
 
+    public const string STATUS_STALE_REVISION = 'stale_revision';
+
     public function __construct(
         private readonly GmailProviderInterface $provider,
         private readonly MimeBuilder $builder,
@@ -47,6 +53,7 @@ final class DraftService
         private readonly MailFeatureFlags $flags,
         private readonly Repository $config,
         private readonly AuditLogger $audit,
+        private readonly MailAccess $access,
     ) {}
 
     /**
@@ -109,13 +116,21 @@ final class DraftService
     }
 
     /**
-     * Inhalt ändern. Vorher entfernten Zustand prüfen; bei conflict oder missing wird nichts geschrieben.
+     * Inhalt ändern. Vorher entfernten Zustand prüfen; bei conflict oder missing wird nichts geschrieben. Mit
+     * expectedRevision (aus dem Formular) wird ein zwischenzeitlich von einer anderen Person geänderter Entwurf
+     * als stale_revision abgelehnt statt überschrieben (kein last write wins).
      *
      * @param  array<string, mixed>  $changes  body_text, body_html, to, cc, bcc, subject
      * @param  array<int, array{filename: string, mime_type: string, content: string, content_id?: ?string}>  $attachments
      */
-    public function updateDraft(MailDraft $draft, array $changes, array $attachments = [], ?User $user = null): MailDraft
+    public function updateDraft(MailDraft $draft, array $changes, array $attachments = [], ?User $user = null, ?int $expectedRevision = null): MailDraft
     {
+        $draft->refresh();
+
+        if ($expectedRevision !== null && $expectedRevision !== (int) $draft->getAttribute('revision')) {
+            throw new DraftConflictException((int) $draft->getKey(), self::STATUS_STALE_REVISION, 'Der Entwurf wurde inzwischen von einer anderen Person geändert (Revision '.$draft->getAttribute('revision').'). Bitte neu laden.');
+        }
+
         $remote = $this->refreshRemoteState($draft);
 
         if ($remote !== self::REMOTE_OK) {
@@ -143,6 +158,10 @@ final class DraftService
             $draft->setAttribute('attachments_json', $this->attachmentMeta($attachments));
         }
 
+        // Inhaltsänderung: eine frühere Freigabe gilt nicht mehr (Vier-Augen bezieht sich auf den freigegebenen Stand).
+        $draft->setAttribute('approved_by', null);
+        $draft->setAttribute('approved_at', null);
+
         $mailbox = $draft->mailbox()->withoutGlobalScopes()->firstOrFail();
         $alias = $draft->alias()->firstOrFail();
         $original = $draft->replyToMessage()->withoutGlobalScopes()->first();
@@ -156,6 +175,40 @@ final class DraftService
         $this->pushToGmail($draft, $mailbox, $alias, $attachments, is_string($originalId) ? $originalId : null, $references, create: false);
 
         $this->audit->record('mail.draft.updated', $draft, [], ['revision' => $draft->getAttribute('revision')], AuditSource::Mail);
+
+        return $draft;
+    }
+
+    /**
+     * Freigabe durch eine zweite Person (Vier-Augen): Freigebende braucht mail.approve.standard im Team des
+     * Postfachs und darf nicht Autor des Entwurfs sein. Die Freigabe bezieht sich auf die aktuelle Revision;
+     * updateDraft setzt sie zurück. Der Status bleibt unverändert (pushed_to_gmail bleibt versandfähig).
+     *
+     * @throws InvalidArgumentException
+     */
+    public function approve(MailDraft $draft, User $approver): MailDraft
+    {
+        $draft->refresh();
+
+        if (! in_array((string) $draft->getAttribute('status'), [self::STATUS_PUSHED, 'pending_approval', 'approved'], true)) {
+            throw new InvalidArgumentException('Nur in Gmail hinterlegte oder zur Prüfung gegebene Entwürfe können freigegeben werden (Status '.$draft->getAttribute('status').').');
+        }
+
+        $author = $draft->getAttribute('created_by');
+
+        if ($author !== null && (int) $author === (int) $approver->getKey()) {
+            throw new InvalidArgumentException('Der Autor kann den eigenen Entwurf nicht freigeben (Vier-Augen-Prinzip).');
+        }
+
+        $mailbox = $draft->mailbox()->withoutGlobalScopes()->firstOrFail();
+        $teamId = $mailbox->getAttribute('team_id');
+
+        if (! $this->access->can($approver, 'mail.approve.standard', $teamId === null ? null : (int) $teamId)) {
+            throw new InvalidArgumentException('Kein Recht mail.approve.standard für dieses Postfach.');
+        }
+
+        $draft->forceFill(['approved_by' => $approver->getKey(), 'approved_at' => CarbonImmutable::now()])->save();
+        $this->audit->record('mail.draft.approved', $draft, [], ['revision' => $draft->getAttribute('revision'), 'content_hash' => $draft->getAttribute('content_hash')], AuditSource::Mail);
 
         return $draft;
     }
@@ -264,9 +317,22 @@ final class DraftService
     {
         $mime = $this->buildMime($draft, $alias, $attachments, $inReplyTo, $references);
         $hash = $this->canonicalHash($mime['to'], $mime['cc'], $mime['bcc'], $mime['subject'], $mime['text']);
+        $currentRevision = (int) $draft->getAttribute('revision');
+
+        if (! $create) {
+            // Bedingtes Hochzählen: hat eine andere Person die Revision inzwischen erhöht, wird nichts überschrieben.
+            $claimed = MailDraft::query()->withoutGlobalScopes()
+                ->whereKey($draft->getKey())
+                ->where('revision', $currentRevision)
+                ->update(['revision' => $currentRevision + 1]);
+
+            if ($claimed !== 1) {
+                throw new DraftConflictException((int) $draft->getKey(), self::STATUS_STALE_REVISION, 'Der Entwurf wurde gleichzeitig von einer anderen Person geändert. Bitte neu laden.');
+            }
+        }
 
         $draft->setAttribute('content_hash', $hash);
-        $draft->setAttribute('revision', (int) $draft->getAttribute('revision') + 1);
+        $draft->setAttribute('revision', $currentRevision + 1);
 
         if (! $this->flags->gmailDraftsEnabled()) {
             // Flag aus: Entwurf bleibt lokal, sichtbar als nicht nach Gmail übertragen.

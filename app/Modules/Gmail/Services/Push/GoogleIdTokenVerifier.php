@@ -30,6 +30,10 @@ final class GoogleIdTokenVerifier
 
     private const string CACHE_KEY = 'mail:gmail:push:certs';
 
+    private const string UNKNOWN_KID_KEY = 'mail:gmail:push:certs:unknown:';
+
+    private const string RELOAD_KEY = 'mail:gmail:push:certs:reloaded_at';
+
     public function __construct(
         private readonly HttpFactory $http,
         private readonly CacheRepository $cache,
@@ -112,14 +116,30 @@ final class GoogleIdTokenVerifier
     }
 
     /**
-     * Öffentlichen Schlüssel (PEM) zur kid liefern; bei unbekannter kid einmal neu laden (Key-Rotation).
+     * Öffentlichen Schlüssel (PEM) zur kid liefern; bei unbekannter kid einmal neu laden (Key-Rotation). Gegen
+     * Amplifikation durch unauthentifizierte JWTs mit zufälliger kid: unbekannte kids werden kurz negativ gecacht
+     * und ein Neuladen findet höchstens einmal je Mindestabstand statt (kein Google-Aufruf je Anfrage).
      */
     private function publicKeyFor(string $kid): ?\OpenSSLAsymmetricKey
     {
         $keys = $this->keys(false);
 
         if (! isset($keys[$kid])) {
-            $keys = $this->keys(true);
+            $negativeKey = self::UNKNOWN_KID_KEY.hash('sha256', $kid);
+
+            if ($this->cache->get($negativeKey) !== null) {
+                return null;
+            }
+
+            if ($this->reloadAllowed()) {
+                $keys = $this->keys(true);
+            }
+
+            if (! isset($keys[$kid])) {
+                $this->cache->put($negativeKey, 1, (int) $this->config->get('hub.gmail.push.unknown_kid_cache_seconds', 60));
+
+                return null;
+            }
         }
 
         $jwk = $keys[$kid] ?? null;
@@ -137,6 +157,17 @@ final class GoogleIdTokenVerifier
         $key = openssl_pkey_get_public($pem);
 
         return $key === false ? null : $key;
+    }
+
+    /**
+     * Höchstens ein erzwungenes Neuladen je Mindestabstand (atomar über add), damit viele Anfragen mit unbekannter kid
+     * nicht je einen ausgehenden Aufruf auslösen.
+     */
+    private function reloadAllowed(): bool
+    {
+        $interval = max(1, (int) $this->config->get('hub.gmail.push.certs_reload_min_seconds', 60));
+
+        return $this->cache->add(self::RELOAD_KEY, time(), $interval);
     }
 
     /**

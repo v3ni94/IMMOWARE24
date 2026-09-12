@@ -6,14 +6,18 @@ namespace Tests\Feature\Gmail;
 
 use App\Modules\Gmail\Contracts\GmailProviderInterface;
 use App\Modules\Gmail\Events\WatchExpiringSoon;
+use App\Modules\Gmail\Jobs\InitialImportJob;
 use App\Modules\Gmail\Jobs\WatchRenewJob;
+use App\Modules\Gmail\Models\MailMessage;
 use App\Modules\Gmail\Models\MailSyncState;
 use App\Modules\Gmail\Services\Sync\WatchService;
 use App\Modules\Gmail\Testing\FakeGmailProvider;
 use App\Modules\Mail\Exceptions\MailRemoteException;
 use App\Modules\Mail\Models\Mailbox;
+use App\Modules\Sync\Models\DlqItem;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
 use Tests\TestCase;
 
@@ -45,6 +49,42 @@ final class WatchRenewTest extends TestCase
         $this->assertNotNull($state->getAttribute('last_history_id'));
         $this->assertSame(['INBOX', 'SENT', 'DRAFT'], $this->gmail->watchState((int) $this->box->getKey())['label_ids']);
         Event::assertNotDispatched(WatchExpiringSoon::class);
+    }
+
+    public function test_first_watch_triggers_initial_import_instead_of_setting_cursor_from_watch_response(): void
+    {
+        $this->gmail->seedMessage((int) $this->box->getKey(), ['subject' => 'Bestand 1']);
+        $this->gmail->seedMessage((int) $this->box->getKey(), ['subject' => 'Bestand 2', 'label_ids' => ['SENT']]);
+
+        WatchRenewJob::dispatch((int) $this->box->getKey());
+
+        $this->assertSame(2, MailMessage::query()->count(), 'Der Bestandsimport läuft nach dem ersten Watch.');
+        $state = MailSyncState::query()->firstOrFail();
+        $this->assertNotNull($state->getAttribute('full_sync_finished_at'));
+        $this->assertSame($this->gmail->currentHistoryId((int) $this->box->getKey()), $state->getAttribute('last_history_id'));
+
+        // Erneute Erneuerung stößt keinen zweiten Erstimport an.
+        Bus::fake([InitialImportJob::class]);
+        WatchRenewJob::dispatchSync((int) $this->box->getKey());
+        Bus::assertNotDispatched(InitialImportJob::class);
+    }
+
+    public function test_watch_renew_runs_on_high_queue_and_final_failure_degrades_mailbox_and_reschedules(): void
+    {
+        Event::fake([WatchExpiringSoon::class]);
+        Bus::fake([WatchRenewJob::class]);
+        $job = new WatchRenewJob((int) $this->box->getKey());
+        $this->assertSame('mail-high', $job->queue);
+        MailSyncState::query()->create(['mailbox_id' => $this->box->getKey(), 'watch_status' => 'requested', 'watch_expiration' => now()->addDays(2)]);
+
+        $job->failed(new MailRemoteException('Fake: Topic ohne Publisher-Rolle', 'gmail', 403, null));
+
+        $this->assertSame('degraded', $this->box->refresh()->getAttribute('status'));
+        $this->assertStringContainsString('Watch-Erneuerung', (string) $this->box->getAttribute('status_reason'));
+        $this->assertSame('failed', MailSyncState::query()->firstOrFail()->getAttribute('watch_status'));
+        Event::assertDispatched(WatchExpiringSoon::class, static fn (WatchExpiringSoon $e): bool => str_starts_with($e->reason, 'renew_failed_final'));
+        $this->assertSame(1, DlqItem::query()->where('job_class', WatchRenewJob::class)->where('entity_type', 'mail_gmail')->count());
+        Bus::assertDispatched(WatchRenewJob::class, fn (WatchRenewJob $next): bool => $next->mailboxId === (int) $this->box->getKey() && $next->delay !== null);
     }
 
     public function test_alert_when_expiration_is_below_24_hours_and_only_once(): void

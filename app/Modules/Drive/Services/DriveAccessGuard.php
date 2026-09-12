@@ -10,10 +10,12 @@ use App\Modules\Mail\Services\MailAccess;
 use App\Modules\Security\Models\User;
 
 /**
- * Doppelte Rechteprüfung für Dokumentauszüge. (1) Anwendungsrecht: die Person darf den Vorgang sehen (gleiche
- * Organisation, mail.inbox.view, Postfachfreigabe oder Teamzuständigkeit oder Zuweisung). (2) Quellrecht: die
- * Person ist in Drive für die Datei berechtigt (permissions.list enthält ihre E-Mail, ihre Domain oder anyone).
- * Beide Prüfungen müssen zustimmen; sonst gibt es keinen Auszug, weder über Suche noch im KI-Kontext.
+ * Doppelte Rechteprüfung für Dokumentauszüge. (1) Anwendungsrecht: die Person darf den Vorgang sehen, identisch zu
+ * CaseVisibility::canView (gleiche Organisation, mail.inbox.view, bei Vorgängen mit Postfach ausschließlich die
+ * Postfachfreigabe can_read, ohne Postfach die Teammitgliedschaft). Eine Zuweisung als Bearbeiter ersetzt die
+ * Postfachfreigabe nicht: wer den Vorgang in der Oberfläche nicht sehen darf, erhält auch keinen Dokumentauszug.
+ * (2) Quellrecht: die Person ist in Drive für die Datei berechtigt (permissions.list enthält ihre E-Mail, ihre
+ * Domain oder anyone). Beide Prüfungen müssen zustimmen; sonst gibt es keinen Auszug, weder über Suche noch im KI-Kontext.
  */
 final class DriveAccessGuard
 {
@@ -29,18 +31,13 @@ final class DriveAccessGuard
             return false;
         }
 
-        if ((int) $case->getAttribute('assignee_user_id') === (int) $user->getKey() && $case->getAttribute('assignee_user_id') !== null) {
-            return true;
-        }
-
         $mailboxId = $case->getAttribute('mailbox_id');
 
         if ($mailboxId !== null) {
             $mailbox = Mailbox::query()->withoutGlobalScopes()->find((int) $mailboxId);
 
-            if ($mailbox instanceof Mailbox && $this->access->canViewMailbox($user, $mailbox)) {
-                return true;
-            }
+            // Vorgang mit Postfach: nur die Postfachfreigabe entscheidet (wie CaseVisibility::canView).
+            return $mailbox instanceof Mailbox && $this->access->canViewMailbox($user, $mailbox);
         }
 
         $teamId = $case->getAttribute('team_id');

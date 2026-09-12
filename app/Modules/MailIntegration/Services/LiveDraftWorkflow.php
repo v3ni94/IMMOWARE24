@@ -130,6 +130,21 @@ final class LiveDraftWorkflow implements DraftWorkflowInterface
         return $result;
     }
 
+    public function approve(MailDraft $draft, User $approver): WorkflowResult
+    {
+        if ((string) $draft->getAttribute('status') === 'pending_approval' && ! $this->flags->gmailDraftsEnabled()) {
+            return $this->local->approve($draft, $approver);
+        }
+
+        try {
+            $draft = $this->drafts->approve($draft, $approver);
+        } catch (InvalidArgumentException $e) {
+            return WorkflowResult::failed($e->getMessage());
+        }
+
+        return WorkflowResult::ok('Entwurf freigegeben (Revision '.$draft->getAttribute('revision').'). Versand bleibt ein eigener Schritt mit Reauth.', (int) $draft->getKey());
+    }
+
     public function send(MailDraft $draft, User $actor): WorkflowResult
     {
         if (! $this->flags->gmailSendEnabled()) {

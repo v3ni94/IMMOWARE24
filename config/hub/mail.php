@@ -18,6 +18,10 @@ return [
     // Flags mit Außenwirkung (gmail_send, immoware_write, lexware_write).
     'production_domain' => 'mail.muellerhv.de',
 
+    // Routen ohne Domainbindung, die auf dem Mail-Host erreichbar bleiben (Anmeldung, 2FA, Sicherheitsseiten, Health).
+    // Alle anderen Hub-Routen (Admin-UI, /api) liefern auf dem Mail-Host 404 (MailServiceProvider::registerHostGuard).
+    'host_allowed_route_prefixes' => ['login', 'security.', 'health', 'up'],
+
     // Zeitzone der Darstellung. Speicherung bleibt UTC (APP_TIMEZONE).
     'display_timezone' => env('MAIL_DISPLAY_TIMEZONE', 'Europe/Berlin'),
 
@@ -59,6 +63,8 @@ return [
      * compose.yaml, deploy/supervisor und deploy/systemd werden erst im Betriebsabschnitt angepasst.
      */
     'queues' => [
+        // Die Worker (compose.yaml, deploy/supervisor, deploy/systemd) hören auf mail-high, mail-sync, mail-ai;
+        // hub:doctor meldet abweichende Namen als fail (Jobs ohne Worker).
         'high' => env('MAIL_QUEUE_HIGH', 'mail-high'),
         'sync' => env('MAIL_QUEUE_SYNC', 'mail-sync'),
         'ai' => env('MAIL_QUEUE_AI', 'mail-ai'),
@@ -72,7 +78,8 @@ return [
     ],
 
     // Rate Limit des Pub/Sub-Push-Endpunkts (Middleware-Gruppe mail.push), Anfragen je Minute.
-    'push_rate_limit_per_minute' => (int) env('MAIL_PUSH_RATE_LIMIT_PER_MINUTE', 120),
+    // Je Postfach (emailAddress der Nutzlast), nicht je IP: Pub/Sub sendet aus wenigen Google-Adressen. 429 wird protokolliert.
+    'push_rate_limit_per_minute' => (int) env('MAIL_PUSH_RATE_LIMIT_PER_MINUTE', 600),
 
     /*
      * Globale Rechte des Mail-Moduls. Werden von MailServiceProvider::register() additiv in

@@ -9,6 +9,7 @@ use App\Modules\Actions\DTO\StepResult;
 use App\Modules\Actions\Enums\TargetSystem;
 use App\Modules\Actions\Enums\VerificationStatus;
 use App\Modules\Actions\Exceptions\ActionConflictException;
+use App\Modules\Actions\Exceptions\ActionNotEditableException;
 use App\Modules\Actions\Exceptions\ActionTimeoutException;
 use App\Modules\Actions\Models\ActionPlanVersion;
 use App\Modules\Actions\Models\Execution;
@@ -158,6 +159,12 @@ final class LexwareTargetAdapter implements StepAwareAdapterInterface
         $client = $this->clientFor($ref);
         $id = (string) $ref['external_id'];
 
+        // Schreibfreigabe je Verbindung (mail_lexware_connections.write_enabled) zusätzlich zum globalen Flag. Der
+        // Fallback auf den Umgebungs-API-Key ist nie schreibfähig. Ohne Freigabe kein Lesen, kein PUT: gesperrt.
+        if (! $client->credentials()->writeEnabled) {
+            throw new ActionNotEditableException(sprintf('Schreiben über die Lexware-Verbindung%s ist gesperrt (write_enabled nicht gesetzt); Änderung nicht ausgeführt.', $client->credentials()->connectionId !== null ? ' '.$client->credentials()->connectionId : ''));
+        }
+
         try {
             $fresh = $client->getContact($id);
         } catch (LexwareUnavailableException $e) {
@@ -196,6 +203,12 @@ final class LexwareTargetAdapter implements StepAwareAdapterInterface
         } catch (LexwareTimeoutException $e) {
             throw new ActionTimeoutException($e->getMessage(), 0, $e);
         } catch (LexwareUnavailableException $e) {
+            // 5xx oder keine verwertbare Statusangabe nach einem PUT: die Änderung kann serverseitig angewandt sein
+            // (Gateway-Fehler). Ergebnis unklar, die Engine liest nach, statt den Schritt blind zu wiederholen.
+            if ($e->httpStatus === null || $e->httpStatus >= 500) {
+                throw new ActionTimeoutException(sprintf('Lexware antwortete auf PUT ohne verwertbares Ergebnis (%s). Ergebnis unklar, Nachlesen erforderlich.', $e->httpStatus !== null ? 'HTTP '.$e->httpStatus : 'kein Status'), 0, $e);
+            }
+
             return StepResult::failed($e->getMessage(), $e->httpStatus);
         }
 

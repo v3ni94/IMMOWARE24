@@ -8,6 +8,7 @@ use App\Core\Boot\BootGuard;
 use App\Modules\Mail\Boot\MailBootGuard;
 use App\Modules\Mail\Http\Middleware\EnsureMailAccess;
 use App\Modules\Mail\Http\Middleware\EnsureMailDomain;
+use App\Modules\Mail\Http\Middleware\MailSecurityHeaders;
 use App\Modules\Mail\Models\Mailbox;
 use App\Modules\Mail\Services\IntegrationStatusService;
 use App\Modules\Mail\Services\MailAccess;
@@ -17,11 +18,14 @@ use App\Modules\Security\Models\User;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Events\RouteMatched;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Modul Mail (Kern der Mail- und Vorgangsbearbeitung unter mail.muellerhv.de, docs/mail/01-architekturentscheidung.md).
@@ -63,19 +67,32 @@ class MailServiceProvider extends ServiceProvider
         $router = $this->app->make(Router::class);
         $router->aliasMiddleware('mail.access', EnsureMailAccess::class);
         $router->aliasMiddleware('mail.domain', EnsureMailDomain::class);
+        $router->aliasMiddleware('mail.headers', MailSecurityHeaders::class);
         // Reihenfolge: Session (web), Anmeldung, Hostprüfung, Rollen- und Rechteprüfung mit Mandantenkontext, danach 2FA.
-        $router->middlewareGroup(self::MIDDLEWARE_GROUP, ['web', 'auth', 'mail.domain', 'mail.access', '2fa']);
+        // mail.headers setzt die Content-Security-Policy als zweite Sperre hinter dem HtmlSanitizer.
+        $router->middlewareGroup(self::MIDDLEWARE_GROUP, ['web', 'auth', 'mail.domain', 'mail.headers', 'mail.access', '2fa']);
         // Pub/Sub-Push: zustandslos, kein CSRF, Hostprüfung, Rate Limit. Die JWT-Prüfung (mail.push.auth) ergänzt das Modul Gmail.
         $router->middlewareGroup(self::MIDDLEWARE_GROUP_PUSH, ['mail.domain', 'throttle:mail-push']);
         // Freigaben, Versand, Bankdatenansicht, Integrationsänderungen, Export verlangen Re-Authentifizierung.
         $router->middlewareGroup(self::MIDDLEWARE_GROUP_FRESH, [self::MIDDLEWARE_GROUP, '2fa.fresh']);
 
+        // Pub/Sub liefert aus wenigen Google-Adressen: Begrenzung je Postfach (emailAddress aus message.data), nicht je IP.
+        // 429 wird protokolliert, damit ein verzögerter Import (Pub/Sub-Backoff) nicht unbemerkt bleibt.
         RateLimiter::for('mail-push', static function (Request $request): Limit {
-            return Limit::perMinute((int) config('hub.mail.push_rate_limit_per_minute', 120))->by((string) $request->ip());
+            $key = self::pushRateLimitKey($request);
+
+            return Limit::perMinute((int) config('hub.mail.push_rate_limit_per_minute', 600))
+                ->by($key)
+                ->response(static function (Request $request, array $headers) use ($key): Response {
+                    Log::warning('mail.push.rate_limited', ['key' => hash('sha256', $key), 'retry_after' => $headers['Retry-After'] ?? null]);
+
+                    return response('Too Many Requests', 429, $headers);
+                });
         });
 
         $this->registerGates();
         $this->registerRoutes();
+        $this->registerHostGuard();
 
         $views = resource_path('views/'.self::MODULE);
 
@@ -84,6 +101,24 @@ class MailServiceProvider extends ServiceProvider
         }
 
         $this->registerViewComposer();
+    }
+
+    /**
+     * Schlüssel des Push-Rate-Limits: Postfachadresse aus der Pub/Sub-Nutzlast, sonst Absender-IP.
+     */
+    public static function pushRateLimitKey(Request $request): string
+    {
+        $data = $request->input('message.data');
+
+        if (is_string($data) && $data !== '') {
+            $decoded = json_decode((string) base64_decode(strtr($data, '-_', '+/'), false), true);
+
+            if (is_array($decoded) && is_string($decoded['emailAddress'] ?? null) && trim($decoded['emailAddress']) !== '') {
+                return 'mailbox:'.strtolower(trim($decoded['emailAddress']));
+            }
+        }
+
+        return 'ip:'.(string) $request->ip();
     }
 
     /**
@@ -133,6 +168,48 @@ class MailServiceProvider extends ServiceProvider
             $model = $mailbox instanceof Mailbox ? $mailbox : Mailbox::query()->withoutGlobalScopes()->find($mailbox);
 
             return $model instanceof Mailbox && $this->app->make(MailAccess::class)->canViewMailbox($user, $model);
+        });
+    }
+
+    /**
+     * Pfadtrennung auf dem Mail-Host (docs/mail/09 Abschnitt 3): Da die Mail-Oberfläche an der Wurzel des Hosts liegt,
+     * ist eine Pfad-Allowlist in nginx nicht möglich. Deshalb beendet die Anwendung auf dem Mail-Host jede Route, die
+     * nicht an die Mail-Domain gebunden ist, mit 404. Ausgenommen sind Anmeldung, 2FA, Sicherheitsseiten und die
+     * Health-Endpunkte (hub.mail.host_allowed_route_prefixes). Admin-UI und /api/v1 des Hubs sind so unter
+     * mail.muellerhv.de nicht erreichbar.
+     */
+    private function registerHostGuard(): void
+    {
+        Route::matched(static function (RouteMatched $event): void {
+            $expected = strtolower(trim((string) config('hub.mail.domain', '')));
+
+            if ($expected === '' || strtolower($event->request->getHost()) !== $expected) {
+                return;
+            }
+
+            $route = $event->route;
+
+            if (strtolower((string) $route->getDomain()) === $expected) {
+                return;
+            }
+
+            $name = (string) $route->getName();
+            $uri = trim($route->uri(), '/');
+
+            // Mail-Routen ohne Domainbindung (Push-Endpunkt, Gruppe mail.push mit eigener Hostprüfung) bleiben erreichbar.
+            if (str_starts_with($name, 'mail.') || in_array('mail.domain', $route->gatherMiddleware(), true)) {
+                return;
+            }
+
+            foreach ((array) config('hub.mail.host_allowed_route_prefixes', ['login', 'security.', 'health', 'up']) as $prefix) {
+                $prefix = (string) $prefix;
+
+                if ($name === $prefix || str_starts_with($name, $prefix) || $uri === $prefix || str_starts_with($uri, $prefix.'/')) {
+                    return;
+                }
+            }
+
+            abort(404);
         });
     }
 

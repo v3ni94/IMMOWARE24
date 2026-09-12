@@ -22,10 +22,13 @@ use Throwable;
 
 /**
  * Versand eines Entwurfs. Reihenfolge: Flag gmail_send, Recht mail.send plus Postfachfreigabe can_send, Alias erlaubt
- * (gehört zum Postfach, Gesellschaft passt, verifiziert), Entwurf in Gmail vorhanden und unverändert (Hash), keine neue
- * Threadnachricht seit der letzten Änderung, kein früherer Versand mit unklarem Ergebnis. Erst danach drafts.send.
- * Die Antwort ist kein Versandnachweis: SendReconciliationService prüft SENT und Message-ID. Ein Fehler der
- * Gegenstelle setzt nie sent, der Abgleich entscheidet (sent_unverified bis unclear).
+ * (gehört zum Postfach, Gesellschaft passt, verifiziert), Freigabe durch eine zweite Person (Vier-Augen: approved_by
+ * gesetzt und ungleich Autor, DraftService::approve, docs/mail/05 Abschnitt Versand), Entwurf in Gmail vorhanden und
+ * unverändert (Hash), keine neue Threadnachricht seit der letzten Änderung, kein früherer Versand mit unklarem
+ * Ergebnis. Der Statuswechsel nach sent_requested erfolgt als bedingtes Update (nur aus einem versandfähigen Status),
+ * damit zwei gleichzeitige Anfragen nicht beide drafts.send auslösen. Erst danach drafts.send. Die Antwort ist kein
+ * Versandnachweis: SendReconciliationService prüft SENT und Message-ID. Ein Fehler der Gegenstelle setzt nie sent,
+ * der Abgleich entscheidet (sent_unverified bis unclear).
  */
 final class SendService
 {
@@ -88,6 +91,8 @@ final class SendService
             throw new SendRefusedException('draft_not_ready', 'Entwurf ist nicht in Gmail hinterlegt oder hat einen Konflikt (Status '.$draft->getAttribute('status').').');
         }
 
+        $this->assertApproved($draft);
+
         $gmailDraftId = $draft->getAttribute('gmail_draft_id');
 
         if (! is_string($gmailDraftId) || $gmailDraftId === '') {
@@ -108,13 +113,25 @@ final class SendService
                 : 'Der Gmail-Entwurf wurde außerhalb des Hubs geändert.');
         }
 
-        $draft->forceFill([
-            'status' => self::STATUS_SENT_REQUESTED,
-            'sent_requested_by' => $user->getKey(),
-            'sent_requested_at' => CarbonImmutable::now(),
-            'send_verification' => SendReconciliationService::UNVERIFIED,
-            'delivery_status' => 'unknown',
-        ])->save();
+        // Atomarer Statuswechsel: nur wer den Entwurf aus einem versandfähigen Status übernimmt, darf drafts.send rufen.
+        $claimed = MailDraft::query()->withoutGlobalScopes()
+            ->whereKey($draft->getKey())
+            ->whereIn('status', self::RESENDABLE_STATUSES)
+            ->where('revision', (int) $draft->getAttribute('revision'))
+            ->update([
+                'status' => self::STATUS_SENT_REQUESTED,
+                'sent_requested_by' => $user->getKey(),
+                'sent_requested_at' => CarbonImmutable::now(),
+                'send_verification' => SendReconciliationService::UNVERIFIED,
+                'delivery_status' => 'unknown',
+                'updated_at' => CarbonImmutable::now(),
+            ]);
+
+        if ($claimed !== 1) {
+            throw new SendRefusedException('already_requested', 'Versand wurde bereits angefordert oder der Entwurf wurde zwischenzeitlich geändert.');
+        }
+
+        $draft->refresh();
 
         $this->audit->record('mail.draft.send_requested', $draft, [], ['alias' => $alias->getAttribute('send_as_email')], AuditSource::Mail);
 
@@ -134,6 +151,27 @@ final class SendService
         $this->reconciliation->reconcile($reconciliation);
 
         return $draft->refresh();
+    }
+
+    /**
+     * Vier-Augen: Freigabe einer anderen Person als dem Autor, erteilt auf den aktuellen Inhalt (updateDraft setzt
+     * die Freigabe zurück). Ohne Freigabe kein Versand, auch nicht mit can_draft plus can_send in einer Hand.
+     *
+     * @throws SendRefusedException
+     */
+    private function assertApproved(MailDraft $draft): void
+    {
+        $approvedBy = $draft->getAttribute('approved_by');
+
+        if ($approvedBy === null || $draft->getAttribute('approved_at') === null) {
+            throw new SendRefusedException('approval_missing', 'Der Entwurf ist nicht freigegeben. Versand erst nach Freigabe durch eine zweite Person.');
+        }
+
+        $author = $draft->getAttribute('created_by');
+
+        if ($author !== null && (int) $author === (int) $approvedBy) {
+            throw new SendRefusedException('approval_missing', 'Die Freigabe stammt vom Autor des Entwurfs. Vier-Augen-Prinzip verlangt eine zweite Person.');
+        }
     }
 
     private function hasNewThreadMessageSince(MailDraft $draft, CarbonImmutable $since): bool

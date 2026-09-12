@@ -27,7 +27,8 @@ final class ActionPolicy
     public function requiredApprovals(RiskClass $risk): int
     {
         $required = (array) $this->config->get('hub.actions.approvals.required', []);
-        $count = (int) ($required[$risk->value] ?? 1);
+        // Nie ohne Freigabe: mindestens eine zweite Person, unabhängig von der Konfiguration (kein Selbstvollzug).
+        $count = max(1, (int) ($required[$risk->value] ?? 1));
 
         // Bankdaten verlangen immer zwei verschiedene Personen, unabhängig von der Konfiguration.
         return $risk === RiskClass::Bank ? max(2, $count) : $count;
@@ -147,12 +148,44 @@ final class ActionPolicy
         return $valid;
     }
 
+    /**
+     * Ablehnungen auf dem aktuellen Stand der Version (steps_hash und diff_hash). Eine Ablehnung bindet: die Version
+     * ist danach nicht mehr ausführbar, auch wenn genug Freigaben vorliegen; nur eine neue Version hebt sie auf.
+     *
+     * @return array<int, Approval>
+     */
+    public function rejections(ActionPlanVersion $version): array
+    {
+        $rejections = [];
+
+        /** @var Approval $approval */
+        foreach ($version->approvals()->where('decision', 'rejected')->orderBy('id')->get() as $approval) {
+            if ((string) $approval->getAttribute('steps_hash') !== (string) $version->getAttribute('steps_hash')) {
+                continue;
+            }
+
+            if ((string) $approval->getAttribute('diff_hash') !== (string) $version->getAttribute('diff_hash')) {
+                continue;
+            }
+
+            $rejections[] = $approval;
+        }
+
+        return $rejections;
+    }
+
+    public function isRejected(ActionPlanVersion $version): bool
+    {
+        return $this->rejections($version) !== [];
+    }
+
     public function isFullyApproved(ActionPlanVersion $version): bool
     {
-        $required = (int) $version->getAttribute('required_approvals');
+        // Eine gespeicherte 0 (Altbestand, Konfiguration) bedeutet nie Selbstvollzug: mindestens eine Freigabe.
+        $required = max(1, (int) $version->getAttribute('required_approvals'));
 
-        if ($required <= 0) {
-            return true;
+        if ($this->isRejected($version)) {
+            return false;
         }
 
         if ($this->requiresIdentityCheck($this->riskOf($version)) && ! $version->identityChecks()->exists()) {

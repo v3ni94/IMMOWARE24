@@ -48,12 +48,15 @@ final class OAuthFlowTest extends TestCase
     public function test_callback_exchanges_code_with_pkce_verifier_and_stores_encrypted_refresh_token(): void
     {
         $user = $this->actingAsMailRole('admin');
-        Http::fake(['https://oauth2.googleapis.com/token' => Http::response(['access_token' => 'at-1', 'refresh_token' => 'rt-1', 'expires_in' => 3599, 'scope' => 'https://www.googleapis.com/auth/gmail.readonly', 'token_type' => 'Bearer'])]);
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => Http::response(['access_token' => 'at-1', 'refresh_token' => 'rt-1', 'expires_in' => 3599, 'scope' => 'https://www.googleapis.com/auth/gmail.readonly', 'token_type' => 'Bearer']),
+            'https://gmail.googleapis.com/gmail/v1/users/me/profile' => Http::response(['emailAddress' => strtoupper((string) $this->mailbox->getAttribute('email_address')), 'historyId' => '1']),
+        ]);
 
         $begin = $this->service()->beginAuthorization($this->mailbox, $user, ['import']);
         $mailbox = $this->service()->completeAuthorization($begin['state'], 'auth-code', $user);
 
-        Http::assertSent(static fn (Request $request): bool => $request['grant_type'] === 'authorization_code' && $request['code'] === 'auth-code' && is_string($request['code_verifier']) && strlen($request['code_verifier']) > 40 && $request['client_secret'] === 'client-secret');
+        Http::assertSent(static fn (Request $request): bool => str_contains($request->url(), '/token') && $request['grant_type'] === 'authorization_code' && $request['code'] === 'auth-code' && is_string($request['code_verifier']) && strlen($request['code_verifier']) > 40 && $request['client_secret'] === 'client-secret');
         $this->assertSame('active', $mailbox->getAttribute('status'));
         $this->assertSame('rt-1', $mailbox->getAttribute('oauth_refresh_token'));
         $this->assertSame(['https://www.googleapis.com/auth/gmail.readonly'], $mailbox->getAttribute('oauth_scopes_json'));
@@ -63,6 +66,7 @@ final class OAuthFlowTest extends TestCase
         $this->assertIsString($stored);
         $this->assertStringNotContainsString('rt-1', $stored, 'Refresh-Token liegt verschlüsselt in der Datenbank.');
         $this->assertTrue(AuditLog::query()->where('action', 'mail.gmail.oauth.granted')->exists());
+        Http::assertSent(static fn (Request $request): bool => str_ends_with($request->url(), '/users/me/profile') && $request->hasHeader('Authorization', 'Bearer at-1'));
 
         $this->expectException(MailRemoteException::class);
         $this->service()->completeAuthorization($begin['state'], 'auth-code', $user);
@@ -81,6 +85,49 @@ final class OAuthFlowTest extends TestCase
             $this->assertSame('configured', $this->mailbox->refresh()->getAttribute('status'));
             $this->assertNull($this->mailbox->getAttribute('oauth_refresh_token'));
         }
+    }
+
+    public function test_callback_with_foreign_google_account_discards_tokens(): void
+    {
+        $user = $this->actingAsMailRole('admin');
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => Http::response(['access_token' => 'at-fremd', 'refresh_token' => 'rt-fremd', 'expires_in' => 3599]),
+            'https://gmail.googleapis.com/gmail/v1/users/me/profile' => Http::response(['emailAddress' => 'privat@gmail.com', 'historyId' => '1']),
+            'https://oauth2.googleapis.com/revoke' => Http::response('', 200),
+        ]);
+        $begin = $this->service()->beginAuthorization($this->mailbox, $user, ['import']);
+
+        try {
+            $this->service()->completeAuthorization($begin['state'], 'code', $user);
+            $this->fail('Fremdes Konto darf nicht autorisiert werden.');
+        } catch (MailRemoteException $exception) {
+            $this->assertStringContainsString('Postfachadresse', $exception->getMessage());
+        }
+
+        $this->mailbox->refresh();
+        $this->assertSame('configured', $this->mailbox->getAttribute('status'));
+        $this->assertNull($this->mailbox->getAttribute('oauth_refresh_token'));
+        $this->assertNull($this->mailbox->getAttribute('oauth_access_token'));
+        $this->assertStringContainsString('entspricht nicht', (string) $this->mailbox->getAttribute('status_reason'));
+        Http::assertSent(static fn (Request $request): bool => str_contains($request->url(), 'oauth2.googleapis.com/revoke') && $request['token'] === 'rt-fremd');
+        $this->assertTrue(AuditLog::query()->where('action', 'mail.gmail.oauth.mismatch')->exists());
+        $this->assertFalse(AuditLog::query()->where('action', 'mail.gmail.oauth.granted')->exists());
+    }
+
+    public function test_callback_without_determinable_account_discards_tokens_unless_id_token_matches(): void
+    {
+        $user = $this->actingAsMailRole('admin');
+        $email = (string) $this->mailbox->getAttribute('email_address');
+        $idToken = 'h.'.rtrim(strtr(base64_encode(json_encode(['email' => $email], JSON_THROW_ON_ERROR)), '+/', '-_'), '=').'.s';
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => Http::response(['access_token' => 'at-2', 'refresh_token' => 'rt-2', 'expires_in' => 3599, 'id_token' => $idToken]),
+            'https://gmail.googleapis.com/gmail/v1/users/me/profile' => Http::response(['error' => 'x'], 500),
+        ]);
+        $begin = $this->service()->beginAuthorization($this->mailbox, $user, ['import']);
+
+        $mailbox = $this->service()->completeAuthorization($begin['state'], 'code', $user);
+
+        $this->assertSame('active', $mailbox->getAttribute('status'), 'id_token-Claim ersetzt den Profilabruf.');
     }
 
     public function test_refresh_rejection_marks_reauth_required_and_revoke_clears_tokens(): void

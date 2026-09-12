@@ -23,6 +23,12 @@ interface DraftWorkflowInterface
     public function submitForReview(MailDraft $draft, User $actor): WorkflowResult;
 
     /**
+     * Freigabe eines Entwurfs durch eine zweite Person (Vier-Augen, docs/mail/05 Abschnitt 5). Der Autor darf den
+     * eigenen Entwurf nicht freigeben; die Freigabe gilt für den aktuellen Inhalt und verfällt bei jeder Änderung.
+     */
+    public function approve(MailDraft $draft, User $approver): WorkflowResult;
+
+    /**
      * Versand nur mit Flag gmail_send, Recht mail.send und Postfachrecht can_send. Ein HTTP-Erfolg ist kein Versand:
      * die Implementierung darf erst nach verifiziertem Abgleich (Label SENT) ok liefern.
      */

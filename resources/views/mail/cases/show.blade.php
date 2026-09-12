@@ -201,6 +201,14 @@
                             @if ($activeDraft->status === 'local')
                                 <form method="post" action="{{ route('mail.cases.drafts.review', [$case, $activeDraft]) }}" class="hub-inline-form">@csrf<button type="submit" class="hub-button {{ $primaryAction['key'] === 'review_submit' ? 'mail-primary' : 'hub-button-secondary' }}">Zur Prüfung geben</button></form>
                             @endif
+                            @if ($can['approve'] && in_array($activeDraft->status, ['pending_approval', 'pushed_to_gmail'], true) && (int) $activeDraft->created_by !== (int) auth()->id() && $activeDraft->approved_by === null)
+                                <form method="post" action="{{ route('mail.cases.drafts.approve', [$case, $activeDraft]) }}" class="hub-inline-form">@csrf<button type="submit" class="hub-button hub-button-secondary">Entwurf freigeben (Vier-Augen, Reauth)</button></form>
+                            @endif
+                            @if ($activeDraft->approved_by !== null)
+                                <span class="hub-badge hub-badge-ok">Freigegeben durch {{ $activeDraft->approvedBy?->name ?? 'Nutzer #'.$activeDraft->approved_by }}</span>
+                            @elseif (! in_array($activeDraft->status, ['local'], true))
+                                <span class="hub-hint">Versand erst nach Freigabe durch eine zweite Person.</span>
+                            @endif
                             @if ($can['send'])
                                 <form method="post" action="{{ route('mail.cases.drafts.send', [$case, $activeDraft]) }}" class="hub-inline-form">@csrf<button type="submit" class="hub-button {{ $primaryAction['key'] === 'send' ? 'mail-primary' : 'hub-button-secondary' }}">Senden (Reauth erforderlich)</button></form>
                             @else

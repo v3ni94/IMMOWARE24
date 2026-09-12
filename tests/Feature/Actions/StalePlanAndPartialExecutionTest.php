@@ -13,6 +13,7 @@ use App\Modules\Actions\Services\ExecutionService;
 use App\Modules\Actions\Services\ManualTaskService;
 use App\Modules\Cases\Models\Task;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Sleep;
 use Tests\Feature\Actions\Concerns\BuildsActionPlans;
 use Tests\TestCase;
 
@@ -72,22 +73,24 @@ final class StalePlanAndPartialExecutionTest extends TestCase
         $version = $this->propose([$this->lexwareAddressStep(), $this->immowareAddressStep($contact)]);
         $this->assertSame(2, $version->targets()->count());
 
-        // Lexware antwortet beim PUT mit 500, Immoware24 liefert eine manuelle Aufgabe.
-        $this->lexware->failNextMethod('PUT', 'contacts/lx-1', 500);
+        // Lexware lehnt den PUT dauerhaft mit 429 ab (nicht angewandt, technisch wiederholbar), Immoware24 liefert
+        // eine manuelle Aufgabe. Ein 5xx nach PUT wäre dagegen "Ergebnis unklar" mit Nachlesen (TimeoutAndScheduleTest).
+        Sleep::fake();
+        $this->lexware->failNextMethod('PUT', 'contacts/lx-1', 429)->failNextMethod('PUT', 'contacts/lx-1', 429)->failNextMethod('PUT', 'contacts/lx-1', 429);
         $this->approveBy($version, $this->approverOne);
 
         $targets = $version->targets()->orderBy('step_index')->get()->pluck('status', 'step_index')->all();
         $this->assertSame(ActionTarget::FAILED, $targets[0]);
         $this->assertSame(ActionTarget::MANUAL_TASK, $targets[1]);
         $this->assertSame(ActionStatus::ManualReview, $version->plan->fresh()->status, 'Teilfehler bleibt offen, kein Gesamterfolg.');
-        $this->assertCount(1, $this->lexware->requests('PUT'));
+        $this->assertCount(3, $this->lexware->requests('PUT'), 'Ein PUT plus zwei 429-Wiederholungen des Clients.');
         $this->assertSame('Altstraße 1', $this->lexware->contacts()['lx-1']['addresses']['billing'][0]['street']);
         $this->assertDatabaseCount('mail_tasks', 1);
 
         // Nur der fehlende Schritt wird wiederholt; die Immoware-Aufgabe entsteht nicht doppelt.
         $dispatched = $this->app->make(ExecutionService::class)->retryOpenSteps($version->fresh(['plan']), $this->approverOne);
         $this->assertSame([0], $dispatched);
-        $this->assertCount(2, $this->lexware->requests('PUT'));
+        $this->assertCount(4, $this->lexware->requests('PUT'));
         $this->assertSame('Neustraße 2', $this->lexware->contacts()['lx-1']['addresses']['billing'][0]['street']);
         $this->assertDatabaseCount('mail_tasks', 1);
         $this->assertSame(1, Execution::query()->where('action_plan_version_id', $version->getKey())->where('step_index', 0)->count(), 'Retry nutzt denselben Beleg (idempotency_key).');

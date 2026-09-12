@@ -142,10 +142,10 @@ final class BankChangePolicyTest extends TestCase
         $this->assertSame(ActionStatus::Verified, $version->plan->fresh()->status);
         $this->assertSame('transferred', $change->fresh()->status->value);
 
-        // Nachlesen vor dem nächsten Sync: Spiegel zeigt noch alt, bleibt manuell bestätigt
-        $recheck = $service->recheck($execution->fresh());
-        $this->assertSame(VerificationStatus::ManuallyConfirmed, $recheck->result);
+        // Nachlesen vor dem nächsten Sync: Spiegel zeigt noch alt, bleibt manuell bestätigt, kein neuer Beleg
+        $this->assertNull($service->recheck($execution->fresh()));
         $this->assertSame(ManualTaskService::TASK_DONE_MANUAL, $task->fresh()->status);
+        $this->assertSame(VerificationStatus::ManuallyConfirmed, $execution->fresh()->verification_status);
 
         // Nach dem Sync: Spiegel trägt neue IBAN, jetzt api_verified
         $account->forceFill(['iban' => 'DE02120300000000202051', 'iban_masked' => 'DE02***2051'])->save();

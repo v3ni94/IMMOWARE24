@@ -61,8 +61,9 @@ return [
     ],
 
     'approvals' => [
-        // Anzahl benötigter Freigaben je Risikoklasse. bank verlangt immer zwei verschiedene Personen.
-        'required' => ['low' => 0, 'medium' => 1, 'high' => 1, 'bank' => 2],
+        // Anzahl benötigter Freigaben je Risikoklasse. Mindestens 1 (ActionPolicy erzwingt das auch bei 0), bank
+        // verlangt immer zwei verschiedene Personen.
+        'required' => ['low' => 1, 'medium' => 1, 'high' => 1, 'bank' => 2],
         // Gültigkeit einer Freigabe. Abgelaufene Freigaben sperren die Ausführung (Vorbedingung).
         'ttl_hours' => (int) env('MAIL_ACTION_APPROVAL_TTL_HOURS', 72),
     ],
@@ -73,8 +74,10 @@ return [
         'backoff' => [30, 120, 600],
         'timeout' => (int) env('MAIL_ACTION_JOB_TIMEOUT', 120),
         'lock_seconds' => (int) env('MAIL_ACTION_LOCK_SECONDS', 300),
-        // Wartezeit vor dem Nachlesen nach result_unclear
+        // Wartezeit vor dem Nachlesen nach result_unclear; wächst je Versuch linear.
         'verify_delay_seconds' => (int) env('MAIL_ACTION_VERIFY_DELAY', 60),
+        // Höchstzahl der Nachleseversuche ohne Ergebnis, danach result_unclear mit manueller Prüfung.
+        'verify_max_attempts' => (int) env('MAIL_ACTION_VERIFY_MAX_ATTEMPTS', 5),
     ],
 
     // Datenalter des Spiegels, ab dem readCurrent für Immoware24 als veraltet gilt (Warnung, keine Sperre).
@@ -88,6 +91,12 @@ return [
 
     // Antwortauszüge werden maskiert und auf diese Länge gekürzt.
     'response_excerpt_max' => 4000,
+
+    // Verarbeiter der mail_outbox (DispatchActionOutboxJob, jede Minute): Einträge je Lauf und Versuche bis failed.
+    'outbox' => [
+        'batch_size' => (int) env('MAIL_ACTION_OUTBOX_BATCH', 500),
+        'max_attempts' => (int) env('MAIL_ACTION_OUTBOX_MAX_ATTEMPTS', 5),
+    ],
 
     // Outbox-Events (mail_outbox.event).
     'outbox_events' => ['case.created', 'case.assigned', 'case.escalated', 'task.due', 'draft.approved', 'plan.approved', 'plan.scheduled', 'execution.started', 'execution.failed', 'execution.result_unclear', 'execution.verified', 'execution.manual_task'],

@@ -30,6 +30,8 @@ final class SendServiceTest extends TestCase
 
     private User $user;
 
+    private User $approver;
+
     private MailboxAlias $alias;
 
     private MailMessage $original;
@@ -41,6 +43,9 @@ final class SendServiceTest extends TestCase
         config()->set('hub.mail.flags.gmail_send', true);
         $this->gmail = $this->app->make(GmailProviderInterface::class);
         $this->user = $this->actingAsMailRole('lead');
+        $this->approver = $this->actingAsMailRole('approver', $this->mailbox);
+        $this->attachMailRole($this->approver, $this->mailbox, 'approver');
+        $this->actingAs($this->user);
         $this->mailbox->forceFill(['email_address' => 'verwaltung@muellerhv.de', 'status' => 'active', 'import_enabled' => true])->save();
         $this->alias = MailboxAlias::query()->create(['mailbox_id' => $this->mailbox->getKey(), 'send_as_email' => 'verwaltung@muellerhv.de', 'legal_entity_code' => 'HVM', 'verification_status' => 'accepted']);
         $id = $this->gmail->seedMessage($this->boxId(), ['from' => 'mieter@example.com', 'subject' => 'Heizung', 'text' => 'Kalt.', 'thread_id' => 'thread-1']);
@@ -142,9 +147,90 @@ final class SendServiceTest extends TestCase
         Event::assertDispatchedTimes(GmailReplyDetected::class, 1);
     }
 
+    public function test_send_requires_approval_by_a_second_person(): void
+    {
+        $service = $this->app->make(DraftService::class);
+        $draft = $service->createReplyDraft($this->original, 'Wir kümmern uns.', null, $this->alias, [], $this->user);
+
+        $this->assertRefused($draft, $this->user, 'approval_missing');
+
+        try {
+            $service->approve($draft, $this->user);
+            $this->fail('Der Autor darf nicht selbst freigeben.');
+        } catch (\InvalidArgumentException $exception) {
+            $this->assertStringContainsString('Vier-Augen', $exception->getMessage());
+        }
+
+        $draft->forceFill(['approved_by' => $this->user->getKey(), 'approved_at' => now()])->save();
+        $this->assertRefused($draft->refresh(), $this->user, 'approval_missing');
+
+        $service->approve($draft, $this->approver);
+        $this->assertSame((int) $this->approver->getKey(), (int) $draft->refresh()->getAttribute('approved_by'));
+
+        // Inhaltsänderung nach Freigabe: Freigabe gilt nicht mehr.
+        $service->updateDraft($draft, ['body_text' => 'Neuer Text'], [], $this->user);
+        $this->assertNull($draft->refresh()->getAttribute('approved_by'));
+        $this->assertRefused($draft, $this->user, 'approval_missing');
+        $this->assertSame([], $this->gmail->calls('sendDraft'));
+
+        $service->approve($draft, $this->approver);
+        $this->assertSame('sent_verified', $this->app->make(SendService::class)->send($draft, $this->user)->getAttribute('status'));
+    }
+
+    public function test_concurrent_send_requests_claim_the_draft_only_once(): void
+    {
+        $draft = $this->draft();
+        $stale = MailDraft::query()->findOrFail($draft->getKey());
+
+        // Race-Fenster: die erste Anfrage hat alle Prüfungen bestanden und den Entwurf gerade übernommen (sent_requested),
+        // drafts.send steht noch aus; der Gmail-Entwurf existiert also noch und refreshRemoteState liefert ok.
+        MailDraft::query()->whereKey($draft->getKey())->update(['status' => SendService::STATUS_SENT_REQUESTED]);
+
+        $this->assertSame(DraftService::STATUS_PUSHED, $stale->getAttribute('status'), 'Zweite Anfrage arbeitet mit veraltetem Stand.');
+        $this->assertRefused($stale, $this->user, 'already_requested');
+        $this->assertSame([], $this->gmail->calls('sendDraft'), 'Kein zweiter drafts.send.');
+        $this->assertSame(0, SendReconciliation::query()->count(), 'Kein zweiter Versandabgleich.');
+        $this->assertSame(SendService::STATUS_SENT_REQUESTED, $draft->refresh()->getAttribute('status'));
+    }
+
+    public function test_verified_send_stays_pending_when_sent_message_is_not_yet_importable(): void
+    {
+        config()->set('hub.gmail.send.reconcile_attempts', 3);
+        $draft = $this->draft();
+        // listSent findet die Nachricht, getMessage(metadata) bestätigt sie, der Import (getMessage raw) liefert 404.
+        $this->gmail->failNext('getMessage', new MailRemoteException('Fake: noch nicht abrufbar', 'gmail', 404, null), skip: 1);
+
+        $result = $this->app->make(SendService::class)->send($draft, $this->user);
+
+        $this->assertSame(SendReconciliationService::UNVERIFIED, $result->getAttribute('send_verification'), 'Ohne importierte Nachricht kein sent_verified.');
+        $this->assertNull($result->getAttribute('sent_message_id'));
+        $this->assertSame('pending', SendReconciliation::query()->firstOrFail()->getAttribute('result'));
+
+        SendReconciliation::query()->update(['next_check_at' => now()->subMinute()]);
+        $this->app->make(SendReconciliationService::class)->processDue();
+        $this->assertSame('sent_verified', $draft->refresh()->getAttribute('status'));
+        $this->assertNotNull($draft->getAttribute('sent_message_id'), 'Beim nächsten Lauf importiert und verknüpft.');
+    }
+
+    public function test_reimport_of_known_message_fires_no_second_reply_detection(): void
+    {
+        Event::fake([GmailReplyDetected::class]);
+        $sent = $this->gmail->seedMessage($this->boxId(), ['from' => 'verwaltung@muellerhv.de', 'to' => 'mieter@example.com', 'subject' => 'Re: Heizung', 'text' => 'Direkt.', 'thread_id' => 'thread-1', 'label_ids' => ['SENT']]);
+        $importer = $this->app->make(MessageImporter::class);
+
+        $importer->import($this->mailbox, $sent);
+        $importer->import($this->mailbox, $sent);
+        $importer->import($this->mailbox, $sent);
+
+        Event::assertDispatchedTimes(GmailReplyDetected::class, 1);
+    }
+
     private function draft(): MailDraft
     {
-        return $this->app->make(DraftService::class)->createReplyDraft($this->original, 'Wir kümmern uns.', null, $this->alias, [], $this->user);
+        $service = $this->app->make(DraftService::class);
+        $draft = $service->createReplyDraft($this->original, 'Wir kümmern uns.', null, $this->alias, [], $this->user);
+
+        return $service->approve($draft, $this->approver);
     }
 
     private function assertRefused(MailDraft $draft, User $user, string $reason): void

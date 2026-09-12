@@ -40,7 +40,9 @@ final class PreconditionChecker
             $reasons[] = 'Planversion ist nicht mehr aktuell (neuere Version vorhanden).';
         }
 
-        if ($checkApprovals && ! $this->policy->isFullyApproved($version)) {
+        if ($checkApprovals && $this->policy->isRejected($version)) {
+            $reasons[] = 'Planversion wurde auf diesem Stand abgelehnt; Ausführung nur nach neuer Version und neuer Freigabe.';
+        } elseif ($checkApprovals && ! $this->policy->isFullyApproved($version)) {
             $reasons[] = 'Freigabe fehlt, ist abgelaufen oder bindet an einen anderen Stand (diff_hash).';
         }
 

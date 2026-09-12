@@ -6,6 +6,7 @@ namespace App\Modules\Gmail\Services\Sync;
 
 use App\Modules\Gmail\Contracts\GmailProviderInterface;
 use App\Modules\Gmail\Events\WatchExpiringSoon;
+use App\Modules\Gmail\Jobs\InitialImportJob;
 use App\Modules\Gmail\Models\MailSyncState;
 use App\Modules\Mail\Models\Mailbox;
 use Carbon\CarbonImmutable;
@@ -16,7 +17,9 @@ use Throwable;
 /**
  * users.watch je Postfach: Erneuerung, Ablaufspeicherung, Alarm. HTTP 200 auf watch ist nur "requested"; active wird
  * der Watch erst nach dem ersten eingetroffenen Push oder History-Abgleich (SyncStateService::commitHistoryId).
- * Ohne konfiguriertes Topic ist Push "Nicht eingerichtet" und es wird kein Watch angefordert.
+ * Ohne konfiguriertes Topic ist Push "Nicht eingerichtet" und es wird kein Watch angefordert. Die historyId der
+ * Watch-Antwort wird nie als Cursor gespeichert: ohne gespeicherte History-ID stößt renew den Erstimport an, der
+ * die Profil-History-ID selbst merkt und nach Abschluss committet (sonst liefe der Bestandsimport nie).
  */
 final class WatchService
 {
@@ -52,16 +55,18 @@ final class WatchService
 
             $expiration = CarbonImmutable::createFromTimestampMs((int) $result['expiration'])->utc();
 
+            if ($state->getAttribute('last_history_id') === null && ($state->getAttribute('full_sync_started_at') === null || $state->getAttribute('full_sync_finished_at') !== null)) {
+                // Vor dem Speichern des Watch-Zustands: der Erstimport bestätigt den Watch nicht (requested bleibt).
+                Log::info('Gmail: Watch angelegt, Erstimport wird angestoßen.', ['mailbox_id' => $mailbox->getKey()]);
+                InitialImportJob::dispatch((int) $mailbox->getKey());
+            }
+
             $state->forceFill([
                 'watch_expiration' => $expiration,
                 'watch_requested_at' => CarbonImmutable::now(),
                 'watch_status' => $state->getAttribute('watch_status') === 'active' ? 'active' : 'requested',
                 'watch_alerted_at' => null,
             ])->save();
-
-            if ($state->getAttribute('last_history_id') === null) {
-                $this->states->commitHistoryId($mailbox, (string) $result['history_id'], incremental: false);
-            }
         } catch (Throwable $exception) {
             Log::warning('Gmail: Watch-Erneuerung fehlgeschlagen.', ['mailbox_id' => $mailbox->getKey(), 'reason' => $exception->getMessage()]);
             $state->forceFill(['watch_status' => 'failed'])->save();

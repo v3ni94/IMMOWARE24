@@ -62,6 +62,38 @@ final class CaseClosingTest extends CasesTestCase
         $this->assertGreaterThan(0, SlaClockLog::query()->where('case_id', $case->getKey())->where('event', 'stopped_met')->count());
     }
 
+    public function test_direct_close_from_new_is_refused_while_conditions_are_open_and_needs_exception_close(): void
+    {
+        Queue::fake();
+        $agent = $this->actingAsMailRole('agent');
+        $message = $this->inboundMessage($this->mailbox, ['subject' => 'Frage zur Abrechnung']);
+        $cases = $this->app->make(CaseService::class);
+        // Ohne Verantwortlichen bleibt der Vorgang new, Kommunikation reply_needed.
+        $case = $cases->openFromMessage($message, [['item_type' => 'anfrage_allgemein', 'title' => 'Auskunft Abrechnung']], null, [], false);
+        $this->assertSame(CaseStatus::New, $case->status_processing);
+
+        try {
+            $cases->transitionProcessing($case, CaseStatus::Closed, $agent, 'Erledigt.');
+            $this->fail('Ein neuer Vorgang mit offener Kommunikation darf nicht direkt geschlossen werden.');
+        } catch (CaseNotClosableException $e) {
+            $this->assertStringContainsString('Kommunikation nicht abgeschlossen', implode(' ', $e->unmet));
+        }
+
+        $case->refresh();
+        $this->assertSame(CaseStatus::New, $case->status_processing);
+        $this->assertNull($case->closed_at);
+        $this->assertFalse((bool) $case->closed_by_exception);
+        $this->assertSame(CaseStatus::New, $case->items()->firstOrFail()->status_processing, 'Teilanliegen bleibt offen.');
+        $this->assertSame(0, CaseStatusLog::query()->where('case_id', $case->getKey())->where('to_status', 'closed')->count());
+
+        // Ausnahmeabschluss (Spam, Fehlzuordnung) nur mit Recht und Begründung, als Ausnahme protokolliert.
+        $lead = $this->actingAsMailRole('lead', $this->mailbox);
+        $this->attachMailRole($lead, $this->mailbox, 'lead');
+        $closed = $cases->closeWithException($case, $lead, 'Spam, keine Anfrage.');
+        $this->assertSame(CaseStatus::Closed, $closed->status_processing);
+        $this->assertTrue((bool) $closed->closed_by_exception);
+    }
+
     public function test_master_data_change_requires_verified_task_and_business_result(): void
     {
         Queue::fake();

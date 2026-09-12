@@ -96,3 +96,84 @@ Löschung erfolgt als geplanter Job (`mail:retention:apply`, Queue `low`) mit Vo
 - Freigabe der Geschäftsführung vor Aktivierung jedes Schreib- oder Versand-Flags, dokumentiert in `docs/mail/10-implementierungsliste.md`.
 - Schulung der Nutzer zu den Leitregeln (gelesen ist nicht bearbeitet, Vier-Augen, Bankdaten).
 - Jährliche Überprüfung der Postfachrechte und OAuth-Verbindungen.
+
+## 11. Security-Review 13.09.2026
+
+Interner Code- und Sicherheitsreview des Mail-Moduls (Module Mail, Gmail, Cases, Sla, Actions, Lexware, Ai, Drive, MailUi, MailIntegration, Deployment) gegen CLAUDE.md und die Dokumente 01 bis 10. Gemeldet wurden **60 Findings** in drei Fix-Bereichen: Gmail/Drive/Ai (23), Cases/Sla/Actions (15), MailUi/MailIntegration/Mail/Betrieb (22). Regel des Fix-Laufs: Jeder Fix erhält einen Test, der den Fehler zuvor reproduziert; Pint nur auf eigene Pfade, PHPStan komplett. Abschlusslauf 13.09.2026: 836 Tests, 828 bestanden, 8 übersprungen, 6.115 Assertions, Pint und PHPStan Level 5 ohne Befund, `migrate:fresh` auf SQLite vollständig (43 Migrationen).
+
+Schwere: Die Fix-Berichte überliefern die Einstufung des Reviews nur für ein Finding ausdrücklich (Gmail Nr. 5, kritisch). Die übrigen Findings werden hier ohne erfundene Schwere nach Wirkung gruppiert: **sicherheitsrelevant** (Rechte, Vier-Augen, Authentifizierung, Datenabfluss), **datenverlust- oder konsistenzrelevant** (Import, Cursor, Statusmaschinen), **betrieblich** (Queues, Deployment, Doku).
+
+### 11.1 Status je Finding
+
+| Nr. | Bereich | Finding | Wirkung | Status |
+|---|---|---|---|---|
+| G1 | Gmail | OAuth-Callback akzeptiert fremdes Google-Konto | sicherheitsrelevant | behoben (Profilabgleich, Token widerrufen, Audit `mail.gmail.oauth.mismatch`) |
+| G2 | Ai | PromptMasker maskiert IBAN und PII unvollständig | sicherheitsrelevant | behoben (`[URL_n]`, `[ADRESSE_n]`, `[NR_n]`, `[NAME_n]`, IBAN normalisiert); Namenserkennung ohne Wörterbuch bleibt begrenzt |
+| G3 | Gmail | JWKS-Amplifikation über unbekannte kid | sicherheitsrelevant | teilweise behoben (Negativ-Cache, ein Reload je Mindestabstand); globales Rate Limit `mail-push` offen |
+| G4 | Drive | DriveAccessGuard gewährt Assignee Einsicht ohne Postfachrecht | sicherheitsrelevant | behoben (nur `canViewMailbox` bzw. Teammitgliedschaft) |
+| G5 | Gmail | HistorySync verwirft Einträge beim Limit (kritisch) | datenverlustrelevant | behoben (Cursor nur bis letztem vollständig verarbeiteten Eintrag) |
+| G6 | Gmail | Erstimport wird nie gestartet | datenverlustrelevant | behoben (`WatchService::renew` dispatcht `InitialImportJob`) |
+| G7/G13 | Gmail | Push-Dedup verwirft Ereignis bei fehlgeschlagenem Dispatch | datenverlustrelevant | behoben (nur Unique-Verletzung gilt als Duplikat, Wiederholung plant Sync erneut) |
+| G8 | Gmail | SendService Race bei parallelem Versand | konsistenzrelevant | behoben (bedingtes Update mit Revision); Unique-Index auf `mail_send_reconciliations` offen |
+| G9 | Gmail | 404 beim Import still verworfen | datenverlustrelevant | behoben (verzögerte Wiederholung, dann als gelöscht protokolliert) |
+| G10 | Gmail | Erstimport bleibt nach Fehler festgefahren | betrieblich | behoben (`failed()` setzt Zustand zurück) |
+| G11 | Gmail | Draft-Konflikte Hub-intern nicht erkannt | konsistenzrelevant | behoben (`DraftConflictException('stale_revision')`) |
+| G12 | Gmail, MailUi | Vier-Augen beim Versand nicht erzwungen | sicherheitsrelevant | behoben (`DraftService::approve`, `SendService` verweigert ohne Freigabe, Route und Oberfläche in MailUi, `DraftFourEyesTest`) |
+| G14 | Gmail | DLQ und `WatchRenewJob::failed` fehlten | betrieblich | behoben |
+| G15 | Gmail | Release-Schleife und Lock-TTL | betrieblich | behoben |
+| G16 | Gmail | WatchRenew Priorität und unabhängiger Ablaufcheck | betrieblich | behoben (mail-high, `ReconcileJob` prüft Ablauf) |
+| G17 | Gmail | PushController antwortet ohne Middleware-Ergebnis mit ok | sicherheitsrelevant | behoben (401) |
+| G18 | Ai | `mail_ai_suggestions.payload_json` im Klartext | sicherheitsrelevant | offen, begründet abgelehnt (Spaltentyp `json()` verträgt keinen verschlüsselten String; Migration auf `longText` empfohlen) |
+| G19 | Gmail | `sent_verified` ohne `sent_message_id` | konsistenzrelevant | behoben |
+| G20 | Gmail | Mehrfacher FullResync | betrieblich | behoben |
+| G21 | Gmail | Doppelte Ereignisse bei Re-Import | konsistenzrelevant | behoben |
+| G22 | Drive | `corpora` ohne Beleg | Doku | behoben (nur aus Config, gekennzeichnet) |
+| G23 | Gmail | `processDue`/`prune` ohne Limit | betrieblich | behoben |
+| C1 | Cases | Closed ohne Abschlussprüfung | konsistenzrelevant | behoben |
+| C2 | Sla | SLA-Uhren für Altmails laufen rot an | konsistenzrelevant | behoben (`LegacyImportPolicy`, Uhren `cancelled`) |
+| C3 | Actions | Verifikation bleibt in `http_ok_unverified` | konsistenzrelevant | behoben (verzögerte Wiederholung, dann `result_unclear`) |
+| C4 | Actions | 5xx nach PUT als failed/Konflikt | konsistenzrelevant | behoben (`result_unclear`, Nachlesen entscheidet) |
+| C5 | Actions | Ablehnung nicht bindend | sicherheitsrelevant | behoben |
+| C6 | Actions | Outbox ohne Verarbeiter | betrieblich | behoben (`ActionOutboxDispatcher`, Zeitplan minütlich) |
+| C7 | Cases | Weiterleitung stoppt SLA-Uhren | konsistenzrelevant | behoben (nur Antwort an Vorgangsabsender zählt) |
+| C8 | Actions | `write_enabled` der Verbindung ignoriert | sicherheitsrelevant | behoben |
+| C9 | Sla | Notfallzustellung nicht idempotent | betrieblich | behoben |
+| C10 | Actions | Scheduler: Approved ohne Ausführung | konsistenzrelevant | behoben (Transaktion, `afterCommit`, Nachfassen) |
+| C11 | Actions | `required_approvals` 0 | sicherheitsrelevant | behoben (mindestens 1); Einschränkung `ApprovalController::retry` durch C5 abgedeckt |
+| C12 | Actions | `recheck()` toter Pfad | betrieblich | behoben (`mail:actions:recheck-manual`, stündlich) |
+| C13 | Sla | retarget und Pausenlimit in Kalenderminuten | konsistenzrelevant | behoben |
+| C14 | Doku | Widerspruch Statusregel in 04 | Doku | behoben |
+| C15 | Sla | Staging sendet Notfallalarme real | sicherheitsrelevant | behoben (`StagingGuard`, Umleitung oder `blocked`); Warnung in `hub:doctor` offen |
+| U1 | MailUi | Vier-Augen Entwurfsversand in der Oberfläche | sicherheitsrelevant | behoben (siehe G12) |
+| U2 | MailUi | Reauth-Nachweis ersetzt durch `now()` | sicherheitsrelevant | behoben (`isFresh()` im Controller, sonst 403 mit Audit) |
+| U3 | MailUi | `assignee_user_id` ohne Organisationsprüfung | sicherheitsrelevant | behoben |
+| U4 | MailIntegration | `status_business` nicht gespiegelt | konsistenzrelevant | behoben (`MirrorPlanStatusToCaseItem`); Abfrage im `CloseConditionChecker` offen |
+| U5 | MailUi | Mailbox `configured` als Verbunden | Doku, Anzeige | behoben (`INCOMPLETE`, `REAUTH`) |
+| U6 | MailUi | Integrationsstatus aus Config statt Bindung | Anzeige | behoben (`UNVERIFIED`, `FAKE`) |
+| U7 | Doku | 06-testplan nennt nicht existierende Tests | Doku | behoben |
+| U8 | Mail | immoware24 fest LIVE | Anzeige | behoben |
+| U9 | Doku | Posteingang-Upload als umgesetzt geführt | Doku | behoben (offen gekennzeichnet) |
+| U10 | Lexware | rps-Default 2 statt 1 | betrieblich | behoben |
+| U11 | Betrieb | deploy.sh stoppt Mail-Worker nicht | betrieblich | behoben |
+| U12 | Betrieb | Host-Trennung ohne Pfad-Allowlist | sicherheitsrelevant | behoben als App-Guard (`registerHostGuard`, `MailHostGuardTest`); nginx weist `/api` ab |
+| U13 | Betrieb | compose Healthcheck ohne Aussage | betrieblich | behoben |
+| U14 | Betrieb | `hub:doctor` ohne Mail-Prüfungen | betrieblich | behoben |
+| U15 | Betrieb | Queue-Namen nicht geprüft | betrieblich | behoben |
+| U16 | MailUi | Settings-Nutzerlisten ohne Organisationsfilter | sicherheitsrelevant | behoben |
+| U17 | MailUi | `reject()` ohne Rechteprüfung | sicherheitsrelevant | behoben |
+| U18 | Mail | CSP nur in nginx | sicherheitsrelevant | behoben (`MailSecurityHeaders`); sandboxed iframe bewusst nicht umgesetzt |
+| U19 | MailUi | `status()`/`note()` ohne Recht | sicherheitsrelevant | behoben (`mail.task.manage`) |
+| U20 | MailUi | Entwürfe/Versand als aktiv ohne Scope | Anzeige | behoben |
+| U21 | Mail | Push-Rate-Limit nur je IP | sicherheitsrelevant | behoben (je Postfach, 600/min); Dashboard-Kennzahl offen |
+| U22 | Datenmodell | Kaskadenlöschung auf Mail-Tabellen | datenverlustrelevant | behoben (Migration `2026_09_13_110001`, `restrictOnDelete`, No-op auf SQLite) |
+
+### 11.2 Offene Punkte nach dem Fix-Lauf
+
+1. Globales Rate Limit für `mail-push` (`Limit::perMinute(...)->by('global')`) zusätzlich zum Limit je Postfach (G3).
+2. Unique-Index `(draft_id)` für offene Abgleiche auf `mail_send_reconciliations` (G8).
+3. Spaltentyp `mail_ai_suggestions.payload_json` auf `longText` und Cast `encrypted:array` (G18); bis dahin liegen KI-Vorschläge unverschlüsselt in der Datenbank, IBAN-Felder werden maskiert gespeichert.
+4. Warnung in `hub:doctor` bei Staging ohne `MAIL_EMERGENCY_TEST_RECIPIENT` (C15).
+5. `CloseConditionChecker` fragt Aktionspläne direkt ab (U4, zweiter Teil).
+6. Kennzahl "Push 429" im Dashboard (U21).
+7. `mail:retention:apply` und Auskunftsexport (Abschnitt 6 und 7) weiterhin offen.
+8. Durchreichen von `2fa.fresh` an `DraftService::approve` ist über die Route erledigt, ein Test der Freigabe ohne frische Zwei-Faktor-Sitzung fehlt.

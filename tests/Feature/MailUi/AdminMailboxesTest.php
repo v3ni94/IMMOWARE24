@@ -109,4 +109,19 @@ final class AdminMailboxesTest extends TestCase
         $this->assertSame(5000, app(OrgSettings::class)->get((int) $this->mailbox->organization_id, 'ai_budget')['monthly_limit_cents']);
         $this->put(self::BASE.'/admin/settings/setup', [])->assertNotFound();
     }
+
+    public function test_settings_user_lists_are_limited_to_own_organization(): void
+    {
+        $admin = $this->actingAsMailRole('admin');
+        $foreign = User::factory()->role(Role::Operator)->create();
+        $own = User::factory()->role(Role::Operator)->for($this->mailbox->organization)->create();
+
+        $this->put(self::BASE.'/admin/settings/approvers', ['standard_user_ids' => [$own->getKey(), $foreign->getKey()], 'bank_user_ids' => [$foreign->getKey()]])->assertRedirect();
+        $stored = $this->app->make(OrgSettings::class)->get((int) $admin->organization_id, 'approvers');
+        $this->assertSame([$own->getKey()], $stored['standard_user_ids']);
+        $this->assertSame([], $stored['bank_user_ids']);
+
+        $this->put(self::BASE.'/admin/settings/escalation_recipients', ['user_ids' => [$foreign->getKey()], 'emails' => 'a@example.com'])->assertRedirect();
+        $this->assertSame([], $this->app->make(OrgSettings::class)->get((int) $admin->organization_id, 'escalation_recipients')['user_ids']);
+    }
 }

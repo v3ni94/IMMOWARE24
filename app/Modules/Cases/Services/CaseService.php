@@ -25,6 +25,7 @@ use App\Modules\Cases\StateMachines\ProcessingStateMachine;
 use App\Modules\Gmail\Models\MailMessage;
 use App\Modules\Mail\Services\MailAccess;
 use App\Modules\Security\Models\User;
+use App\Modules\Sla\Enums\ClockState;
 use App\Modules\Sla\Enums\ClockType;
 use App\Modules\Sla\Services\EmergencyQueue;
 use App\Modules\Sla\Services\PriorityClassifier;
@@ -280,7 +281,8 @@ final class CaseService
 
     /**
      * Gesendete Antwort in Gmail erkannt (GmailReplyDetected): Kommunikationsstatus sent, Uhren Annahme und erste
-     * qualifizierte Antwort stoppen, Zwischenstandsuhr neu starten. Aufgaben und Bearbeitungsstatus bleiben.
+     * qualifizierte Antwort stoppen, Zwischenstandsuhr neu starten. Aufgaben und Bearbeitungsstatus bleiben. Gewertet
+     * wird nur eine Nachricht, deren Empfänger (to, cc) einen eingehenden Absender des Vorgangs enthält.
      *
      * @return array<int, MailCase>
      */
@@ -288,8 +290,20 @@ final class CaseService
     {
         $affected = [];
         $sentAt = $message->received_at instanceof CarbonImmutable ? $message->received_at : CarbonImmutable::parse((string) $message->received_at);
+        $recipients = $this->recipientAddresses($message);
 
         foreach ($this->casesForThread($message) as $case) {
+            // Nur eine Nachricht an den Absender des Vorgangs (oder einen anderen eingehenden Absender des Vorgangs) ist
+            // eine Antwort. Interne Weiterleitungen im selben Thread (Handwerker, Kollegen) stoppen keine Uhr.
+            if ($recipients === [] || array_intersect($recipients, $this->counterpartAddresses($case)) === []) {
+                $this->linkMessage($case, $message, 'forwarded');
+                $communication = $this->communicationStatus($case)->value;
+                $this->log->log($case, 'communication', $communication, $communication, 'Gesendete Nachricht im Thread ohne Empfänger des Vorgangsabsenders erkannt, nicht als Antwort gewertet (Uhren laufen weiter).', null, null, 'gmail', ['message_id' => $message->getKey(), 'recipients' => count($recipients)]);
+                $affected[] = $case->refresh();
+
+                continue;
+            }
+
             $this->linkMessage($case, $message, 'reply');
 
             if ($this->communicationStatus($case) !== CommunicationStatus::NoReplyNeeded) {
@@ -354,7 +368,8 @@ final class CaseService
 
     /**
      * Übergang der Bearbeitungsdimension für Vorgang oder Teilanliegen. waiting_external verlangt externen
-     * Verantwortlichen, Nachfassdatum und nächsten Kundenzwischenstand ($data). Resolved prüft die Abschlussbedingungen.
+     * Verantwortlichen, Nachfassdatum und nächsten Kundenzwischenstand ($data). Resolved und Closed prüfen die
+     * Abschlussbedingungen; ein Abschluss trotz offener Bedingungen ist nur über closeWithException möglich.
      *
      * @param  array<string, mixed>  $data
      */
@@ -369,16 +384,19 @@ final class CaseService
             $this->assertWaitingExternalData($data);
         }
 
-        if ($to === CaseStatus::Resolved) {
+        if ($to === CaseStatus::Closed && ! in_array($from, [CaseStatus::Resolved, CaseStatus::New, CaseStatus::AssignmentOpen], true)) {
+            throw new InvalidTransitionException(ProcessingStateMachine::DIMENSION, $from->value, $to->value, 'Abschluss nur aus resolved, sonst Ausnahmeabschluss mit Begründung.');
+        }
+
+        // Resolved und Closed prüfen dieselben Abschlussbedingungen. Auch new und assignment_open dürfen nur ohne
+        // offene Bedingungen direkt geschlossen werden (Spam, Fehlzuordnung), sonst nur closeWithException mit Recht
+        // und Begründung. Beantwortet ist nicht erledigt, unbeantwortet erst recht nicht.
+        if ($to === CaseStatus::Resolved || $to === CaseStatus::Closed) {
             $unmet = $item !== null ? $this->closeConditions->unmetForItem($item) : $this->closeConditions->unmetForCase($case);
 
             if ($unmet !== []) {
                 throw new CaseNotClosableException($unmet);
             }
-        }
-
-        if ($to === CaseStatus::Closed && ! in_array($from, [CaseStatus::Resolved, CaseStatus::New, CaseStatus::AssignmentOpen], true)) {
-            throw new InvalidTransitionException(ProcessingStateMachine::DIMENSION, $from->value, $to->value, 'Abschluss nur aus resolved, sonst Ausnahmeabschluss mit Begründung.');
         }
 
         if ($item !== null) {
@@ -504,6 +522,54 @@ final class CaseService
         }
     }
 
+    /**
+     * Empfängeradressen (to, cc) einer Nachricht, kleingeschrieben.
+     *
+     * @return array<int, string>
+     */
+    private function recipientAddresses(MailMessage $message): array
+    {
+        $addresses = [];
+
+        foreach ([(array) ($message->to_json ?? []), (array) ($message->cc_json ?? [])] as $list) {
+            foreach ($list as $entry) {
+                $email = is_array($entry) ? ($entry['email'] ?? null) : $entry;
+
+                if (is_string($email) && trim($email) !== '') {
+                    $addresses[] = mb_strtolower(trim($email));
+                }
+            }
+        }
+
+        return array_values(array_unique($addresses));
+    }
+
+    /**
+     * Absender (from, reply_to) aller eingehenden Nachrichten des Vorgangs, kleingeschrieben.
+     *
+     * @return array<int, string>
+     */
+    private function counterpartAddresses(MailCase $case): array
+    {
+        $messageIds = CaseMessage::query()->where('case_id', $case->getKey())->pluck('message_id')->all();
+
+        if ($messageIds === []) {
+            return [];
+        }
+
+        $addresses = [];
+
+        foreach (MailMessage::query()->allOrganizations()->whereIn('id', $messageIds)->where('direction', 'inbound')->get(['id', 'from_address', 'reply_to']) as $inbound) {
+            foreach ([$inbound->from_address, $inbound->reply_to] as $email) {
+                if (is_string($email) && trim($email) !== '') {
+                    $addresses[] = mb_strtolower(trim($email));
+                }
+            }
+        }
+
+        return array_values(array_unique($addresses));
+    }
+
     public function processingStatus(MailCase|CaseItem $subject): CaseStatus
     {
         $value = $subject->status_processing;
@@ -551,7 +617,8 @@ final class CaseService
 
         if ($item->due_at === null) {
             foreach ($clocks as $clock) {
-                if ((string) $clock->clock_type === ClockType::Resolution->value) {
+                // Altbestand: Uhren sind cancelled, die Fälligkeit setzt ein Mensch (Pflichtfeld bleibt sichtbar offen).
+                if ((string) $clock->clock_type === ClockType::Resolution->value && (string) $clock->state === ClockState::Running->value) {
                     $item->forceFill(['due_at' => $clock->target_at])->save();
                 }
             }

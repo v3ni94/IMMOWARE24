@@ -17,6 +17,7 @@ use App\Modules\Drive\Models\DriveFolderMapping;
 use App\Modules\Drive\Services\DriveAiContextSource;
 use App\Modules\Drive\Services\DriveSearchService;
 use App\Modules\Estate\Models\Property;
+use App\Modules\MailUi\Services\CaseVisibility;
 use App\Modules\Security\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -128,6 +129,20 @@ final class DriveAccessTest extends TestCase
 
         // Auszug bleibt für Berechtigte erhalten: fehlendes Anwendungsrecht ist kein Rechteentzug in Drive.
         $this->assertNotNull(DocumentReference::query()->withoutGlobalScopes()->where('drive_file_id', 'doc1')->first()?->getAttribute('text_excerpt'));
+    }
+
+    public function test_assignee_without_mailbox_read_permission_gets_no_excerpt_like_case_visibility(): void
+    {
+        $this->fakeDrive([['type' => 'anyone', 'role' => 'reader']]);
+        $this->search()->indexCase($this->case, $this->agent);
+
+        // Zugewiesen, aber ohne Postfachfreigabe can_read: die Oberfläche (CaseVisibility::canView) verweigert den Vorgang.
+        $assignee = User::factory()->role(Role::Operator)->create(['organization_id' => $this->agent->getAttribute('organization_id'), 'email' => 'zugewiesen@muellerhv.de']);
+        $this->case->forceFill(['assignee_user_id' => $assignee->getKey()])->save();
+
+        $this->assertFalse($this->app->make(CaseVisibility::class)->canView($assignee, $this->case->fresh()));
+        $this->assertSame([], $this->search()->search($assignee, $this->case->fresh(), 'Nachzahlung'), 'Zuweisung ersetzt die Postfachfreigabe nicht.');
+        $this->assertSame([], $this->app->make(AiContextSourceInterface::class)->excerptsFor($this->case->fresh(), $assignee, 5, 1500));
     }
 
     public function test_user_with_case_access_but_without_drive_permission_gets_nothing_and_index_excerpt_is_removed(): void

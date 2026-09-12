@@ -15,7 +15,9 @@ use App\Modules\Sla\Services\EmergencyQueue;
 use App\Modules\Sla\Services\PriorityClassifier;
 use App\Modules\Sla\Services\SlaClockService;
 use App\Modules\Sla\Services\SlaRuleResolver;
+use App\Modules\Sla\Support\StagingGuard;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
+use Illuminate\Contracts\Mail\Mailer;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -43,17 +45,20 @@ class SlaServiceProvider extends ServiceProvider
         $this->app->singleton(SlaClockService::class);
 
         $this->app->singleton(EmergencyQueue::class, static function ($app): EmergencyQueue {
+            /** @var array<int, AlertChannelInterface> $channels */
             $channels = [];
+
+            // Staging-Schutz wie MailBootGuard: keine Alarme an reale Empfänger außerhalb der Betriebsdomain.
+            $staging = new StagingGuard($app['config'], (string) $app->environment());
 
             foreach ((array) $app['config']->get('hub.sla.emergency.channels', ['email', 'webhook', 'sms', 'call']) as $name) {
                 $channels[] = match ((string) $name) {
-                    'email' => $app->make(EmailAlertChannel::class),
-                    'webhook' => $app->make(WebhookAlertChannel::class),
+                    'email' => new EmailAlertChannel($app->make(Mailer::class), $app['config'], $staging),
+                    'webhook' => new WebhookAlertChannel($app['config'], $staging),
                     default => new NotConfiguredAlertChannel((string) $name),
                 };
             }
 
-            /** @var array<int, AlertChannelInterface> $channels */
             return new EmergencyQueue($channels, $app->make(WorkCalendar::class), $app->make(CaseStatusLogger::class), $app['config'], $app->make(BusDispatcher::class));
         });
     }

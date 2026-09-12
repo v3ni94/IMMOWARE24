@@ -4,20 +4,25 @@ declare(strict_types=1);
 
 namespace App\Modules\MailUi\Services;
 
+use App\Core\Contracts\Mail\AiProviderInterface;
+use App\Core\Contracts\Mail\DocumentSourceInterface;
 use App\Modules\Connector\Models\ImmowareConnection;
 use App\Modules\Drive\Models\DriveConnection;
 use App\Modules\Gmail\Models\MailSyncState;
 use App\Modules\Lexware\Models\LexwareConnection;
+use App\Modules\Lexware\Services\LexwareConnectionResolver;
 use App\Modules\Mail\Models\Mailbox;
 use App\Modules\Mail\Services\IntegrationStatusService;
 use App\Modules\Mail\Services\MailFeatureFlags;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Contracts\Container\Container;
 use Illuminate\Routing\Router;
 
 /**
- * Sichtbarer Zustand jeder Verbindung für die Integrationsseite und das Dashboard. Vier Zustände: Nicht eingerichtet,
- * Verbunden, Fehler, Reauth nötig. Ein technischer Fehler wird nie als Erfolg gezeigt; ein bestätigter Watch ist erst
+ * Sichtbarer Zustand jeder Verbindung für die Integrationsseite und das Dashboard. Zustände: Nicht eingerichtet,
+ * Eingerichtet (ungeprüft), Autorisierung unvollständig, Testbetrieb (Fake), Verbunden, Fehler, Reauth nötig.
+ * Verbunden gibt es nur mit vorhandenem Zugang (Refresh-Token) und mindestens einem erfolgreichen Aufruf. Ein technischer Fehler wird nie als Erfolg gezeigt; ein bestätigter Watch ist erst
  * "aktiv", wenn watch_confirmed_at gesetzt ist. Buttons verweisen auf Routen der Fachmodule (config
  * hub.mailui.integration_routes); fehlt die Route, ist der Button deaktiviert.
  */
@@ -31,10 +36,22 @@ final class IntegrationOverview
 
     public const string REAUTH = 'reauth';
 
+    // Zugangsdaten hinterlegt, aber noch kein erfolgreicher Aufruf: nie als "Verbunden" ausweisen (docs/mail/03 Abschnitt 1).
+    public const string UNVERIFIED = 'unverified';
+
+    // OAuth-Rückruf ohne Refresh-Token (GoogleOAuthService setzt status configured): kein dauerhafter Zugang.
+    public const string INCOMPLETE = 'incomplete';
+
+    // Fake-Provider gebunden: Testbetrieb, kein Live-Betrieb.
+    public const string FAKE = 'fake';
+
     /** @var array<string, array{label: string, symbol: string, level: string}> */
     public const array STATES = [
         self::NOT_CONFIGURED => ['label' => 'Nicht eingerichtet', 'symbol' => '○', 'level' => 'disabled'],
         self::CONNECTED => ['label' => 'Verbunden', 'symbol' => '●', 'level' => 'ok'],
+        self::UNVERIFIED => ['label' => 'Eingerichtet (ungeprüft)', 'symbol' => '◐', 'level' => 'warn'],
+        self::INCOMPLETE => ['label' => 'Autorisierung unvollständig', 'symbol' => '▲', 'level' => 'warn'],
+        self::FAKE => ['label' => 'Testbetrieb (Fake)', 'symbol' => '◇', 'level' => 'warn'],
         self::ERROR => ['label' => 'Fehler', 'symbol' => '■', 'level' => 'fail'],
         self::REAUTH => ['label' => 'Reauth nötig', 'symbol' => '▲', 'level' => 'warn'],
     ];
@@ -44,6 +61,8 @@ final class IntegrationOverview
         private readonly MailFeatureFlags $flags,
         private readonly Repository $config,
         private readonly Router $router,
+        private readonly Container $container,
+        private readonly LexwareConnectionResolver $lexware,
     ) {}
 
     /**
@@ -96,11 +115,12 @@ final class IntegrationOverview
 
             if ($key === 'ai' || ! $hasRows) {
                 $mode = $this->status->providerMode($key);
+                [$state, $reason] = $this->providerState($key, $mode, $organizationId);
                 $rows[] = [
                     'integration' => $key,
                     'title' => $name,
-                    'state' => $mode === IntegrationStatusService::NOT_CONFIGURED ? self::NOT_CONFIGURED : self::CONNECTED,
-                    'state_reason' => $mode === IntegrationStatusService::FAKE ? 'Testbetrieb (Fake), kein Live-Betrieb' : ($key === 'ai' && ! $this->flags->aiEnabled() ? 'Flag MAIL_AI_ENABLED=false' : null),
+                    'state' => $state,
+                    'state_reason' => $reason ?? ($key === 'ai' && ! $this->flags->aiEnabled() ? 'Flag MAIL_AI_ENABLED=false' : null),
                     'scopes' => [],
                     'capabilities' => $key === 'ai' ? ['Vorschläge' => $this->flags->aiEnabled() ? 'nur Vorschlag, Bestätigung durch Mensch' : 'aus'] : [],
                     'last_success_at' => null,
@@ -115,13 +135,56 @@ final class IntegrationOverview
     }
 
     /**
-     * Blockierte Integrationen (Nicht eingerichtet oder Fehler) für das Dashboard.
+     * Blockierte Integrationen (alles außer Verbunden) für das Dashboard. Ungeprüft, unvollständig und Fake zählen
+     * als blockiert: ohne erfolgreichen Aufruf gilt keine Integration als verbunden.
      *
      * @return array<int, array<string, mixed>>
      */
     public function blocked(int $organizationId): array
     {
         return array_values(array_filter($this->connections($organizationId), static fn (array $row): bool => $row['state'] !== self::CONNECTED));
+    }
+
+    /**
+     * Zustand aus der tatsächlich gebundenen Implementierung, nicht allein aus hub.mail.providers: live ohne
+     * Zugangsdaten (AiServiceProvider bindet NotConfiguredAiProvider, DriveProvider ohne Refresh-Token, Lexware ohne
+     * API-Key) ist Nicht eingerichtet. Mit Zugangsdaten und ohne erfolgreichen Aufruf höchstens ungeprüft.
+     *
+     * @return array{0: string, 1: ?string}
+     */
+    private function providerState(string $integration, string $mode, int $organizationId): array
+    {
+        if ($mode === IntegrationStatusService::NOT_CONFIGURED) {
+            return [self::NOT_CONFIGURED, null];
+        }
+
+        if ($mode === IntegrationStatusService::FAKE) {
+            return [self::FAKE, 'Testbetrieb (Fake), kein Live-Betrieb'];
+        }
+
+        $configured = match ($integration) {
+            'lexware' => $this->lexware->status($organizationId) === LexwareConnectionResolver::STATUS_CONFIGURED,
+            'drive' => $this->boundIsConfigured(DocumentSourceInterface::class),
+            'ai' => $this->boundIsConfigured(AiProviderInterface::class),
+            default => false,
+        };
+
+        if (! $configured) {
+            return [self::NOT_CONFIGURED, 'Provider live, aber keine Zugangsdaten hinterlegt (Nicht eingerichtet).'];
+        }
+
+        return [self::UNVERIFIED, 'Zugangsdaten hinterlegt, noch kein erfolgreicher Aufruf.'];
+    }
+
+    private function boundIsConfigured(string $abstract): bool
+    {
+        try {
+            $implementation = $this->container->make($abstract);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return method_exists($implementation, 'isConfigured') && (bool) $implementation->isConfigured();
     }
 
     /**
@@ -133,14 +196,18 @@ final class IntegrationOverview
         $sync = MailSyncState::query()->where('mailbox_id', $mailbox->getKey())->first();
         $expires = $mailbox->getAttribute('oauth_token_expires_at');
 
+        $hasRefreshToken = $mailbox->getAttribute('oauth_refresh_token') !== null;
+
+        // configured setzt GoogleOAuthService genau dann, wenn Google kein Refresh-Token geliefert hat: kein Zugang.
         $state = match ($status) {
-            'active', 'configured' => self::CONNECTED,
+            'active' => $hasRefreshToken ? self::CONNECTED : self::REAUTH,
+            'configured' => self::INCOMPLETE,
             'degraded' => self::ERROR,
             'revoked' => self::REAUTH,
             default => self::NOT_CONFIGURED,
         };
 
-        if ($state === self::CONNECTED && $mailbox->getAttribute('oauth_refresh_token') === null && $expires instanceof CarbonImmutable && $expires->isPast()) {
+        if ($state === self::CONNECTED && ! $hasRefreshToken && $expires instanceof CarbonImmutable && $expires->isPast()) {
             $state = self::REAUTH;
         }
 
@@ -160,6 +227,7 @@ final class IntegrationOverview
         }
 
         $scopes = $mailbox->getAttribute('oauth_scopes_json');
+        $scopes = is_array($scopes) ? array_map('strval', $scopes) : [];
         $error = $mailbox->getAttribute('last_error_at') !== null ? (string) $mailbox->getAttribute('last_error_class') : null;
 
         return [
@@ -167,17 +235,43 @@ final class IntegrationOverview
             'title' => 'Gmail: '.$mailbox->getAttribute('label').' ('.$mailbox->getAttribute('email_address').')',
             'state' => $state,
             'state_reason' => $mailbox->getAttribute('status_reason'),
-            'scopes' => is_array($scopes) ? array_map('strval', $scopes) : [],
+            'scopes' => $scopes,
             'capabilities' => [
                 'Import' => (bool) $mailbox->getAttribute('import_enabled') && $this->flags->importEnabled() ? 'aktiv' : 'aus',
-                'Entwürfe' => $this->flags->gmailDraftsEnabled() ? 'aktiv' : 'aus',
-                'Versand' => $this->flags->gmailSendEnabled() ? 'aktiv (Freigabe und Reauth erforderlich)' : 'gesperrt',
+                'Entwürfe' => $this->gmailCapability('drafts', $this->flags->gmailDraftsEnabled(), $scopes, 'aktiv'),
+                'Versand' => $this->gmailCapability('send', $this->flags->gmailSendEnabled(), $scopes, 'aktiv (Freigabe und Reauth erforderlich)'),
             ],
             'last_success_at' => $sync?->getAttribute('last_incremental_at') ?? $sync?->getAttribute('full_sync_finished_at'),
             'lag' => $lag,
             'error' => $error,
             'actions' => $this->actions('gmail', $mailbox),
         ];
+    }
+
+    /**
+     * Eine Fähigkeit gilt nur als aktiv, wenn Flag gesetzt und alle dafür nötigen Scopes (config
+     * hub.gmail.oauth.functions) tatsächlich erteilt wurden. Flag ohne Scope wäre eine suggerierte Fähigkeit.
+     *
+     * @param  array<int, string>  $granted
+     */
+    private function gmailCapability(string $function, bool $flag, array $granted, string $activeLabel): string
+    {
+        if (! $flag) {
+            return $function === 'send' ? 'gesperrt' : 'aus';
+        }
+
+        $scopeMap = (array) $this->config->get('hub.gmail.oauth.scopes', []);
+        $missing = [];
+
+        foreach ((array) $this->config->get('hub.gmail.oauth.functions.'.$function, []) as $key) {
+            $scope = (string) ($scopeMap[$key] ?? '');
+
+            if ($scope !== '' && ! in_array($scope, $granted, true)) {
+                $missing[] = (string) $key;
+            }
+        }
+
+        return $missing === [] ? $activeLabel : 'Flag gesetzt, Scope fehlt ('.implode(', ', $missing).'), erneut autorisieren';
     }
 
     /**
@@ -189,7 +283,8 @@ final class IntegrationOverview
     {
         $status = (string) $status;
         $state = match ($status) {
-            'active', 'configured' => self::CONNECTED,
+            'active' => $connection->getAttribute('last_success_at') !== null ? self::CONNECTED : self::UNVERIFIED,
+            'configured' => self::UNVERIFIED,
             'degraded' => self::ERROR,
             'revoked' => self::REAUTH,
             default => self::NOT_CONFIGURED,
@@ -199,7 +294,7 @@ final class IntegrationOverview
             'integration' => $integration,
             'title' => $title,
             'state' => $state,
-            'state_reason' => $connection->getAttribute('status_reason'),
+            'state_reason' => $connection->getAttribute('status_reason') ?? ($state === self::UNVERIFIED ? 'Zugangsdaten hinterlegt, noch kein erfolgreicher Aufruf.' : null),
             'scopes' => $scopes,
             'capabilities' => $capabilities,
             'last_success_at' => $connection->getAttribute('last_success_at'),

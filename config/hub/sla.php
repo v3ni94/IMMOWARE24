@@ -64,6 +64,10 @@ return [
     // P0-Merkmale in Altmails ergeben P1 mit Hinweis an die Teamleitung statt Notfall-Eskalation.
     'stale_after_days' => 3,
 
+    // Altbestand (04 §8): Empfang vor mail_mailboxes.import_from oder beim Import älter als so viele Tage ergibt Uhren
+    // im Zustand cancelled mit Hinweis Altbestand (LegacyImportPolicy). 0 schaltet die Altersschwelle ab.
+    'legacy_after_days' => (int) env('MAIL_SLA_LEGACY_AFTER_DAYS', 14),
+
     /*
      * Regelbasierte Prioritätsvorstufe (keine KI, kein Modelltraining). Kleinschreibung, Teilstring-Treffer.
      * KI-Vorschläge dürfen P0 nie herabstufen (PriorityClassifier::merge).
@@ -89,6 +93,9 @@ return [
         // Kanäle: email (Laravel Mailer), webhook (Http), sms und call nur Stub mit Status not_configured.
         'channels' => ['email', 'webhook', 'sms', 'call'],
         'webhook_url' => env('MAIL_EMERGENCY_WEBHOOK_URL'),
+        // Staging (Umgebung staging oder production außerhalb der Betriebsdomain): E-Mail-Alarme nur an diese
+        // Testadresse, ohne Adresse Status blocked; Webhook-Alarme in Staging immer gesperrt.
+        'staging_test_recipient' => env('MAIL_EMERGENCY_TEST_RECIPIENT'),
         'email_from' => env('MAIL_EMERGENCY_FROM', env('MAIL_FROM_ADDRESS', 'noreply@example.com')),
         // Bereitschaft: Nutzer-IDs, die außerhalb der Arbeitszeit alarmiert werden. Leer: Hinweis
         // "keine 24/7-Betreuung eingerichtet" im Alarm und in der Oberfläche.

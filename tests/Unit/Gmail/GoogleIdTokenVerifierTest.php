@@ -54,6 +54,23 @@ final class GoogleIdTokenVerifierTest extends TestCase
         $this->assertSame(GoogleIdTokenVerifier::RESULT_MISSING, $verifier->verify(null)['result']);
     }
 
+    public function test_unknown_kid_triggers_at_most_one_certificate_reload_per_interval(): void
+    {
+        $verifier = $this->verifier();
+        $this->assertSame(GoogleIdTokenVerifier::RESULT_OK, $verifier->verify($this->tokens->issue())['result']);
+        Http::assertSentCount(1);
+
+        foreach (range(1, 25) as $n) {
+            $this->assertSame(GoogleIdTokenVerifier::RESULT_INVALID, $verifier->verify($this->tokens->issue([], 'zufall-'.$n))['result']);
+        }
+
+        Http::assertSentCount(2, 'Nur ein erzwungenes Neuladen je Mindestabstand, kein Aufruf je unbekannter kid.');
+
+        $this->assertSame(GoogleIdTokenVerifier::RESULT_INVALID, $verifier->verify($this->tokens->issue([], 'zufall-1'))['result']);
+        Http::assertSentCount(2, 'Unbekannte kid ist negativ gecacht.');
+        $this->assertSame(GoogleIdTokenVerifier::RESULT_OK, $verifier->verify($this->tokens->issue())['result'], 'Bekannte Schlüssel bleiben nutzbar.');
+    }
+
     private function verifier(): GoogleIdTokenVerifier
     {
         return $this->app->make(GoogleIdTokenVerifier::class);

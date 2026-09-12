@@ -172,6 +172,31 @@ final class GoogleOAuthService
             ? preg_split('/\s+/', trim($response['scope'])) ?: []
             : (array) $pending['scopes'];
 
+        // login_hint ist nur ein Hinweis: das tatsächlich autorisierte Konto muss der Postfachadresse entsprechen,
+        // sonst liefen Import, Entwürfe und Versand unter einem fremden Konto und falscher Gesellschaft.
+        $authorizedEmail = $this->authorizedEmail($accessToken, $response['id_token'] ?? null);
+        $expectedEmail = strtolower(trim((string) $mailbox->getAttribute('email_address')));
+
+        if ($authorizedEmail === null || $authorizedEmail !== $expectedEmail) {
+            $this->revokeQuietly($refreshToken);
+
+            $mailbox->forceFill([
+                'status' => 'configured',
+                'status_reason' => $authorizedEmail === null
+                    ? 'Autorisiertes Google-Konto konnte nicht festgestellt werden; Tokens verworfen.'
+                    : 'Autorisiertes Google-Konto entspricht nicht der Postfachadresse; Tokens verworfen.',
+                'last_error_at' => CarbonImmutable::now(),
+            ])->save();
+
+            $this->audit->record('mail.gmail.oauth.mismatch', $mailbox, [], [
+                'expected_hash' => hash('sha256', $expectedEmail),
+                'authorized_hash' => $authorizedEmail !== null ? hash('sha256', $authorizedEmail) : null,
+                'functions' => $pending['functions'],
+            ], AuditSource::Mail);
+
+            throw new MailRemoteException('Das autorisierte Google-Konto entspricht nicht der Postfachadresse. Bitte im Google-Dialog das Konto des Postfachs wählen.', 'gmail', null, null);
+        }
+
         $mailbox->forceFill([
             'oauth_client_id' => $this->clientId(),
             'oauth_refresh_token' => $refreshToken,
@@ -189,6 +214,58 @@ final class GoogleOAuthService
         $this->audit->record('mail.gmail.oauth.granted', $mailbox, [], ['scopes' => array_values($grantedScopes), 'functions' => $pending['functions']], AuditSource::Mail);
 
         return $mailbox;
+    }
+
+    /**
+     * Adresse des autorisierten Kontos: bevorzugt users.getProfile mit dem neuen Access-Token, ersatzweise der
+     * email-Claim des id_token (nur Nutzlast, die Signatur wurde von Google über den direkten Token-Tausch gesichert).
+     */
+    private function authorizedEmail(string $accessToken, mixed $idToken): ?string
+    {
+        try {
+            // gemäß Gmail API Referenz (users.getProfile), vor Produktivbetrieb am Original prüfen
+            $response = $this->http->withToken($accessToken)
+                ->acceptJson()
+                ->timeout((int) $this->config->get('hub.gmail.api.timeout_seconds', 30))
+                ->get(rtrim((string) $this->config->get('hub.gmail.api.base_url'), '/').'/users/me/profile');
+
+            if ($response->successful()) {
+                $email = $response->json('emailAddress');
+
+                if (is_string($email) && $email !== '') {
+                    return strtolower(trim($email));
+                }
+            } else {
+                Log::warning('Gmail: Profilabruf nach Autorisierung fehlgeschlagen.', ['status' => $response->status()]);
+            }
+        } catch (ConnectionException $exception) {
+            Log::warning('Gmail: Profilabruf nach Autorisierung nicht erreichbar.', ['error' => $exception->getMessage()]);
+        }
+
+        if (is_string($idToken) && substr_count($idToken, '.') === 2) {
+            $payload = explode('.', $idToken)[1];
+            $decoded = json_decode((string) base64_decode(strtr($payload, '-_', '+/').str_repeat('=', (4 - strlen($payload) % 4) % 4), true), true);
+
+            if (is_array($decoded) && isset($decoded['email']) && is_string($decoded['email'])) {
+                return strtolower(trim($decoded['email']));
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Fremde Tokens sofort bei Google widerrufen; ein Fehler der Gegenstelle ändert das lokale Verwerfen nicht.
+     */
+    private function revokeQuietly(string $token): void
+    {
+        try {
+            $this->http->asForm()
+                ->timeout((int) $this->config->get('hub.gmail.api.timeout_seconds', 30))
+                ->post((string) $this->config->get('hub.gmail.oauth.revoke_url'), ['token' => $token]);
+        } catch (ConnectionException $exception) {
+            Log::warning('Gmail: Widerruf fremder Tokens nicht erreichbar.', ['error' => $exception->getMessage()]);
+        }
     }
 
     /**

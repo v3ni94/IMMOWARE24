@@ -35,7 +35,7 @@ final class FakeGmailProvider implements GmailProviderInterface
     /** @var array<int, array<string, mixed>> Protokoll aller Aufrufe */
     private array $calls = [];
 
-    /** @var array<string, \Throwable> Methode => Exception, die beim nächsten Aufruf geworfen wird */
+    /** @var array<string, array{exception: \Throwable, skip: int}> Methode => Exception, die nach skip Aufrufen geworfen wird */
     private array $failures = [];
 
     /** @var array<int, string|null> mailboxId => historyId, ab der history.list als zu alt gilt (404) */
@@ -162,9 +162,12 @@ final class FakeGmailProvider implements GmailProviderInterface
         $this->emailAddresses[$mailboxId] = $email;
     }
 
-    public function failNext(string $method, ?\Throwable $exception = null): void
+    /**
+     * @param  int  $skip  Anzahl Aufrufe, die vorher noch erfolgreich durchlaufen (0 = der nächste Aufruf scheitert)
+     */
+    public function failNext(string $method, ?\Throwable $exception = null, int $skip = 0): void
     {
-        $this->failures[$method] = $exception ?? new MailRemoteException('Fake: Gegenstelle antwortet mit Fehler.', 'gmail', 503, null);
+        $this->failures[$method] = ['exception' => $exception ?? new MailRemoteException('Fake: Gegenstelle antwortet mit Fehler.', 'gmail', 503, null), 'skip' => max(0, $skip)];
     }
 
     public function currentHistoryId(int $mailboxId): string
@@ -444,7 +447,13 @@ final class FakeGmailProvider implements GmailProviderInterface
         $this->calls[] = ['method' => $method, 'arguments' => $arguments];
 
         if (isset($this->failures[$method])) {
-            $exception = $this->failures[$method];
+            if ($this->failures[$method]['skip'] > 0) {
+                $this->failures[$method]['skip']--;
+
+                return;
+            }
+
+            $exception = $this->failures[$method]['exception'];
             unset($this->failures[$method]);
 
             throw $exception;

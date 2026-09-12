@@ -58,6 +58,21 @@ final class NullDraftWorkflow implements DraftWorkflowInterface
         return WorkflowResult::ok('Entwurf zur Prüfung gegeben.', (int) $draft->getKey());
     }
 
+    public function approve(MailDraft $draft, User $approver): WorkflowResult
+    {
+        if ((string) $draft->getAttribute('status') !== 'pending_approval') {
+            return WorkflowResult::failed('Nur zur Prüfung gegebene Entwürfe können freigegeben werden.');
+        }
+
+        if ((int) $draft->getAttribute('created_by') === (int) $approver->getKey()) {
+            return WorkflowResult::failed('Der Autor kann den eigenen Entwurf nicht freigeben (Vier-Augen-Prinzip).');
+        }
+
+        $draft->forceFill(['approved_by' => $approver->getKey(), 'approved_at' => now()])->save();
+
+        return WorkflowResult::ok('Entwurf freigegeben (lokal). Versand bleibt gesperrt, solange Gmail nicht verdrahtet ist.', (int) $draft->getKey());
+    }
+
     public function send(MailDraft $draft, User $actor): WorkflowResult
     {
         return WorkflowResult::unavailable('Versand nicht verfügbar: Gmail-Versand ist nicht verdrahtet. Der Entwurf bleibt unverändert.');

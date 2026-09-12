@@ -50,7 +50,7 @@ class FullResyncJob implements ShouldQueue
             return;
         }
 
-        $lock = Cache::lock('mail:gmail:resync:'.$this->mailboxId, 900);
+        $lock = Cache::lock('mail:gmail:resync:'.$this->mailboxId, $this->timeout + 60);
 
         if (! $lock->get()) {
             $this->release(60);
@@ -146,5 +146,10 @@ class FullResyncJob implements ShouldQueue
             'last_error_at' => now(),
             'last_error_class' => $exception::class,
         ]);
+
+        // Abbruch sichtbar machen, damit ein späterer 404 einen neuen Neuabgleich starten darf.
+        MailSyncState::query()->where('mailbox_id', $this->mailboxId)->whereNull('full_sync_finished_at')->update(['full_sync_started_at' => null]);
+
+        $this->storeInDlq($exception, ['mailboxId' => $this->mailboxId, 'targetHistoryId' => $this->targetHistoryId, 'labelIndex' => $this->labelIndex, 'pageToken' => $this->pageToken, 'gapCount' => $this->gapCount]);
     }
 }

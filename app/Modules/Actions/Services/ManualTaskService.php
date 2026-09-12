@@ -7,6 +7,7 @@ namespace App\Modules\Actions\Services;
 use App\Core\Contracts\AuditLoggerInterface;
 use App\Core\Enums\AuditSource;
 use App\Core\Support\CorrelationId;
+use App\Modules\Actions\Enums\TargetSystem;
 use App\Modules\Actions\Enums\VerificationStatus;
 use App\Modules\Actions\Events\ExecutionVerified;
 use App\Modules\Actions\Exceptions\ActionPolicyException;
@@ -23,8 +24,9 @@ use Illuminate\Database\ConnectionInterface;
 
 /**
  * Erledigung manueller Aufgaben (Immoware24-Änderung von Hand): Nutzer bestätigt, Status "Manuell bestätigt"
- * (VerificationStatus manually_confirmed). Nach dem nächsten Sync liest recheck() den Spiegel nach; api_verified nur
- * bei tatsächlichem Wert-Match, sonst bleibt es bei der manuellen Bestätigung.
+ * (VerificationStatus manually_confirmed). Der Befehl mail:actions:recheck-manual (Zeitplan) liest nach dem nächsten
+ * Sync über recheck() den Spiegel nach; api_verified nur bei tatsächlichem Wert-Match, sonst bleibt es bei der
+ * manuellen Bestätigung.
  */
 final class ManualTaskService
 {
@@ -36,6 +38,7 @@ final class ManualTaskService
 
     public function __construct(
         private readonly ExecutionService $executions,
+        private readonly AdapterRegistry $adapters,
         private readonly ProposedChangeService $proposedChanges,
         private readonly ConnectionInterface $db,
         private readonly AuditLoggerInterface $audit,
@@ -112,10 +115,29 @@ final class ManualTaskService
     }
 
     /**
-     * Nachlesen im Spiegel nach dem nächsten Sync. api_verified nur bei tatsächlichem Wert-Match.
+     * Nachlesen im Spiegel nach dem nächsten Sync (mail:actions:recheck-manual). api_verified nur bei tatsächlichem
+     * Wert-Match; ohne Match bleibt die manuelle Bestätigung unverändert und es entsteht kein Beleg (Rückgabe null).
      */
-    public function recheck(Execution $execution): Verification
+    public function recheck(Execution $execution): ?Verification
     {
+        if ($execution->getAttribute('verification_status') !== VerificationStatus::ManuallyConfirmed) {
+            return null;
+        }
+
+        $version = $execution->version()->with('plan')->first();
+
+        if ($version === null) {
+            return null;
+        }
+
+        // Lesender Vorabvergleich, damit ein Lauf ohne Wert-Match keine Belege, Ereignisse oder Outbox-Einträge erzeugt.
+        $system = TargetSystem::tryFrom((string) $execution->getAttribute('target_system'));
+        $outcome = $system !== null ? $this->adapters->for($system)->verifyStep($version, (int) $execution->getAttribute('step_index'), $execution) : ['status' => VerificationStatus::Unverified->value];
+
+        if (($outcome['status'] ?? null) !== VerificationStatus::ApiVerified->value) {
+            return null;
+        }
+
         $verification = $this->executions->verify($execution);
 
         if ($verification->getAttribute('result') === VerificationStatus::ApiVerified) {
@@ -124,6 +146,7 @@ final class ManualTaskService
             if ($task !== null) {
                 $task->forceFill(['status' => self::TASK_DONE_VERIFIED]);
                 $task->save();
+                $this->audit->log('mail.task.verified_after_sync', $task, ['status' => self::TASK_DONE_MANUAL], ['status' => self::TASK_DONE_VERIFIED], AuditSource::Mail->value, $this->correlation->current());
             }
 
             $execution->forceFill(['verification_status' => VerificationStatus::ApiVerified]);

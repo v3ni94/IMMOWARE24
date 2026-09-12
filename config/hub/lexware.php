@@ -12,8 +12,9 @@ return [
     'base_url' => env('MAIL_LEXWARE_BASE_URL', 'https://api.lexoffice.io/v1'),
     'api_key' => env('MAIL_LEXWARE_API_KEY'),
 
-    // Snippets nennen 2 Anfragen je Sekunde (aus Snippets, vor Produktivbetrieb am Original prüfen). Token-Bucket je Zugang, LexwareRateLimiter.
-    'rate_limit_rps' => (float) env('MAIL_LEXWARE_RATE_LIMIT_RPS', 2),
+    // Snippets nennen 2 Anfragen je Sekunde (vor Produktivbetrieb am Original prüfen); der Hub bleibt konservativ bei
+    // 1 rps (docs/mail/01, 03, 08, 10). Token-Bucket je Zugang, LexwareRateLimiter.
+    'rate_limit_rps' => (float) env('MAIL_LEXWARE_RATE_LIMIT_RPS', 1),
     'timeout_seconds' => 15,
 
     // Kontaktänderung nur als GET, Versionsvergleich, PUT, GET (optimistic locking über version).

@@ -62,6 +62,12 @@ return [
         'email' => (bool) env('MAIL_AI_MASK_EMAIL', true),
         // Eigene Domains bleiben lesbar (Absender der Hausverwaltung, keine Dritten).
         'own_domains' => ['muellerhv.de', 'mueller-holding.ag'],
+        // docs/mail/08 Abschnitt 4: URLs, Straße mit Hausnummer plus PLZ/Ort, Kunden-, Vertrags- und Objektnummern,
+        // Personennamen aus Kopfzeilen, Anrede und Grußformel.
+        'url' => (bool) env('MAIL_AI_MASK_URL', true),
+        'address' => (bool) env('MAIL_AI_MASK_ADDRESS', true),
+        'numbers' => (bool) env('MAIL_AI_MASK_NUMBERS', true),
+        'names' => (bool) env('MAIL_AI_MASK_NAMES', true),
     ],
 
     'tasks' => ['classify', 'summarize', 'extract', 'split_issues', 'match_candidates', 'draft_reply', 'next_steps'],

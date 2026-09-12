@@ -6,6 +6,7 @@ namespace Tests\Feature\MailUi;
 
 use App\Core\Enums\Role;
 use App\Modules\Cases\Models\CaseStatusLog;
+use App\Modules\Cases\Models\Task;
 use App\Modules\Gmail\Models\MailDraft;
 use App\Modules\Mail\Models\MailboxAlias;
 use App\Modules\Security\Models\User;
@@ -44,6 +45,36 @@ final class CaseWorkflowTest extends TestCase
 
         $this->post($url.'/tasks', ['title' => 'Bankdaten in Lexware prüfen'])->assertRedirect($url);
         $this->get($url)->assertOk()->assertSee('Bankdaten in Lexware prüfen');
+    }
+
+    public function test_task_assignee_must_belong_to_own_organization(): void
+    {
+        $lead = $this->actingAsMailRole('lead');
+        $case = $this->createCase($this->mailbox);
+        $url = self::BASE.'/cases/'.$case->getKey();
+        $foreign = User::factory()->role(Role::Operator)->create();
+        $this->assertNotSame($foreign->organization_id, $lead->organization_id);
+
+        $this->post($url.'/tasks', ['title' => 'Fremde Zuweisung', 'assignee_user_id' => $foreign->getKey()])->assertRedirect($url)->assertSessionHasErrors('assignee_user_id');
+        $this->assertSame(0, Task::query()->allOrganizations()->where('title', 'Fremde Zuweisung')->count());
+
+        $this->post($url.'/tasks', ['title' => 'Unbekannte Zuweisung', 'assignee_user_id' => 999999])->assertRedirect($url)->assertSessionHasErrors('assignee_user_id');
+    }
+
+    public function test_auditor_cannot_change_status_or_write_notes(): void
+    {
+        $lead = $this->actingAsMailRole('lead');
+        $case = $this->createCase($this->mailbox);
+        $auditor = User::factory()->role(Role::ReadOnly)->for($this->mailbox->organization)->create();
+        $this->attachMailRole($auditor, $this->mailbox, 'auditor');
+        $url = self::BASE.'/cases/'.$case->getKey();
+
+        $this->actingAs($auditor)->withSession([LoginService::SESSION_TWO_FACTOR_VERIFIED => now()->toIso8601String()]);
+        $this->get($url)->assertOk();
+        $this->post($url.'/status', ['status' => 'in_progress'])->assertForbidden();
+        $this->post($url.'/notes', ['note' => 'Nur lesen'])->assertForbidden();
+        $this->assertSame('open', $case->fresh()->status_processing->value);
+        $this->assertFalse(CaseStatusLog::query()->where('case_id', $case->getKey())->where('dimension', 'note')->exists());
     }
 
     public function test_draft_is_stored_locally_send_is_locked_and_alias_must_belong_to_mailbox(): void

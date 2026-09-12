@@ -88,7 +88,7 @@ Nur diese `action_key` sind ausführbar; alles andere wird als `blocked_capabili
 |---|---|---|
 | gmail.draft.create, gmail.draft.update | Gmail | MAIL_GMAIL_DRAFTS_ENABLED, Recht mail.drafts.write, Alias akzeptiert |
 | gmail.draft.send | Gmail | MAIL_GMAIL_SEND_ENABLED, Recht mail.send, Freigabe (Vier-Augen bei Außenwirkung), 2fa.fresh, Versandabgleich |
-| immoware.posteingang.put | Immoware24 | MAIL_IMMOWARE_WRITE_ENABLED, bestehende Immoware-Freigabe (`hasCompleteWriteApproval()`), Capability documents.write verfügbar |
+| immoware.posteingang.upload (Konzeptname `immoware.posteingang.put`) | Immoware24 | **nicht implementiert, offen** (Stand 12.09.2026): Key in config/hub/actions.php ohne Adapterbindung, `ImmowareTargetAdapter` erzeugt nur manuelle Aufgaben. Vorgesehen: MAIL_IMMOWARE_WRITE_ENABLED, bestehende Immoware-Freigabe (`hasCompleteWriteApproval()`), Capability documents.write verfügbar |
 | immoware.proposed_change.create | Hub (Rückweg) | Recht mail.tasks.write |
 | lexware.contact.update | Lexware | MAIL_LEXWARE_WRITE_ENABLED, Recht mail.integrations.lexware.write, Freigabe, Adressanzahl geprüft, GET-Version-PUT-GET |
 | task.manual.create | Hub | Recht mail.tasks.write |

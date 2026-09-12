@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Modules\Mail\Services;
 
+use App\Modules\Connector\Models\ImmowareConnection;
 use Illuminate\Contracts\Config\Repository;
+use Throwable;
 
 /**
  * Sichtbarer Status der Integrationen. Nicht eingerichtete Integrationen erscheinen als "Nicht eingerichtet",
@@ -18,11 +20,15 @@ final class IntegrationStatusService
 
     public const string LIVE = 'live';
 
+    // Zugangsdaten hinterlegt, aber noch kein erfolgreicher Probe-Aufruf (docs/mail/03 Abschnitt 1).
+    public const string UNVERIFIED = 'unverified';
+
     /** @var array<string, string> */
     public const array LABELS = [
         self::NOT_CONFIGURED => 'Nicht eingerichtet',
         self::FAKE => 'Testbetrieb (Fake)',
         self::LIVE => 'Eingerichtet',
+        self::UNVERIFIED => 'Eingerichtet (ungeprüft)',
     ];
 
     /** @var array<string, string> */
@@ -75,10 +81,32 @@ final class IntegrationStatusService
         $result = [];
 
         foreach (self::INTEGRATIONS as $key => $name) {
-            $mode = $key === 'immoware24' ? self::LIVE : $this->providerMode($key);
+            $mode = $key === 'immoware24' ? $this->immowareMode() : $this->providerMode($key);
             $result[$key] = ['name' => $name, 'mode' => $mode, 'label' => self::LABELS[$mode]];
         }
 
         return $result;
+    }
+
+    /**
+     * Immoware24 kennt keinen Provider-Modus; der Zustand folgt den Connections: keine Connection heißt Nicht
+     * eingerichtet, aktive Connection mit erfolgreicher Probe heißt Eingerichtet, alles andere ungeprüft.
+     */
+    public function immowareMode(): string
+    {
+        try {
+            $connections = ImmowareConnection::query()->allOrganizations()->get(['id', 'status', 'last_probe_at']);
+        } catch (Throwable) {
+            // Ohne Datenbank (Migrationen ausstehend) gibt es keine belegte Verbindung: Nicht eingerichtet, nie Eingerichtet.
+            return self::NOT_CONFIGURED;
+        }
+
+        if ($connections->isEmpty()) {
+            return self::NOT_CONFIGURED;
+        }
+
+        $probed = $connections->contains(static fn (ImmowareConnection $c): bool => (string) $c->getAttribute('status') === 'active' && $c->getAttribute('last_probe_at') !== null);
+
+        return $probed ? self::LIVE : self::UNVERIFIED;
     }
 }

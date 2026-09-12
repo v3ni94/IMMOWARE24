@@ -6,6 +6,9 @@ namespace App\Core\Console;
 
 use App\Core\Boot\BootGuard;
 use App\Modules\Connector\Services\ConnectorManager;
+use App\Modules\Gmail\Models\MailSyncState;
+use App\Modules\Mail\Boot\MailBootGuard;
+use App\Modules\Mail\Models\Mailbox;
 use App\Modules\Mail\Services\IntegrationStatusService;
 use App\Modules\Mail\Services\MailFeatureFlags;
 use Illuminate\Console\Command;
@@ -20,6 +23,9 @@ use Throwable;
  */
 final class DoctorCommand extends Command
 {
+    /** Queue-Namen, auf die die Mail-Worker in compose.yaml, deploy/supervisor und deploy/systemd hören. */
+    private const array MAIL_WORKER_QUEUES = ['mail-high', 'mail-sync', 'mail-ai'];
+
     protected $signature = 'hub:doctor {--json : Ausgabe als JSON}';
 
     protected $description = 'Prüft Konfiguration, Feature-Flags, Queue, Datenbank, Redis und BootGuard des Hubs.';
@@ -156,13 +162,29 @@ final class DoctorCommand extends Command
 
         $this->add('mail.domain', (string) $config->get('hub.mail.domain', '') !== '' ? 'ok' : 'warn', (string) $config->get('hub.mail.domain', ''));
 
+        // Dieselbe Bewertung wie MailBootGuard::violations: staging oder production mit abweichender Domain sperrt die
+        // Außenwirkungs-Flags. Ein Verstoß ist fail, denn der Boot würde abbrechen.
+        $mailConfig = (array) $config->get('hub.mail', []);
+        $violations = $this->laravel->make(MailBootGuard::class)->violations($mailConfig, $env);
+        $productionDomain = strtolower(trim((string) ($mailConfig['production_domain'] ?? 'mail.muellerhv.de')));
+        $domain = strtolower(trim((string) ($mailConfig['domain'] ?? '')));
+        $stagingLike = $env === 'staging' || ($env === 'production' && $domain !== $productionDomain);
+
         foreach ($flags->all() as $flag => $enabled) {
             $envName = 'MAIL_'.strtoupper((string) $flag).'_ENABLED';
-            $locked = array_key_exists((string) $flag, (array) $config->get('hub.mail.staging_locked_flags', []));
-            $state = $enabled ? (($env === 'staging' && $locked) ? 'fail' : 'warn') : 'ok';
-            $detail = $enabled ? 'true'.($env === 'staging' && $locked ? ', in staging gesperrt (MailBootGuard)' : ', aktiv nach Freigabe der Geschäftsführung') : 'false';
+            $violated = array_filter($violations, static fn (string $v): bool => str_contains($v, $envName)) !== [];
+            $state = $enabled ? ($violated ? 'fail' : 'warn') : 'ok';
+            $detail = $enabled ? 'true'.($violated ? ', gesperrt (MailBootGuard: staging oder Domain ungleich '.$productionDomain.')' : ', aktiv nach Freigabe der Geschäftsführung') : 'false';
             $this->add('mail.flag.'.$envName, $state, $detail);
         }
+
+        foreach ($violations as $violation) {
+            if (! str_contains($violation, '_ENABLED')) {
+                $this->add('mail.boot_guard', 'fail', $violation);
+            }
+        }
+
+        $this->checkMailQueuesAndMailboxes($config, $stagingLike, $productionDomain);
 
         foreach ($status->overview() as $key => $row) {
             $mode = (string) $row['mode'];
@@ -176,9 +198,74 @@ final class DoctorCommand extends Command
         }
 
         $queues = (array) $config->get('hub.mail.queues', []);
-        $this->add('mail.queues', $queues === [] ? 'warn' : 'ok', implode(', ', array_values($queues)).' (eigener Worker für mail-high, siehe compose.yaml und deploy/)');
+        $actionQueue = (string) $config->get('hub.actions.queue', $config->get('hub.mail.queues.high', 'mail-high'));
+        $unknown = array_values(array_diff(array_map('strval', array_values($queues) + [99 => $actionQueue]), self::MAIL_WORKER_QUEUES));
+        $this->add('mail.queues', $queues === [] ? 'warn' : ($unknown === [] ? 'ok' : 'fail'), implode(', ', array_values($queues)).($unknown === [] ? ' (eigener Worker für mail-high, siehe compose.yaml und deploy/)' : ' (ohne Worker: '.implode(', ', $unknown).'; Worker hören nur auf '.implode(', ', self::MAIL_WORKER_QUEUES).')'));
         $onCall = (array) $config->get('hub.sla.emergency.on_call_user_ids', []);
         $this->add('mail.on_call', $onCall === [] ? 'warn' : 'ok', $onCall === [] ? 'MAIL_ON_CALL_USER_IDS leer, keine 24/7-Betreuung eingerichtet' : count($onCall).' Bereitschaftsnutzer');
+    }
+
+    /**
+     * Postfächer und Watch: in staging (oder production mit abweichender Domain) darf kein Postfach der
+     * Produktionsdomain und keine Produktions-Redirect-URI eingetragen sein (docs/mail/09 Abschnitt 5). Aktiver Import
+     * ohne Watch oder mit Ablauf unter 24 Stunden ist eine Warnung.
+     */
+    private function checkMailQueuesAndMailboxes(ConfigRepository $config, bool $stagingLike, string $productionDomain): void
+    {
+        try {
+            $mailboxes = Mailbox::query()->allOrganizations()->get(['id', 'email_address', 'import_enabled']);
+        } catch (Throwable) {
+            $this->add('mail.mailboxes', 'warn', 'Tabelle mail_mailboxes nicht lesbar (Migrationen ausstehend?)');
+
+            return;
+        }
+
+        if ($stagingLike) {
+            $productionMailDomains = (array) $config->get('hub.mail.production_mail_domains', ['muellerhv.de', 'mueller-holding.ag']);
+            $offending = $mailboxes->filter(static function (Mailbox $m) use ($productionMailDomains): bool {
+                $host = strtolower((string) substr(strrchr((string) $m->getAttribute('email_address'), '@') ?: '', 1));
+
+                return $host !== '' && in_array($host, array_map('strtolower', $productionMailDomains), true);
+            });
+            $this->add('mail.staging_mailboxes', $offending->isEmpty() ? 'ok' : 'fail', $offending->isEmpty()
+                ? 'keine Postfächer der Produktionsdomain'
+                : $offending->count().' Postfach/Postfächer mit Produktionsadresse außerhalb von '.$productionDomain.' (kein Produktions-Refresh-Token in Staging)');
+
+            $redirect = (string) $config->get('hub.gmail.oauth.redirect_uris.production', '');
+            $active = (string) $config->get('hub.gmail.oauth.redirect_uri', '');
+            $this->add('mail.staging_redirect_uri', $active !== '' && $active === $redirect ? 'fail' : 'ok', $active !== '' && $active === $redirect ? 'Produktions-Redirect-URI aktiv in staging' : 'Redirect-URI passt zur Umgebung');
+        }
+
+        $importing = $mailboxes->filter(static fn (Mailbox $m): bool => (bool) $m->getAttribute('import_enabled'))->pluck('id')->all();
+
+        if ($importing === []) {
+            $this->add('mail.watch', 'ok', 'kein Postfach mit aktivem Import');
+
+            return;
+        }
+
+        /** @var array<int, mixed> $expirations mailbox_id => watch_expiration */
+        $expirations = [];
+
+        foreach (MailSyncState::query()->whereIn('mailbox_id', $importing)->get() as $state) {
+            if ($state instanceof MailSyncState) {
+                $expirations[(int) $state->getAttribute('mailbox_id')] = $state->getAttribute('watch_expiration');
+            }
+        }
+
+        $problems = [];
+
+        foreach ($importing as $mailboxId) {
+            $expiration = $expirations[(int) $mailboxId] ?? null;
+
+            if (! $expiration instanceof \DateTimeInterface) {
+                $problems[] = 'Postfach #'.$mailboxId.': kein Watch';
+            } elseif ($expiration->getTimestamp() < time() + 86400) {
+                $problems[] = 'Postfach #'.$mailboxId.': Watch läuft ab '.$expiration->format('d.m.Y H:i').' UTC';
+            }
+        }
+
+        $this->add('mail.watch', $problems === [] ? 'ok' : 'warn', $problems === [] ? count($importing).' Postfach/Postfächer mit Watch über 24 h' : implode('; ', $problems));
     }
 
     private function add(string $check, string $status, string $detail): void

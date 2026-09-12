@@ -17,6 +17,9 @@ use Throwable;
  * Verarbeitet eine Pub/Sub-Push-Nutzlast: dekodiert message.data (emailAddress, historyId), speichert das Ereignis
  * mit Dedup über pubsub_message_id (unique), ordnet das Postfach über die Adresse zu und plant HistorySyncJob ein.
  * Die historyId aus dem Push ist nur ein Signal; der Abgleich startet bei der zuletzt gespeicherten History-ID.
+ * Dedup gilt nur für erfolgreich verarbeitete Ereignisse (queued, ignored): eine erneute Zustellung nach
+ * fehlgeschlagenem Einplanen (outcome failed oder offen) plant den Abgleich erneut ein. Nur Unique-Verletzungen
+ * (SQLSTATE 23000) gelten als Duplikat; andere Datenbankfehler werden weitergereicht, damit Pub/Sub erneut zustellt.
  */
 final class PushEventService
 {
@@ -65,11 +68,23 @@ final class PushEventService
                 'received_at' => CarbonImmutable::now(),
                 'auth_result' => mb_substr($authResult, 0, 16),
             ]);
-        } catch (QueryException) {
-            // Unique-Verletzung auf pubsub_message_id: bereits verarbeitet.
-            Log::info('Gmail Push: Duplikat ignoriert.', ['pubsub_message_id' => $pubsubMessageId]);
+        } catch (QueryException $exception) {
+            if (! $this->isUniqueViolation($exception)) {
+                // Deadlock, Verbindungsabbruch: kein Duplikat, Pub/Sub soll erneut zustellen.
+                throw $exception;
+            }
 
-            return self::OUTCOME_DUPLICATE;
+            $existing = PushEvent::query()->where('pubsub_message_id', mb_substr($pubsubMessageId, 0, 64))->first();
+
+            if (! $existing instanceof PushEvent || in_array($existing->getAttribute('outcome'), [self::OUTCOME_QUEUED, self::OUTCOME_IGNORED, self::OUTCOME_DUPLICATE], true)) {
+                Log::info('Gmail Push: Duplikat ignoriert.', ['pubsub_message_id' => $pubsubMessageId]);
+
+                return self::OUTCOME_DUPLICATE;
+            }
+
+            // Erste Zustellung ist beim Einplanen gescheitert: erneut versuchen statt den Push endgültig zu verwerfen.
+            Log::notice('Gmail Push: erneute Zustellung nach fehlgeschlagenem Einplanen.', ['pubsub_message_id' => $pubsubMessageId, 'previous_outcome' => $existing->getAttribute('outcome')]);
+            $event = $existing;
         }
 
         if (! $mailbox instanceof Mailbox) {
@@ -99,13 +114,30 @@ final class PushEventService
     }
 
     /**
-     * Entfernt Ereignisse älter als dedup_retention_days.
+     * Entfernt Ereignisse älter als dedup_retention_days, in Blöcken (kein einzelnes großes DELETE mit langer Sperre).
      */
-    public function prune(): int
+    public function prune(int $chunk = 1000): int
     {
         $days = max(1, (int) config('hub.gmail.push.dedup_retention_days', 30));
+        $threshold = CarbonImmutable::now()->subDays($days);
+        $total = 0;
 
-        return PushEvent::query()->where('received_at', '<', CarbonImmutable::now()->subDays($days))->delete();
+        do {
+            $ids = PushEvent::query()->where('received_at', '<', $threshold)->orderBy('id')->limit(max(1, $chunk))->pluck('id');
+            $deleted = $ids->isEmpty() ? 0 : PushEvent::query()->whereIn('id', $ids->all())->delete();
+            $total += $deleted;
+        } while ($deleted > 0 && $deleted >= $chunk);
+
+        return $total;
+    }
+
+    private function isUniqueViolation(QueryException $exception): bool
+    {
+        $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
+        $message = strtolower($exception->getMessage());
+
+        // MariaDB/MySQL und SQLite: SQLSTATE 23000, SQLite meldet zusätzlich "UNIQUE constraint failed".
+        return $sqlState === '23000' || str_contains($message, 'unique constraint') || str_contains($message, 'duplicate entry');
     }
 
     private function parseTime(string $value): ?CarbonImmutable

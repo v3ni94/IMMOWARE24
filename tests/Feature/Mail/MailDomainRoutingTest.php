@@ -93,7 +93,7 @@ final class MailDomainRoutingTest extends TestCase
     {
         $groups = Route::getMiddlewareGroups();
 
-        $this->assertSame(['web', 'auth', 'mail.domain', 'mail.access', '2fa'], $groups['mail']);
+        $this->assertSame(['web', 'auth', 'mail.domain', 'mail.headers', 'mail.access', '2fa'], $groups['mail']);
         $this->assertSame(['mail', '2fa.fresh'], $groups['mail.fresh']);
         $this->assertContains('mail.domain', $groups['mail.push']);
         $this->assertSame(['web', 'auth', 'admin.access', '2fa'], $groups['admin'], 'Gruppe admin darf unverändert bleiben.');

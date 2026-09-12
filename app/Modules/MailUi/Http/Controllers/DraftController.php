@@ -11,12 +11,14 @@ use App\Modules\Mail\Services\MailFeatureFlags;
 use App\Modules\MailUi\Contracts\DraftWorkflowInterface;
 use App\Modules\MailUi\DTO\WorkflowResult;
 use App\Modules\MailUi\Http\Requests\DraftRequest;
+use App\Modules\Security\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 
 /**
- * Antworteditor: Entwurf anlegen oder aktualisieren (Postfachrecht can_draft), zur Prüfung geben, Senden nur mit
- * Flag gmail_send, Recht mail.send, Postfachrecht can_send und Re-Authentifizierung (Route in Gruppe 2fa.fresh).
+ * Antworteditor: Entwurf anlegen oder aktualisieren (Postfachrecht can_draft), zur Prüfung geben, Freigabe durch eine
+ * zweite Person (mail.approve.standard, nie der Autor), Senden nur mit Flag gmail_send, Recht mail.send, Postfachrecht
+ * can_send, vorhandener Fremdfreigabe (403 sonst) und Re-Authentifizierung (Route in Gruppe 2fa.fresh).
  * Der Alias muss zum Postfach des Vorgangs gehören (Gesellschaften werden nie vermischt).
  */
 final class DraftController extends MailUiController
@@ -54,6 +56,28 @@ final class DraftController extends MailUiController
         return $this->redirectWithResult('mail.cases.show', $result, ['case' => $case->getKey()]);
     }
 
+    /**
+     * Freigabe durch eine zweite Person (mail.approve.standard im Team des Postfachs, nicht der Autor). Die Freigabe
+     * löst keinen Versand aus.
+     */
+    public function approve(Request $request, MailCase $case, MailDraft $draft): RedirectResponse
+    {
+        $user = $this->currentUser($request);
+        $this->requireCaseVisible($user, $case);
+        $this->assertDraftBelongsToCase($draft, $case);
+        $this->requirePermission($user, 'mail.approve.standard', $case->team_id === null ? null : (int) $case->team_id);
+
+        if ((int) $draft->getAttribute('created_by') === (int) $user->getKey()) {
+            $this->audit('draft.approval_rejected_self', $draft);
+            abort(403, 'Der Autor kann den eigenen Entwurf nicht freigeben (Vier-Augen-Prinzip).');
+        }
+
+        $result = $this->drafts->approve($draft, $user);
+        $this->audit('draft.approved', $draft, [], ['outcome' => $result->outcome, 'revision' => $draft->getAttribute('revision')]);
+
+        return $this->redirectWithResult('mail.cases.show', $result, ['case' => $case->getKey()]);
+    }
+
     public function send(Request $request, MailCase $case, MailDraft $draft): RedirectResponse
     {
         $user = $this->currentUser($request);
@@ -67,6 +91,8 @@ final class DraftController extends MailUiController
         if (! $this->visibility()->canSend($user, $case)) {
             abort(403, 'Kein Versandrecht für dieses Postfach.');
         }
+
+        $this->assertFourEyes($draft, $user);
 
         $result = $this->drafts->send($draft, $user);
         $this->audit('draft.send_requested', $draft, [], ['outcome' => $result->outcome]);
@@ -110,6 +136,30 @@ final class DraftController extends MailUiController
         $this->audit($draft === null ? 'draft.created' : 'draft.updated', $draft ?? $case, [], ['draft_id' => $result->entityId]);
 
         return $this->redirectWithResult('mail.cases.show', $result, ['case' => $case->getKey()]);
+    }
+
+    /**
+     * Vier-Augen vor jedem Versand an Externe: Freigabe vorhanden, Freigebende ungleich Autor und ungleich Sendende.
+     * Lokale Entwürfe (ohne Gmail-Verdrahtung) liefert der Workflow als nicht verfügbar, dort greift kein 403.
+     */
+    private function assertFourEyes(MailDraft $draft, User $sender): void
+    {
+        if (in_array((string) $draft->getAttribute('status'), ['local', 'pending_approval'], true)) {
+            return;
+        }
+
+        $approvedBy = $draft->getAttribute('approved_by');
+        $author = $draft->getAttribute('created_by');
+
+        if ($approvedBy === null || $draft->getAttribute('approved_at') === null) {
+            $this->audit('draft.send_refused', $draft, [], ['reason' => 'approval_missing']);
+            abort(403, 'Der Entwurf ist nicht freigegeben. Versand erst nach Freigabe durch eine zweite Person.');
+        }
+
+        if ((int) $approvedBy === (int) $sender->getKey() || ($author !== null && (int) $approvedBy === (int) $author)) {
+            $this->audit('draft.send_refused', $draft, [], ['reason' => 'approval_self']);
+            abort(403, 'Vier-Augen-Prinzip: Freigebende Person darf weder Autor noch Sendende sein.');
+        }
     }
 
     private function assertDraftBelongsToCase(MailDraft $draft, MailCase $case): void

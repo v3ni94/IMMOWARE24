@@ -21,6 +21,10 @@ DEPLOY_USER="${DEPLOY_USER:-immoware}"
 HEALTH_URL="${HEALTH_URL:-https://immoware.muellerhv.de/health}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
 PHP_BIN="${PHP_BIN:-/usr/bin/php}"
+# Worker-Gruppen (supervisor) und Unit-Muster (systemd): beide Mail-Worker (deploy/supervisor/immoware-hub-mail-worker.conf,
+# deploy/systemd/immoware-hub-mail-worker@.service) plus Hub-Worker. Reihenfolge = Stop-Reihenfolge, Start umgekehrt.
+WORKER_SUPERVISOR_GROUPS="${WORKER_SUPERVISOR_GROUPS:-immoware-hub-mail-worker-high:* immoware-hub-mail-worker:* ${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}}"
+WORKER_SYSTEMD_PATTERNS="${WORKER_SYSTEMD_PATTERNS:-immoware-hub-mail-worker@* ${WORKER_SYSTEMD_PATTERN:-immoware-hub-worker@*}}"
 COMPOSER_BIN="${COMPOSER_BIN:-/usr/local/bin/composer}"
 
 RELEASES_DIR="$DEPLOY_ROOT/releases"
@@ -110,10 +114,17 @@ if [[ -L "$CURRENT_LINK" ]]; then
     log "queue:restart (aktuelles Release) und auf Worker-Ende warten"
     (cd "$CURRENT_LINK" && "$PHP_BIN" artisan queue:restart || true)
 fi
+# Alle Worker-Gruppen anhalten, auch die Mail-Worker: mit autorestart=true (supervisor) bzw. Restart=always (systemd)
+# wuerden sie nach queue:restart sofort mit altem Code weiterlaufen, waehrend migrate --force laeuft.
+# Stop-Reihenfolge: Mail-Worker high, Mail-Worker sync, Hub-Worker (docs/mail/09-deployment.md Abschnitt 6).
 if command -v supervisorctl >/dev/null 2>&1 && sudo -n supervisorctl status "${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}" >/dev/null 2>&1; then
-    sudo -n supervisorctl stop "${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}" >/dev/null 2>&1 || true
+    for group in $WORKER_SUPERVISOR_GROUPS; do
+        sudo -n supervisorctl stop "$group" >/dev/null 2>&1 || true
+    done
 elif command -v systemctl >/dev/null 2>&1 && sudo -n systemctl list-units --type=service --all "${WORKER_SYSTEMD_PATTERN:-immoware-hub-worker@*}" 2>/dev/null | grep -q immoware-hub-worker; then
-    sudo -n systemctl stop "${WORKER_SYSTEMD_PATTERN:-immoware-hub-worker@*}" >/dev/null 2>&1 || true
+    for pattern in $WORKER_SYSTEMD_PATTERNS; do
+        sudo -n systemctl stop "$pattern" >/dev/null 2>&1 || true
+    done
 fi
 for attempt in $(seq 1 60); do
     if ! pgrep -f "artisan queue:work" >/dev/null 2>&1; then
@@ -147,10 +158,16 @@ else
 fi
 
 "$PHP_BIN" artisan queue:restart
+# Start in umgekehrter Reihenfolge: Hub-Worker, Mail-Worker sync, Mail-Worker high (Notfalleskalation und
+# freigegebene Aktionen laufen erst gegen das migrierte Schema mit neuem Code).
 if command -v supervisorctl >/dev/null 2>&1 && sudo -n supervisorctl status "${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}" >/dev/null 2>&1; then
-    sudo -n supervisorctl start "${WORKER_SUPERVISOR_GROUP:-immoware-hub-worker:*}" >/dev/null 2>&1 || log "Hinweis: Worker konnten nicht ueber supervisorctl gestartet werden."
+    for group in $(printf '%s\n' $WORKER_SUPERVISOR_GROUPS | tac); do
+        sudo -n supervisorctl start "$group" >/dev/null 2>&1 || log "Hinweis: Worker-Gruppe $group konnte nicht ueber supervisorctl gestartet werden."
+    done
 elif command -v systemctl >/dev/null 2>&1; then
-    sudo -n systemctl start "${WORKER_SYSTEMD_PATTERN:-immoware-hub-worker@*}" >/dev/null 2>&1 || true
+    for pattern in $(printf '%s\n' $WORKER_SYSTEMD_PATTERNS | tac); do
+        sudo -n systemctl start "$pattern" >/dev/null 2>&1 || true
+    done
 fi
 "$PHP_BIN" artisan up
 

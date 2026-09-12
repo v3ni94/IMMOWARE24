@@ -15,6 +15,7 @@ use App\Modules\MailUi\Contracts\ApprovalWorkflowInterface;
 use App\Modules\MailUi\DTO\WorkflowResult;
 use App\Modules\MailUi\Http\Requests\RejectRequest;
 use App\Modules\MailUi\Support\BankDataMasker;
+use App\Modules\Security\Http\Middleware\RequireFreshTwoFactor;
 use App\Modules\Security\Models\User;
 use App\Modules\Security\Services\LoginService;
 use Carbon\CarbonImmutable;
@@ -85,11 +86,23 @@ final class ApprovalController extends MailUiController
         $this->requireCaseVisible($user, $case);
 
         if (! $this->access()->canApprove($user, $plan)) {
+            if ((int) ($plan->currentVersion?->getAttribute('author_user_id') ?? 0) === (int) $user->getKey()) {
+                $this->audit('approval.rejected_self', $plan, [], ['version_id' => $plan->currentVersion?->getKey()]);
+            }
+
             abort(403, 'Keine Freigabeberechtigung für diesen Plan (Recht, Team oder Autorenregel).');
         }
 
-        $comment = trim((string) $request->input('comment', ''));
+        // Reauth-Nachweis kommt ausschließlich aus der Sitzung. Fehlt er, gibt es keinen Ersatzwert: die Freigabe
+        // wird abgelehnt, unabhängig davon, ob die Route in der Gruppe 2fa.fresh liegt.
         $reauth = $this->reauthTimestamp($request);
+
+        if ($reauth === null || ! RequireFreshTwoFactor::isFresh($request)) {
+            $this->audit('approval.reauth_missing', $plan);
+            abort(403, 'Freigabe ohne aktuelle Re-Authentifizierung ist nicht zulässig.');
+        }
+
+        $comment = trim((string) $request->input('comment', ''));
         $result = $this->approvals->approve($plan, $user, $comment !== '' ? mb_substr($comment, 0, 500) : null, $reauth);
         $this->audit('approval.approved', $plan, [], ['outcome' => $result->outcome, 'steps_hash' => $plan->currentVersion?->getAttribute('steps_hash')]);
 
@@ -102,6 +115,7 @@ final class ApprovalController extends MailUiController
         $case = $this->caseOf($plan);
         $this->requireCaseVisible($user, $case);
         $this->requireApprover($user);
+        $this->requireDecider($user, $plan);
 
         $result = $this->approvals->reject($plan, $user, (string) $request->validated('reason'));
         $this->audit('approval.rejected', $plan, [], ['reason' => $request->validated('reason')]);
@@ -198,6 +212,27 @@ final class ApprovalController extends MailUiController
         }
     }
 
+    /**
+     * Ablehnen verlangt dieselbe Entscheidungsbefugnis wie die Freigabe: Recht der Risikoklasse im Team des Vorgangs,
+     * gleiche Organisation, nicht der Autor der aktuellen Version. Der Autor zieht seinen Plan nicht selbst zurück.
+     */
+    private function requireDecider(User $user, ActionPlan $plan): void
+    {
+        $risk = $plan->risk_class instanceof RiskClass ? $plan->risk_class : RiskClass::tryFrom((string) $plan->getAttribute('risk_class'));
+        $teamId = $plan->case?->team_id;
+
+        if ($risk === null
+            || (int) $user->getAttribute('organization_id') !== (int) $plan->getAttribute('organization_id')
+            || ! $this->access()->can($user, $risk->approvalPermission(), $teamId === null ? null : (int) $teamId)) {
+            abort(403, 'Keine Entscheidungsbefugnis für diesen Plan (Recht der Risikoklasse im Team des Vorgangs).');
+        }
+
+        if ((int) ($plan->currentVersion?->getAttribute('author_user_id') ?? 0) === (int) $user->getKey()) {
+            $this->audit('approval.rejected_self', $plan, [], ['decision' => 'reject']);
+            abort(403, 'Der Autor entscheidet nicht über die eigene Planversion (Vier-Augen-Prinzip).');
+        }
+    }
+
     private function caseOf(ActionPlan $plan): MailCase
     {
         $plan->loadMissing(['case.mailbox', 'case.team', 'currentVersion.approvals', 'currentVersion.identityChecks', 'currentVersion.author']);
@@ -210,7 +245,11 @@ final class ApprovalController extends MailUiController
         return $case;
     }
 
-    private function reauthTimestamp(Request $request): CarbonImmutable
+    /**
+     * Zeitpunkt der letzten Re-Authentifizierung aus der Sitzung; null, wenn kein Marker vorliegt. Kein Rückfall auf
+     * now(), sonst wäre approvals.reauth_confirmed_at immer gefüllt und reauth_missing nie auslösbar.
+     */
+    private function reauthTimestamp(Request $request): ?CarbonImmutable
     {
         foreach ([LoginService::SESSION_REAUTHENTICATED_AT, LoginService::SESSION_TWO_FACTOR_VERIFIED] as $key) {
             $value = $request->session()->get($key);
@@ -224,7 +263,7 @@ final class ApprovalController extends MailUiController
             }
         }
 
-        return CarbonImmutable::now();
+        return null;
     }
 
     /**

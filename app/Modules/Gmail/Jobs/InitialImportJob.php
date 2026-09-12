@@ -6,6 +6,7 @@ namespace App\Modules\Gmail\Jobs;
 
 use App\Modules\Gmail\Contracts\GmailProviderInterface;
 use App\Modules\Gmail\Jobs\Concerns\GmailJobRetries;
+use App\Modules\Gmail\Models\MailSyncState;
 use App\Modules\Gmail\Services\Sync\MessageImporter;
 use App\Modules\Gmail\Services\Sync\SyncStateService;
 use App\Modules\Mail\Models\Mailbox;
@@ -49,7 +50,7 @@ class InitialImportJob implements ShouldQueue
             return;
         }
 
-        $lock = Cache::lock('mail:gmail:import:'.$this->mailboxId, 900);
+        $lock = Cache::lock('mail:gmail:import:'.$this->mailboxId, $this->timeout + 60);
 
         if (! $lock->get()) {
             $this->release(60);
@@ -135,6 +136,10 @@ class InitialImportJob implements ShouldQueue
         return fn (): mixed => HistorySyncJob::dispatch($this->mailboxId);
     }
 
+    /**
+     * Endgültiges Scheitern: full_sync_started_at zurücksetzen, damit der nächste HistorySyncJob (z. B. nach erneuter
+     * Autorisierung) den Erstimport wieder anstößt statt still zurückzukehren; die History-ID wurde nicht gespeichert.
+     */
     public function failed(Throwable $exception): void
     {
         Mailbox::query()->withoutGlobalScopes()->whereKey($this->mailboxId)->update([
@@ -143,5 +148,12 @@ class InitialImportJob implements ShouldQueue
             'last_error_at' => CarbonImmutable::now(),
             'last_error_class' => $exception::class,
         ]);
+
+        MailSyncState::query()->where('mailbox_id', $this->mailboxId)->whereNull('full_sync_finished_at')->update([
+            'full_sync_started_at' => null,
+            'full_sync_cursor' => null,
+        ]);
+
+        $this->storeInDlq($exception, ['mailboxId' => $this->mailboxId, 'pageToken' => $this->pageToken, 'startHistoryId' => $this->startHistoryId, 'importedSoFar' => $this->importedSoFar]);
     }
 }

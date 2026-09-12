@@ -58,14 +58,21 @@ abstract class CasesTestCase extends TestCase
         ], $attributes));
     }
 
-    protected function outboundReply(MailMessage $inbound, ?CarbonImmutable $sentAt = null): MailMessage
+    /**
+     * Gesendete Nachricht im Thread. Ohne $to geht sie an den Absender der eingehenden Nachricht (echte Antwort).
+     *
+     * @param  array<int, string>|null  $to
+     */
+    protected function outboundReply(MailMessage $inbound, ?CarbonImmutable $sentAt = null, ?array $to = null): MailMessage
     {
         $mailbox = $inbound->mailbox;
+        $to ??= [(string) $inbound->from_address];
 
         return $this->inboundMessage($mailbox, [
             'gmail_thread_id' => $inbound->thread?->gmail_thread_id,
             'direction' => 'outbound',
             'from_address' => $mailbox->email_address,
+            'to_json' => array_map(static fn (string $email): array => ['email' => $email, 'name' => null], $to),
             'in_reply_to' => $inbound->rfc_message_id,
             'subject' => 'Re: '.$inbound->subject,
             'body_text' => 'Vielen Dank, wir kümmern uns.',

@@ -77,47 +77,76 @@ final class EmergencyQueue
 
     /**
      * Zustellung auf Stufe $level (aus EmergencyAlertJob). Erzeugt einen Eskalationsschritt mit Kanalergebnissen.
+     * Idempotent je (Alarm, Stufe): der Schritt entsteht zuerst mit status pending, jede Kanalübergabe wird sofort
+     * darin festgehalten; ein wiederholter Job (Retry nach Abbruch) holt nur noch fehlende Übergaben nach und
+     * sendet keinen bereits übergebenen Alarm erneut.
      */
     public function deliver(EmergencyAlert $alert, int $level): EscalationStep
     {
         $case = $alert->loadMissing('case')->case;
         $now = CarbonImmutable::now();
         $recipients = $this->recipientsForLevel($case, $level);
-        $results = [];
-        $anySent = false;
         $subject = sprintf('NOTFALL %s: %s', (string) $case->case_number, (string) $case->title);
         $text = $this->alertText($alert, $case, $level);
 
-        if ($recipients === []) {
-            $results[] = ['channel' => 'none', 'status' => 'failed', 'detail' => 'Keine Empfänger auf Stufe '.$level.'.'];
+        $existing = EscalationStep::query()->where('emergency_alert_id', $alert->getKey())->where('level', $level)->orderBy('id')->first();
+
+        if ($existing instanceof EscalationStep && in_array((string) $existing->status, ['notified', 'acknowledged'], true)) {
+            return $existing;
         }
 
-        foreach ($recipients as $recipient) {
-            foreach ($this->channels as $channel) {
-                $result = $channel->send($alert, $recipient, $subject, $text);
-                $result['recipient_user_id'] = (int) $recipient->getKey();
-                $result['at'] = $now->toIso8601String();
-                $results[] = $result;
-                $anySent = $anySent || $result['status'] === 'sent';
-            }
-        }
-
-        if (! $alert->on_call_configured && ! $this->calendar->isWithinWorkingHours($now)) {
-            $results[] = ['channel' => 'notice', 'status' => 'info', 'detail' => (string) $this->config->get('hub.sla.not_on_call_notice'), 'at' => $now->toIso8601String()];
-        }
-
-        $step = EscalationStep::query()->create([
+        $step = $existing ?? EscalationStep::query()->create([
             'case_id' => $case->getKey(),
             'emergency_alert_id' => $alert->getKey(),
             'level' => $level,
             'reason' => $level === 0 ? 'Erstalarm Notfall' : sprintf('Keine Annahme innerhalb von %d Minuten, Stufe %d.', $this->escalateAfterMinutes(), $level),
             'escalated_to_role' => $this->roleForLevel($level),
             'escalated_to_user_id' => $recipients !== [] ? (int) $recipients[0]->getKey() : null,
-            'status' => $anySent ? 'notified' : 'failed',
+            'status' => 'pending',
             'triggered_at' => $now,
-            'notified_at' => $anySent ? $now : null,
-            'channel_results_json' => $results,
+            'channel_results_json' => [],
         ]);
+
+        $results = array_values((array) ($step->channel_results_json ?? []));
+        $alreadySent = [];
+
+        foreach ($results as $previous) {
+            if (($previous['status'] ?? null) === 'sent' && isset($previous['channel'], $previous['recipient_user_id'])) {
+                $alreadySent[(string) $previous['channel'].':'.(int) $previous['recipient_user_id']] = true;
+            }
+        }
+
+        $anySent = $alreadySent !== [];
+
+        if ($recipients === [] && $results === []) {
+            $results[] = ['channel' => 'none', 'status' => 'failed', 'detail' => 'Keine Empfänger auf Stufe '.$level.'.'];
+        }
+
+        foreach ($recipients as $recipient) {
+            foreach ($this->channels as $channel) {
+                if (isset($alreadySent[$channel->name().':'.(int) $recipient->getKey()])) {
+                    continue;
+                }
+
+                $result = $channel->send($alert, $recipient, $subject, $text);
+                $result['recipient_user_id'] = (int) $recipient->getKey();
+                $result['at'] = $now->toIso8601String();
+                $results[] = $result;
+                $anySent = $anySent || $result['status'] === 'sent';
+                // Jede Übergabe sofort festhalten, damit ein Abbruch danach nicht zur Doppelzustellung führt.
+                $step->forceFill(['channel_results_json' => $results])->save();
+            }
+        }
+
+        if (! $alert->on_call_configured && ! $this->calendar->isWithinWorkingHours($now) && ! $this->hasNotice($results)) {
+            $results[] = ['channel' => 'notice', 'status' => 'info', 'detail' => (string) $this->config->get('hub.sla.not_on_call_notice'), 'at' => $now->toIso8601String()];
+        }
+
+        $step->forceFill([
+            'status' => $anySent ? 'notified' : 'failed',
+            'notified_at' => $anySent ? ($step->notified_at ?? $now) : null,
+            'channel_results_json' => $results,
+        ])->save();
 
         $log = (array) ($alert->delivery_log_json ?? []);
         $log[] = ['level' => $level, 'step_id' => $step->getKey(), 'status' => $step->status, 'at' => $now->toIso8601String(), 'results' => $results];
@@ -126,6 +155,20 @@ final class EmergencyQueue
         $this->log->log($case, 'emergency', (string) $alert->status, 'delivery_'.$step->status, sprintf('Alarmzustellung Stufe %d: %s.', $level, $anySent ? 'mindestens ein Kanal übergeben' : 'kein Kanal erfolgreich'), null, null, 'system', ['alert_id' => $alert->getKey(), 'step_id' => $step->getKey()]);
 
         return $step;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $results
+     */
+    private function hasNotice(array $results): bool
+    {
+        foreach ($results as $result) {
+            if (($result['channel'] ?? null) === 'notice') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

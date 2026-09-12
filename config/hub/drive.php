@@ -25,6 +25,9 @@ return [
 
     // Wurzelordner, unterhalb dessen gesucht wird; leer = gesamtes Laufwerk des verbundenen Kontos.
     'root_folder_id' => env('MAIL_DRIVE_ROOT_FOLDER_ID'),
+    // files.list corpora (z. B. allDrives für geteilte Ablagen). Im Research nicht belegt, daher ohne Standardwert;
+    // aus allgemeinem Wissen, am Original zu prüfen. Leer: Parameter wird nicht gesendet.
+    'corpora' => env('MAIL_DRIVE_CORPORA'),
     'page_size' => 50,
     'timeout_seconds' => (int) env('MAIL_DRIVE_TIMEOUT_SECONDS', 20),
     'connect_timeout_seconds' => 5,

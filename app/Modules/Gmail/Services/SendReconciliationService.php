@@ -75,9 +75,20 @@ final class SendReconciliationService
             $found = null;
         }
 
+        $message = null;
+
         if ($found !== null && $found['matches']) {
             $message = $mailbox instanceof Mailbox ? $this->importer->import($mailbox, $found['id']) : null;
 
+            if ($message === null && $attempts < $maxAttempts) {
+                // Nachricht gefunden, aber Import (noch) nicht möglich (404, kurzzeitige Inkonsistenz): pending lassen,
+                // damit sent_message_id gesetzt wird und die SLA-Uhren über MarkCommunicationSent stoppen können.
+                Log::notice('Gmail: Versand gefunden, Import der gesendeten Nachricht noch nicht möglich.', ['draft_id' => $draft->getKey(), 'gmail_message_id' => $found['id']]);
+                $found = null;
+            }
+        }
+
+        if ($found !== null && $found['matches']) {
             $reconciliation->forceFill([
                 'attempts' => $attempts,
                 'found_in_sent_at' => CarbonImmutable::now(),
@@ -135,8 +146,9 @@ final class SendReconciliationService
         $ids = SendReconciliation::query()
             ->where('result', 'pending')
             ->where('next_check_at', '<=', CarbonImmutable::now())
-            ->pluck('id')
-            ->take($limit);
+            ->orderBy('next_check_at')
+            ->limit(max(1, $limit))
+            ->pluck('id');
 
         foreach ($ids as $id) {
             $reconciliation = SendReconciliation::query()->find($id);

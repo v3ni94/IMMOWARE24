@@ -7,8 +7,10 @@ namespace App\Modules\Actions;
 use App\Modules\Actions\Adapters\ImmowareTargetAdapter;
 use App\Modules\Actions\Adapters\LexwareTargetAdapter;
 use App\Modules\Actions\Adapters\ManualTargetAdapter;
+use App\Modules\Actions\Console\RecheckManualConfirmationsCommand;
 use App\Modules\Actions\Enums\TargetSystem;
 use App\Modules\Actions\Services\ActionAllowlist;
+use App\Modules\Actions\Services\ActionOutboxDispatcher;
 use App\Modules\Actions\Services\ActionOutboxWriter;
 use App\Modules\Actions\Services\ActionPlanService;
 use App\Modules\Actions\Services\ActionPolicy;
@@ -44,6 +46,7 @@ class ActionsServiceProvider extends ServiceProvider
         $this->app->singleton(ActionAllowlist::class);
         $this->app->singleton(ActionPolicy::class);
         $this->app->singleton(ActionOutboxWriter::class);
+        $this->app->singleton(ActionOutboxDispatcher::class);
         $this->app->singleton(ManualTaskFactory::class);
         $this->app->singleton(PreconditionChecker::class);
         $this->app->singleton(ActionPlanService::class);
@@ -63,7 +66,11 @@ class ActionsServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        // RunScheduledActionsJob (täglich 06:15 Europe/Berlin) ist zentral in routes/console.php eingeplant.
+        // RunScheduledActionsJob (täglich 06:15 Europe/Berlin), DispatchActionOutboxJob (jede Minute) und
+        // mail:actions:recheck-manual (stündlich) sind zentral in routes/console.php eingeplant.
+        if ($this->app->runningInConsole()) {
+            $this->commands([RecheckManualConfirmationsCommand::class]);
+        }
 
         $routes = base_path('routes/modules/'.self::MODULE.'.php');
 

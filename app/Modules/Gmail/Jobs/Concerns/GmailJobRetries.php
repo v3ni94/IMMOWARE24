@@ -9,6 +9,7 @@ use App\Modules\Gmail\Exceptions\GmailReauthRequiredException;
 use App\Modules\Gmail\Services\GmailApiClient;
 use App\Modules\Mail\Exceptions\MailIntegrationNotConfiguredException;
 use App\Modules\Mail\Exceptions\MailRemoteException;
+use App\Modules\Sync\Services\DlqService;
 use App\Modules\Sync\Support\SyncBackoff;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -17,6 +18,8 @@ use Throwable;
  * Retry-Konvention der Gmail-Jobs nach Muster SyncJobRetries: Backoff 30 s, 2 min, 10 min, 30 min plus Jitter,
  * maxExceptions aus hub.mail.jobs.tries, Queue mail-sync. Vorübergehende Fehler (429, 5xx, Quota) werden erneut
  * versucht; reauth_required, nicht eingerichtet und 4xx außer 429 nicht (fail sofort). Ein Fehler erscheint nie als Erfolg.
+ * Endgültig gescheiterte Läufe landen zusätzlich zu failed_jobs in der DLQ (storeInDlq, Kontext mail_gmail), damit
+ * der Alarm auf DLQ-Einträge (09-deployment.md Abschnitt 7) auch Gmail-Jobs erfasst.
  */
 trait GmailJobRetries
 {
@@ -37,12 +40,27 @@ trait GmailJobRetries
         );
     }
 
-    protected function applyGmailRetryConfig(): void
+    protected function applyGmailRetryConfig(?string $queue = null): void
     {
         $this->tries = 0;
         $this->maxExceptions = max(1, (int) config('hub.mail.jobs.tries', 5));
         $this->timeout = max(60, (int) config('hub.mail.jobs.timeout', 300));
-        $this->onQueue((string) config('hub.mail.queues.sync', 'mail-sync'));
+        $this->onQueue($queue ?? (string) config('hub.mail.queues.sync', 'mail-sync'));
+    }
+
+    /**
+     * DLQ-Eintrag für einen endgültig gescheiterten Gmail-Job (aus failed()). Ein Fehler der DLQ selbst darf den
+     * failed-Pfad nicht abbrechen.
+     *
+     * @param  array<string, mixed>  $arguments  Konstruktorargumente (benannt) für einen späteren Neuaufbau
+     */
+    protected function storeInDlq(Throwable $exception, array $arguments): void
+    {
+        try {
+            app(DlqService::class)->store(static::class, $arguments, $exception, null, 'mail_gmail', $this->queue ?? (string) config('hub.mail.queues.sync', 'mail-sync'));
+        } catch (Throwable $dlqException) {
+            Log::error('Gmail-Job: DLQ-Eintrag konnte nicht angelegt werden.', ['job' => static::class, 'reason' => $dlqException->getMessage()]);
+        }
     }
 
     /**

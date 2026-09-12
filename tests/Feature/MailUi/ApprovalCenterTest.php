@@ -9,6 +9,8 @@ use App\Modules\Actions\Jobs\ExecuteActionJob;
 use App\Modules\Actions\Models\Approval;
 use App\Modules\Actions\Services\ApprovalService;
 use App\Modules\Mail\Models\MailboxPermission;
+use App\Modules\Security\Http\Middleware\RequireFreshTwoFactor;
+use App\Modules\Security\Http\Middleware\RequireTwoFactor;
 use App\Modules\Security\Models\AuditLog;
 use App\Modules\Security\Models\User;
 use App\Modules\Security\Services\LoginService;
@@ -59,6 +61,38 @@ final class ApprovalCenterTest extends TestCase
 
         // Beim nächsten Aufruf wieder maskiert.
         $this->get(self::BASE.'/approvals/'.$plan->getKey())->assertOk()->assertDontSee('DE02500105170137075030');
+    }
+
+    public function test_approval_without_session_marker_is_rejected_even_without_middleware(): void
+    {
+        $author = $this->actingAsMailRole('agent');
+        $case = $this->createCase($this->mailbox);
+        $plan = $this->createBankPlan($case, $author);
+        $approver = User::factory()->role(Role::Operator)->for($this->mailbox->organization)->create();
+        $this->attachMailRole($approver, $this->mailbox, 'approver');
+
+        // Ohne 2fa.fresh (z. B. geänderte Routengruppe) darf der Controller keinen Reauth-Zeitpunkt erfinden.
+        $this->flushSession();
+        $this->withoutMiddleware([RequireFreshTwoFactor::class, RequireTwoFactor::class])
+            ->actingAs($approver)
+            ->post(self::BASE.'/approvals/'.$plan->getKey().'/approve')
+            ->assertForbidden();
+
+        $this->assertSame(0, Approval::query()->count());
+        $this->assertTrue(AuditLog::query()->where('action', 'mail.approval.reauth_missing')->exists());
+    }
+
+    public function test_author_cannot_reject_own_plan_and_self_approval_is_audited(): void
+    {
+        $author = $this->actingAsMailRole('lead');
+        $case = $this->createCase($this->mailbox);
+        $plan = $this->createBankPlan($case, $author);
+
+        $this->post(self::BASE.'/approvals/'.$plan->getKey().'/approve')->assertForbidden();
+        $this->assertTrue(AuditLog::query()->where('action', 'mail.approval.rejected_self')->exists());
+
+        $this->post(self::BASE.'/approvals/'.$plan->getKey().'/reject', ['reason' => 'Eigener Plan zurückgezogen'])->assertForbidden();
+        $this->assertSame('approval_required', $plan->fresh()->status->value);
     }
 
     public function test_approval_requires_fresh_reauthentication(): void

@@ -6,7 +6,7 @@
         @foreach ($mailboxes as $mailbox)
             <section class="hub-card" aria-label="Postfach {{ $mailbox->label }}">
                 <h2>{{ $mailbox->label }} <small class="hub-muted">{{ $mailbox->email_address }}</small></h2>
-                <p><span class="hub-badge {{ $mailbox->status === 'active' || $mailbox->status === 'configured' ? 'hub-badge-ok' : ($mailbox->status === 'degraded' ? 'hub-badge-fail' : ($mailbox->status === 'revoked' ? 'hub-badge-warn' : 'hub-badge-disabled')) }}">{{ match ((string) $mailbox->status) { 'active', 'configured' => 'Verbunden', 'degraded' => 'Fehler', 'revoked' => 'Reauth nötig', default => 'Nicht eingerichtet' } }}</span>
+                <p><span class="hub-badge {{ $mailbox->status === 'active' && $mailbox->oauth_refresh_token !== null ? 'hub-badge-ok' : ($mailbox->status === 'degraded' ? 'hub-badge-fail' : (in_array($mailbox->status, ['revoked', 'configured', 'active'], true) ? 'hub-badge-warn' : 'hub-badge-disabled')) }}">{{ match ((string) $mailbox->status) { 'active' => $mailbox->oauth_refresh_token !== null ? 'Verbunden' : 'Reauth nötig', 'configured' => 'Autorisierung unvollständig', 'degraded' => 'Fehler', 'revoked' => 'Reauth nötig', default => 'Nicht eingerichtet' } }}</span>
                     <span class="hub-badge">{{ $legalEntities[$mailbox->legal_entity_code] ?? $mailbox->legal_entity_code }}</span> <span class="hub-badge">Team: {{ $mailbox->team?->name ?? 'keins' }}</span></p>
                 <form method="post" action="{{ route('mail.admin.mailboxes.update', $mailbox) }}" class="hub-form">
                     @csrf @method('PUT')

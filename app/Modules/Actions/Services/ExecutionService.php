@@ -260,6 +260,11 @@ final class ExecutionService
             $execution->save();
             $target->forceFill(['status' => ActionTarget::FAILED, 'last_error' => (string) $execution->getAttribute('error_message')]);
             $target->save();
+        } elseif (in_array($execution->getAttribute('status'), [self::STATUS_HTTP_OK_UNVERIFIED, self::STATUS_RESULT_UNCLEAR], true)) {
+            // Ausgeführt, aber Nachlesen ohne Ergebnis (Zielsystem nicht erreichbar, 429, Timeout beim GET): erneut
+            // nachlesen, begrenzt. Danach ehrlich result_unclear mit manueller Prüfung statt eines ewig hängenden
+            // http_ok_unverified ohne weiteren Anstoß.
+            $this->scheduleReverification($version, $execution, $target, $outcome);
         }
 
         if ($plan !== null) {
@@ -378,6 +383,37 @@ final class ExecutionService
         }
 
         return $execution->refresh();
+    }
+
+    /**
+     * @param  array{status: string, expected: array<string, mixed>, observed: array<string, mixed>, method: string}  $outcome
+     */
+    private function scheduleReverification(ActionPlanVersion $version, Execution $execution, ActionTarget $target, array $outcome): void
+    {
+        $attempts = Verification::query()->where('execution_id', $execution->getKey())->count();
+        $max = max(1, (int) $this->config->get('hub.actions.jobs.verify_max_attempts', 5));
+        $plan = $version->plan;
+
+        if ($attempts < $max) {
+            $delay = max(0, (int) $this->config->get('hub.actions.jobs.verify_delay_seconds', 60)) * max(1, $attempts);
+            Log::warning('Verifikation ohne Ergebnis, erneutes Nachlesen eingeplant.', ['execution_id' => $execution->getKey(), 'attempt' => $attempts, 'max' => $max, 'delay_seconds' => $delay]);
+            $this->bus->dispatch((new VerifyActionJob((int) $execution->getKey(), $this->correlation->current()))->delay($delay));
+
+            return;
+        }
+
+        $message = sprintf('Verifikation nach %d Versuchen ohne Ergebnis (%s). Manuelle Prüfung im Zielsystem erforderlich.', $attempts, (string) ($outcome['observed']['error'] ?? 'Zielzustand nicht lesbar'));
+        $execution->forceFill(['status' => self::STATUS_RESULT_UNCLEAR, 'error_class' => ActionTimeoutException::class, 'error_message' => $this->masker->maskString(mb_substr($message, 0, 2000))]);
+        $execution->save();
+        $target->forceFill(['status' => ActionTarget::RESULT_UNCLEAR, 'last_error' => $execution->getAttribute('error_message')]);
+        $target->save();
+
+        if ($plan !== null) {
+            $this->outbox->write((int) $plan->getAttribute('organization_id'), 'execution.result_unclear', 'execution', (int) $execution->getKey(), ['step_index' => $execution->getAttribute('step_index'), 'verify_attempts' => $attempts, 'manual_review' => true]);
+        }
+
+        $this->audit->log('mail.execution.verification_exhausted', $execution, [], ['attempts' => $attempts], AuditSource::Mail->value, $this->correlation->current());
+        Log::warning('Verifikation erschöpft, Ausführung bleibt result_unclear (manuelle Prüfung).', ['execution_id' => $execution->getKey(), 'attempts' => $attempts]);
     }
 
     private function markUnclear(ActionPlanVersion $version, Execution $execution, ActionTarget $target, string $message): void

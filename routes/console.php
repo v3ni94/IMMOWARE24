@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Modules\Actions\Jobs\DispatchActionOutboxJob;
 use App\Modules\Actions\Jobs\RunScheduledActionsJob;
 use App\Modules\Gmail\Jobs\ReconcileJob;
 use App\Modules\Gmail\Jobs\SendReconciliationJob;
@@ -91,5 +92,19 @@ ScheduleFacade::job(new RunScheduledActionsJob)
     ->dailyAt('06:15')
     ->timezone($mailTimezone)
     ->name('mail-actions-scheduled')
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// Verarbeiter der mail_outbox: pending-Einträge als Hub-Ereignisse übergeben (pending -> dispatched | failed).
+ScheduleFacade::job(new DispatchActionOutboxJob)
+    ->everyMinute()
+    ->name('mail-actions-outbox')
+    ->withoutOverlapping(5)
+    ->onOneServer();
+
+// Manuell bestätigte Aktionen nach Spiegelläufen nachlesen (done_manual_confirmed -> done_verified bei Wert-Match).
+ScheduleFacade::command('mail:actions:recheck-manual')
+    ->hourly()
+    ->name('mail-actions-recheck-manual')
     ->withoutOverlapping()
     ->onOneServer();

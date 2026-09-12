@@ -8,6 +8,7 @@ use App\Modules\Cases\Enums\CaseStatus;
 use App\Modules\Cases\Enums\Priority;
 use App\Modules\Cases\Models\CaseItem;
 use App\Modules\Cases\Models\MailCase;
+use App\Modules\Gmail\Models\MailMessage;
 use App\Modules\Sla\Calendar\BusinessTime;
 use App\Modules\Sla\DTO\TrafficLight;
 use App\Modules\Sla\Enums\ClockState;
@@ -23,6 +24,7 @@ use InvalidArgumentException;
  * Vier Uhren je Teilanliegen (acknowledge, first_qualified_reply, next_update, resolution). Start ist die Empfangszeit
  * der Nachricht (Gmail internalDate), ein Import verjüngt nicht. Jede Frist trägt ihre Quelle, jede Änderung steht
  * im Protokoll mail_sla_clock_log. Pausen sind nur für die Lösungsuhr bei waiting_external erlaubt und begrenzt.
+ * Altbestand (LegacyImportPolicy): Uhren entstehen als cancelled mit Hinweis Altbestand statt sofort verletzt.
  */
 final class SlaClockService
 {
@@ -30,10 +32,13 @@ final class SlaClockService
         private readonly SlaRuleResolver $rules,
         private readonly BusinessTime $businessTime,
         private readonly Repository $config,
+        private readonly LegacyImportPolicy $legacy,
     ) {}
 
     /**
-     * Startet alle vier Uhren eines Teilanliegens mit der Empfangszeit als Startpunkt.
+     * Startet alle vier Uhren eines Teilanliegens mit der Empfangszeit als Startpunkt. Für Altbestand (Empfang vor
+     * import_from des Postfachs oder älter als hub.sla.legacy_after_days beim Import) werden die Uhren als cancelled
+     * angelegt und protokolliert (Quelle legacy_import); es entsteht kein künstlicher SLA-Verstoß.
      *
      * @return array<int, SlaClock>
      */
@@ -42,6 +47,7 @@ final class SlaClockService
         $case = $item->loadMissing('case')->case;
         $priority = $item->priority instanceof Priority ? $item->priority : Priority::from((string) ($item->priority ?? 'p2'));
         $clocks = [];
+        $legacyReason = $this->legacyReasonFor($case, $item, $receivedAt);
 
         foreach (ClockType::cases() as $type) {
             $resolved = $this->rules->resolve((int) $case->organization_id, $case->team_id !== null ? (int) $case->team_id : null, $priority, (string) $item->item_type, $type);
@@ -53,6 +59,31 @@ final class SlaClockService
 
             $targetAt = $this->addMinutes($receivedAt, $minutes, $resolved['uses_calendar']);
             $warnAt = $this->addMinutes($receivedAt, (int) floor($minutes * $resolved['warn_percent'] / 100), $resolved['uses_calendar']);
+
+            if ($legacyReason !== null) {
+                $clock = SlaClock::query()->create([
+                    'case_id' => $case->getKey(),
+                    'case_item_id' => $item->getKey(),
+                    'clock_type' => $type->value,
+                    'sla_rule_id' => $resolved['rule_id'],
+                    'target_source' => $resolved['source'],
+                    'target_minutes' => $minutes,
+                    'uses_calendar' => $resolved['uses_calendar'],
+                    'started_at' => $receivedAt->utc(),
+                    'stopped_at' => CarbonImmutable::now(),
+                    'target_at' => $targetAt,
+                    'warn_at' => $warnAt,
+                    'state' => ClockState::Cancelled->value,
+                    'color' => SlaColor::Green->value,
+                    'cause_text' => mb_substr($legacyReason, 0, 300),
+                    'last_evaluated_at' => CarbonImmutable::now(),
+                ]);
+
+                $this->log($clock, 'cancelled', $targetAt, null, LegacyImportPolicy::SOURCE, $legacyReason, $actorId);
+                $clocks[] = $clock;
+
+                continue;
+            }
 
             $clock = SlaClock::query()->create([
                 'case_id' => $case->getKey(),
@@ -170,8 +201,11 @@ final class SlaClockService
         }
 
         $old = $clock->target_at;
-        $span = max(1, (int) $clock->started_at->diffInMinutes($newTarget));
-        $warnAt = $clock->started_at->addMinutes((int) floor($span * $this->warnPercent($clock) / 100));
+        $usesCalendar = (bool) $clock->uses_calendar;
+        // Anteil der Zielzeit in derselben Zeitbasis wie die Uhr (Arbeitszeit oder Kalenderzeit), sonst liegt warn_at
+        // bei Arbeitszeituhren außerhalb der Arbeitszeit und die Ampel wird zu früh oder zu spät gelb.
+        $span = max(1, $this->elapsed($clock->started_at, $newTarget, $usesCalendar));
+        $warnAt = $this->addMinutes($clock->started_at, (int) floor($span * $this->warnPercent($clock) / 100), $usesCalendar);
 
         $clock->forceFill(['target_at' => $newTarget->utc(), 'warn_at' => $warnAt, 'target_source' => 'manual'])->save();
         $this->log($clock, 'retargeted', $old, $newTarget, 'manual', $reason, $actorId);
@@ -253,7 +287,8 @@ final class SlaClockService
         if ($state === ClockState::Paused && $clock->paused_at !== null) {
             $limit = (int) $this->config->get('hub.sla.max_pause_minutes', 14400);
 
-            if ($clock->paused_at->diffInMinutes($now) >= $limit) {
+            // Pausenlimit in der Zeitbasis der Uhr messen (Arbeitszeit bei uses_calendar, sonst Kalenderzeit).
+            if ($this->elapsed($clock->paused_at, $now, (bool) $clock->uses_calendar) >= $limit) {
                 $item = $clock->loadMissing('caseItem')->caseItem;
 
                 if ($item instanceof CaseItem) {
@@ -374,6 +409,26 @@ final class SlaClockService
         }
 
         return $worst;
+    }
+
+    /**
+     * Altbestandsprüfung: Importbeginn des Postfachs und Importzeitpunkt der Quellnachricht des Teilanliegens.
+     */
+    private function legacyReasonFor(MailCase $case, CaseItem $item, CarbonImmutable $receivedAt): ?string
+    {
+        $mailbox = $case->loadMissing('mailbox')->mailbox;
+        $importFrom = $mailbox?->getAttribute('import_from');
+        $importFrom = $importFrom instanceof \DateTimeInterface ? CarbonImmutable::instance($importFrom) : null;
+
+        $importedAt = null;
+
+        if ($item->source_message_id !== null) {
+            $message = MailMessage::query()->allOrganizations()->find($item->source_message_id);
+            $raw = $message instanceof MailMessage ? $message->getAttribute('imported_at') : null;
+            $importedAt = $raw instanceof \DateTimeInterface ? CarbonImmutable::instance($raw) : null;
+        }
+
+        return $this->legacy->legacyReason($receivedAt, $importFrom, $importedAt);
     }
 
     public function addMinutes(CarbonImmutable $from, int $minutes, bool $usesCalendar): CarbonImmutable

@@ -171,10 +171,15 @@ final class CaseController extends MailUiController
         return $this->redirectWithResult('mail.cases.show', $result, ['case' => $case->getKey()]);
     }
 
+    /**
+     * Bearbeitungsstatus ändern: Sichtbarkeit reicht nicht, verlangt wird ein Schreibrecht im Team des Vorgangs
+     * (mail.task.manage). Team-Rolle auditor und Systemrolle read_only bleiben lesend.
+     */
     public function status(SetStatusRequest $request, MailCase $case): RedirectResponse
     {
         $user = $this->currentUser($request);
         $this->requireCaseVisible($user, $case);
+        $this->requirePermission($user, 'mail.task.manage', $case->team_id === null ? null : (int) $case->team_id);
 
         $result = $this->commands->setProcessingStatus($case, (string) $request->validated('status'), $user, $request->validated('reason'));
 
@@ -192,10 +197,17 @@ final class CaseController extends MailUiController
         $this->requirePermission($user, 'mail.task.manage', $case->team_id === null ? null : (int) $case->team_id);
         $data = $request->validated();
 
+        // Zuständige Person nur aus der eigenen Organisation und nicht deaktiviert; fremde oder unbekannte IDs sind ein Fehler.
+        $assigneeId = (int) ($data['assignee_user_id'] ?? 0);
+
+        if ($assigneeId > 0 && ! User::query()->where('organization_id', $user->getAttribute('organization_id'))->whereNull('disabled_at')->whereKey($assigneeId)->exists()) {
+            return redirect()->route('mail.cases.show', ['case' => $case->getKey()])->withErrors(['assignee_user_id' => 'Die zuständige Person gehört nicht zur eigenen Organisation oder ist deaktiviert.'])->withInput();
+        }
+
         $result = $this->commands->createInternalTask($case, [
             'title' => (string) $data['title'],
             'instructions' => $data['instructions'] ?? null,
-            'assignee_user_id' => (int) ($data['assignee_user_id'] ?? 0) > 0 ? (int) $data['assignee_user_id'] : null,
+            'assignee_user_id' => $assigneeId > 0 ? $assigneeId : null,
             'due_at' => $data['due_at'] ?? null,
         ], $user);
         $this->audit('task.created', $case, [], ['title' => $data['title']]);
@@ -234,6 +246,7 @@ final class CaseController extends MailUiController
     {
         $user = $this->currentUser($request);
         $this->requireCaseVisible($user, $case);
+        $this->requirePermission($user, 'mail.task.manage', $case->team_id === null ? null : (int) $case->team_id);
 
         $result = $this->commands->addInternalNote($case, (string) $request->validated('note'), $user);
         $this->audit('case.note', $case);

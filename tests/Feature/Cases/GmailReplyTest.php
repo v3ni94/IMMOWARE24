@@ -59,6 +59,37 @@ final class GmailReplyTest extends CasesTestCase
         }
     }
 
+    public function test_outbound_message_to_third_party_in_thread_is_not_a_reply_and_keeps_clocks_running(): void
+    {
+        Queue::fake();
+        $this->travelTo(CarbonImmutable::parse('2026-09-09 10:00', 'Europe/Berlin'));
+        $user = $this->actingAsMailRole('agent');
+        $message = $this->inboundMessage($this->mailbox, ['subject' => 'Heizung defekt', 'from_address' => 'mieter@example.com']);
+        $cases = $this->app->make(CaseService::class);
+        $case = $cases->openFromMessage($message, [['item_type' => 'anfrage_allgemein', 'title' => 'Heizung prüfen', 'assignee_user_id' => $user->getKey()]], $user);
+        $item = $case->items()->firstOrFail();
+
+        // Weiterleitung an den Handwerker im selben Gmail-Thread: Label SENT, aber kein Kundenempfänger.
+        $this->travelTo(CarbonImmutable::parse('2026-09-09 10:20', 'Europe/Berlin'));
+        $forward = $this->outboundReply($message, null, ['handwerker@example.com']);
+        $this->app->make('events')->dispatch(new OutboundReplyDetected($forward));
+
+        $case->refresh();
+        $this->assertSame(CommunicationStatus::ReplyNeeded, $case->status_communication, 'Kunde hat nichts erhalten.');
+        $this->assertNull($case->first_response_at);
+        $this->assertNull($case->acknowledged_at);
+        $this->assertSame('running', SlaClock::query()->where('case_item_id', $item->getKey())->where('clock_type', ClockType::Acknowledge->value)->value('state'));
+        $this->assertSame('running', SlaClock::query()->where('case_item_id', $item->getKey())->where('clock_type', ClockType::FirstQualifiedReply->value)->value('state'));
+        $this->assertTrue(CaseMessage::query()->where('case_id', $case->getKey())->where('message_id', $forward->getKey())->where('link_type', 'forwarded')->exists(), 'Nur verknüpft, nicht als Antwort gewertet.');
+
+        // Antwort mit dem Kunden in Kopie zählt.
+        $reply = $this->outboundReply($message, null, ['handwerker@example.com', 'Mieter@Example.com']);
+        $this->app->make('events')->dispatch(new OutboundReplyDetected($reply));
+        $case->refresh();
+        $this->assertSame(CommunicationStatus::Sent, $case->status_communication);
+        $this->assertSame('met', SlaClock::query()->where('case_item_id', $item->getKey())->where('clock_type', ClockType::FirstQualifiedReply->value)->value('state'));
+    }
+
     public function test_automatic_acknowledgement_stops_only_acknowledge_clock(): void
     {
         Queue::fake();

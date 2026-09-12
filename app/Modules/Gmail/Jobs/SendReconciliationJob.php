@@ -30,7 +30,9 @@ class SendReconciliationJob implements ShouldQueue
      */
     public function middleware(): array
     {
-        return [(new WithoutOverlapping('mail:gmail:send-reconcile'))->releaseAfter(30)->expireAfter(300)];
+        // Kein release(): der Lauf ist minütlich geplant, ein überlappender Lauf wird verworfen statt in einer
+        // Release-Schleife hinter einem langen Erstimport zu kreisen.
+        return [(new WithoutOverlapping('mail:gmail:send-reconcile'))->dontRelease()->expireAfter(300)];
     }
 
     public function handle(SendReconciliationService $service): void
