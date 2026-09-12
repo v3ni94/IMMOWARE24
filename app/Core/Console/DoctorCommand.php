@@ -6,6 +6,8 @@ namespace App\Core\Console;
 
 use App\Core\Boot\BootGuard;
 use App\Modules\Connector\Services\ConnectorManager;
+use App\Modules\Mail\Services\IntegrationStatusService;
+use App\Modules\Mail\Services\MailFeatureFlags;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Support\Facades\DB;
@@ -36,6 +38,7 @@ final class DoctorCommand extends Command
         $this->checkRedis($config);
         $this->checkAdapters($connectors);
         $this->checkImports($config);
+        $this->checkMail($config);
 
         if ($this->option('json')) {
             $this->line((string) json_encode($this->rows, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
@@ -138,6 +141,44 @@ final class DoctorCommand extends Command
         }
 
         $this->add('imports.drop_path', is_dir($path) ? 'ok' : 'warn', is_dir($path) ? $path : $path.' (nicht vorhanden)');
+    }
+
+    /**
+     * Mail- und Vorgangsbearbeitung (docs/mail/09-deployment.md): Flags (Standard false), Provider-Modus je Integration
+     * (Nicht eingerichtet, Testbetrieb, Eingerichtet), Queues mail-high, mail-sync, mail-ai. fake in production ist ein
+     * Fehler (MailBootGuard), Versand- oder Schreibflag in staging ebenso.
+     */
+    private function checkMail(ConfigRepository $config): void
+    {
+        $env = (string) $config->get('app.env');
+        $flags = $this->laravel->make(MailFeatureFlags::class);
+        $status = $this->laravel->make(IntegrationStatusService::class);
+
+        $this->add('mail.domain', (string) $config->get('hub.mail.domain', '') !== '' ? 'ok' : 'warn', (string) $config->get('hub.mail.domain', ''));
+
+        foreach ($flags->all() as $flag => $enabled) {
+            $envName = 'MAIL_'.strtoupper((string) $flag).'_ENABLED';
+            $locked = array_key_exists((string) $flag, (array) $config->get('hub.mail.staging_locked_flags', []));
+            $state = $enabled ? (($env === 'staging' && $locked) ? 'fail' : 'warn') : 'ok';
+            $detail = $enabled ? 'true'.($env === 'staging' && $locked ? ', in staging gesperrt (MailBootGuard)' : ', aktiv nach Freigabe der Geschäftsführung') : 'false';
+            $this->add('mail.flag.'.$envName, $state, $detail);
+        }
+
+        foreach ($status->overview() as $key => $row) {
+            $mode = (string) $row['mode'];
+            $state = 'ok';
+
+            if ($mode === IntegrationStatusService::FAKE) {
+                $state = $env === 'production' ? 'fail' : 'warn';
+            }
+
+            $this->add('mail.integration.'.$key, $state, $row['label'].($mode === IntegrationStatusService::FAKE && $env === 'production' ? ', fake in production verboten' : ''));
+        }
+
+        $queues = (array) $config->get('hub.mail.queues', []);
+        $this->add('mail.queues', $queues === [] ? 'warn' : 'ok', implode(', ', array_values($queues)).' (eigener Worker für mail-high, siehe compose.yaml und deploy/)');
+        $onCall = (array) $config->get('hub.sla.emergency.on_call_user_ids', []);
+        $this->add('mail.on_call', $onCall === [] ? 'warn' : 'ok', $onCall === [] ? 'MAIL_ON_CALL_USER_IDS leer, keine 24/7-Betreuung eingerichtet' : count($onCall).' Bereitschaftsnutzer');
     }
 
     private function add(string $check, string $status, string $detail): void

@@ -14,4 +14,8 @@ enum AuditSource: string
     case Mcp = 'mcp';
     case Import = 'import';
     case Webhook = 'webhook';
+    // Mail-Modul (docs/mail/02-datenmodell.md, Abschnitt 7), additiv 13.09.2026.
+    case Mail = 'mail';
+    case GmailPush = 'gmail_push';
+    case Ai = 'ai';
 }

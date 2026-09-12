@@ -1,0 +1,154 @@
+/* Mail und Vorgänge: Ergänzungen zu hub.css (Dreispalten-Detail, Ampel-Badges mit Text und Symbol, Tastaturkürzel). */
+:root {
+    --mail-green-bg: #e2f3e8; --mail-green-fg: #1d6b3b; --mail-green-border: #9fd3b2;
+    --mail-yellow-bg: #fdf1dc; --mail-yellow-fg: #8a5a00; --mail-yellow-border: #f0cf8a;
+    --mail-red-bg: #fbe3e1; --mail-red-fg: #9b1c14; --mail-red-border: #f0a7a1;
+    --mail-p0: #9b1c14; --mail-p1: #b35c00; --mail-p2: #0b5fa5; --mail-p3: #5d6b78;
+    --mail-pane-list-w: 320px;
+    --mail-pane-context-w: 300px;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --mail-green-bg: #163a25; --mail-green-fg: #9fd3b2; --mail-green-border: #2d6b45;
+        --mail-yellow-bg: #3d2f0a; --mail-yellow-fg: #f0cf8a; --mail-yellow-border: #7a5c10;
+        --mail-red-bg: #40140f; --mail-red-fg: #f0a7a1; --mail-red-border: #7a2a22;
+    }
+}
+
+.mail-banner-locked {
+    margin-left: 0.75rem; padding: 0.15rem 0.6rem; border-radius: var(--hub-radius);
+    background: var(--mail-yellow-bg); color: var(--mail-yellow-fg); border: 1px solid var(--mail-yellow-border);
+    font-size: 0.8rem; font-weight: 600;
+}
+
+/* Ampel-Badges: Farbe nie als einziger Träger, immer Symbol plus Text. */
+.mail-sla-green { background: var(--mail-green-bg); color: var(--mail-green-fg); border-color: var(--mail-green-border); }
+.mail-sla-yellow { background: var(--mail-yellow-bg); color: var(--mail-yellow-fg); border-color: var(--mail-yellow-border); }
+.mail-sla-red { background: var(--mail-red-bg); color: var(--mail-red-fg); border-color: var(--mail-red-border); font-weight: 700; }
+
+.mail-priority { font-weight: 700; letter-spacing: 0.02em; }
+.mail-priority-p0 { color: #fff; background: var(--mail-p0); border-color: var(--mail-p0); }
+.mail-priority-p1 { color: #fff; background: var(--mail-p1); border-color: var(--mail-p1); }
+.mail-priority-p2 { color: var(--mail-p2); border-color: var(--mail-p2); background: transparent; }
+.mail-priority-p3 { color: var(--mail-p3); border-color: var(--mail-p3); background: transparent; }
+
+/* Drei Statusdimensionen nebeneinander. */
+.mail-status-triple { display: flex; flex-wrap: wrap; gap: 1rem; margin: 0.5rem 0; }
+.mail-status-triple > div { display: flex; flex-direction: column; gap: 0.2rem; }
+.mail-status-triple dt { font-size: 0.75rem; color: var(--hub-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.mail-status-triple dd { margin: 0; }
+.mail-status-badge { background: var(--hub-surface-2); color: var(--hub-text); border-color: var(--hub-border); }
+.mail-status-new, .mail-status-assignment_open, .mail-status-reply_needed, .mail-status-approval_required, .mail-status-manual_review, .mail-status-result_unclear { background: var(--mail-yellow-bg); color: var(--mail-yellow-fg); border-color: var(--mail-yellow-border); }
+.mail-status-blocked, .mail-status-failed { background: var(--mail-red-bg); color: var(--mail-red-fg); border-color: var(--mail-red-border); }
+.mail-status-verified, .mail-status-closed, .mail-status-sent, .mail-status-no_reply_needed { background: var(--mail-green-bg); color: var(--mail-green-fg); border-color: var(--mail-green-border); }
+
+/* Dreispalten-Detail. */
+.mail-three-pane {
+    display: grid; grid-template-columns: var(--mail-pane-list-w) minmax(0, 1fr) var(--mail-pane-context-w);
+    gap: 1rem; align-items: start; min-height: 60vh;
+}
+.mail-pane { background: var(--hub-surface); border: 1px solid var(--hub-border); border-radius: var(--hub-radius); box-shadow: var(--hub-shadow); padding: 0.75rem; min-width: 0; }
+.mail-pane-title { font-size: 0.9rem; margin: 0 0 0.5rem; color: var(--hub-text-muted); }
+.mail-pane-list { max-height: 80vh; overflow-y: auto; }
+.mail-pane-detail { word-break: break-word; }
+@media (max-width: 1100px) {
+    .mail-three-pane { grid-template-columns: var(--mail-pane-list-w) minmax(0, 1fr); }
+    .mail-pane-context { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+    .mail-three-pane { grid-template-columns: minmax(0, 1fr); }
+    .mail-pane-list { max-height: none; }
+}
+
+/* Tastaturkürzel in der Seitenleiste. */
+.mail-shortcuts { margin: 1rem 0.75rem; font-size: 0.8rem; color: var(--hub-text-muted); }
+.mail-shortcuts summary { cursor: pointer; }
+.mail-shortcuts dl { margin: 0.5rem 0 0; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.6rem; }
+.mail-shortcuts dl > div { display: contents; }
+.mail-shortcuts dt, .mail-shortcuts dd { margin: 0; }
+.mail-shortcuts kbd { font-family: var(--hub-mono); font-size: 0.75rem; padding: 0.05rem 0.35rem; border: 1px solid var(--hub-border); border-bottom-width: 2px; border-radius: 4px; background: var(--hub-surface-2); }
+
+/* Oberfläche MailUi: Listen, Tabellen, Detailbereiche, Freigaben, Administration. Farbe nie ohne Text und Symbol. */
+.mail-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+.mail-list li { padding: 0.35rem 0; border-bottom: 1px solid var(--hub-border); }
+.mail-list li:last-child { border-bottom: 0; }
+.mail-stat-grid .hub-stat { text-decoration: none; }
+.mail-cause { display: block; font-size: 0.72rem; color: var(--hub-text-muted); margin-top: 0.15rem; }
+.mail-overdue { color: var(--mail-red-fg); font-weight: 700; }
+.mail-row.is-current, [data-mail-row]:focus { outline: 2px solid var(--mail-p2); outline-offset: -2px; background: var(--hub-surface-2); }
+.mail-status-compact { gap: 0.4rem; margin: 0; }
+.mail-status-compact dt { display: none; }
+.mail-status-compact dd .hub-badge { font-size: 0.7rem; }
+.mail-filter .hub-form-row { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.mail-bulk { margin-top: 1rem; border: 1px dashed var(--hub-border); }
+.mail-bulk legend { font-weight: 600; padding: 0 0.4rem; }
+
+/* Risiko-Badges. */
+.mail-risk-low { background: var(--mail-green-bg); color: var(--mail-green-fg); border-color: var(--mail-green-border); }
+.mail-risk-medium { background: var(--mail-yellow-bg); color: var(--mail-yellow-fg); border-color: var(--mail-yellow-border); }
+.mail-risk-high, .mail-risk-bank { background: var(--mail-red-bg); color: var(--mail-red-fg); border-color: var(--mail-red-border); font-weight: 700; }
+
+/* Vorgangsdetail. */
+.mail-case-head { display: grid; gap: 0.6rem; margin-bottom: 1rem; }
+.mail-kv-inline { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
+.mail-kv-inline .hub-kv-row { display: flex; gap: 0.4rem; }
+.mail-section { margin-bottom: 1.25rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--hub-border); }
+.mail-section:last-child { border-bottom: 0; }
+.mail-section h3 { font-size: 0.95rem; margin: 0 0 0.5rem; }
+.mail-message { border: 1px solid var(--hub-border); border-radius: var(--hub-radius); padding: 0.6rem; margin-bottom: 0.75rem; background: var(--hub-surface); }
+.mail-message-out { border-left: 4px solid var(--mail-p2); }
+.mail-message-subject { font-size: 0.9rem; margin: 0.4rem 0; }
+.mail-message-body { font-size: 0.9rem; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; }
+.mail-message-body img { max-width: 100%; }
+.mail-attachments { list-style: none; padding: 0; margin: 0.5rem 0 0; font-size: 0.85rem; }
+.mail-notes { margin-top: 1rem; padding: 0.6rem; border-radius: var(--hub-radius); background: var(--mail-yellow-bg); border: 1px dashed var(--mail-yellow-border); }
+.mail-notes h3 { color: var(--mail-yellow-fg); font-size: 0.9rem; margin: 0 0 0.5rem; }
+.mail-note { border-left: 3px solid var(--mail-yellow-border); padding-left: 0.5rem; margin-bottom: 0.5rem; }
+.mail-note p { margin: 0.2rem 0 0; white-space: pre-wrap; }
+.mail-item, .mail-plan { padding: 0.5rem 0; border-top: 1px solid var(--hub-border); }
+.mail-diff th[scope="row"] { text-align: left; font-weight: 600; }
+.mail-diff-old { color: var(--mail-red-fg); text-decoration: line-through; text-decoration-color: var(--mail-red-border); }
+.mail-diff-new { color: var(--mail-green-fg); font-weight: 600; }
+.mail-primary { box-shadow: 0 0 0 3px var(--mail-yellow-border); font-weight: 700; position: relative; }
+.mail-primary::before { content: "▶ "; }
+.mail-draft-actions { margin-top: 0.5rem; flex-wrap: wrap; }
+.mail-history { list-style: none; padding: 0; margin: 0; font-size: 0.82rem; }
+.mail-history li { padding: 0.25rem 0; border-bottom: 1px dotted var(--hub-border); }
+
+/* Freigabecenter. */
+.mail-approval { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 1rem; align-items: start; }
+.mail-approval-actions form { margin-bottom: 1rem; }
+@media (max-width: 900px) { .mail-approval { grid-template-columns: minmax(0, 1fr); } }
+
+/* Integrationen. */
+.mail-scopes { list-style: none; padding: 0; margin: 0; font-size: 0.8rem; }
+
+/* Administration. */
+.mail-tabs { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 1rem; border-bottom: 1px solid var(--hub-border); }
+.mail-tab { padding: 0.4rem 0.7rem; border-radius: var(--hub-radius) var(--hub-radius) 0 0; text-decoration: none; color: var(--hub-text); border: 1px solid transparent; }
+.mail-tab.is-active { border-color: var(--hub-border); border-bottom-color: var(--hub-surface); background: var(--hub-surface); font-weight: 600; }
+.mail-matrix-yes { color: var(--mail-green-fg); font-weight: 600; }
+.mail-matrix-no { color: var(--hub-text-muted); }
+.mail-hours-row { grid-template-columns: 1fr 1fr; }
+.mail-wizard-steps { display: flex; flex-wrap: wrap; gap: 0.4rem; list-style: none; padding: 0; margin: 0 0 1rem; counter-reset: step; }
+.mail-wizard-steps li a { display: inline-block; padding: 0.3rem 0.6rem; border: 1px solid var(--hub-border); border-radius: var(--hub-radius); text-decoration: none; color: var(--hub-text); font-size: 0.85rem; }
+.mail-wizard-steps li.is-active a { border-color: var(--mail-p2); font-weight: 700; }
+.mail-wizard-steps li.is-done a { background: var(--mail-green-bg); color: var(--mail-green-fg); border-color: var(--mail-green-border); }
+.mail-wizard { max-width: 760px; }
+
+/* Hilfe-Dialog Tastaturkürzel. */
+.mail-help { border: 1px solid var(--hub-border); border-radius: var(--hub-radius); padding: 1rem 1.25rem; background: var(--hub-surface); color: var(--hub-text); max-width: 420px; }
+.mail-help::backdrop { background: rgba(0, 0, 0, 0.4); }
+.mail-help dl { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 0.8rem; margin: 0.5rem 0 1rem; }
+.mail-help dl > div { display: contents; }
+.mail-help dt, .mail-help dd { margin: 0; }
+
+/* Mobile Ansicht: Annahme und Freigabe mit großen Zielen, Tabellen scrollen, Aktionen gestapelt. */
+@media (max-width: 600px) {
+    .mail-case-head, .mail-approval-actions { font-size: 1rem; }
+    .mail-approval-actions .hub-button, .mail-draft-actions .hub-button, .mail-primary { display: block; width: 100%; padding: 0.9rem; font-size: 1.05rem; }
+    .mail-kv-inline { flex-direction: column; gap: 0.3rem; }
+    .mail-filter .hub-form-row { grid-template-columns: 1fr; }
+    .mail-status-compact { flex-direction: column; gap: 0.2rem; }
+    .mail-tabs { overflow-x: auto; flex-wrap: nowrap; }
+}

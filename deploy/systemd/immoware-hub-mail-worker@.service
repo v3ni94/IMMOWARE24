@@ -1,0 +1,42 @@
+# Immoware Hub, Mail- und Vorgangsbearbeitung: Queue-Worker als systemd-Template (Betrieb ohne Docker).
+# Ablage: /etc/systemd/system/immoware-hub-mail-worker@.service
+# Die Instanz bestimmt die Queue-Liste ueber /etc/immoware-hub/mail-worker-<instanz>.env (MAIL_WORKER_QUEUES, MAIL_WORKER_TIMEOUT):
+#   high: MAIL_WORKER_QUEUES=mail-high      MAIL_WORKER_TIMEOUT=300   (eigener Prozess, Notfall, SLA, Aktionen)
+#   sync: MAIL_WORKER_QUEUES=mail-sync,mail-ai MAIL_WORKER_TIMEOUT=600 (Import, Abgleich, KI-Vorschlaege)
+# Start: systemctl enable --now immoware-hub-mail-worker@high immoware-hub-mail-worker@sync
+# "php artisan queue:restart" aus deploy.sh signalisiert allen Workern das geordnete Ende. Leitdokument: docs/mail/09-deployment.md.
+
+[Unit]
+Description=Immoware Hub Mail Queue Worker %i
+After=network.target redis-server.service mariadb.service
+Wants=redis-server.service mariadb.service
+PartOf=immoware-hub.target
+
+[Service]
+Type=simple
+User=immoware
+Group=immoware
+WorkingDirectory=/var/www/immoware-hub/current
+EnvironmentFile=-/etc/immoware-hub/worker.env
+EnvironmentFile=/etc/immoware-hub/mail-worker-%i.env
+ExecStart=/usr/bin/php artisan queue:work redis --queue=${MAIL_WORKER_QUEUES} --sleep=1 --tries=1 --max-time=3600 --memory=256 --timeout=${MAIL_WORKER_TIMEOUT}
+Restart=always
+RestartSec=5
+TimeoutStopSec=630
+KillSignal=SIGTERM
+KillMode=mixed
+Nice=5
+
+# Haertung wie immoware-hub-worker@.service
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/www/immoware-hub/shared/storage /var/www/immoware-hub/current/bootstrap/cache
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

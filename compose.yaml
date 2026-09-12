@@ -69,6 +69,9 @@ services:
             - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:8080"
         volumes:
             - ./docker/nginx/immoware.muellerhv.de.conf:/etc/nginx/conf.d/default.conf:ro
+            # Mail- und Vorgangsbearbeitung (docs/mail/09-deployment.md): eigener Server-Block fuer mail.muellerhv.de,
+            # gleiche Anwendung, gleiches php-fpm. Der TLS-Proxy reicht beide Hostnamen an Port 8080 durch.
+            - ./docker/nginx/mail.muellerhv.de.conf:/etc/nginx/conf.d/mail.conf:ro
             - ./public:/var/www/html/public:ro
         healthcheck:
             test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/up"]
@@ -102,6 +105,58 @@ services:
         # der storage/framework/worker-heartbeat schreibt (docs/operations/03-monitoring.md Abschnitt 5). Der
         # Healthcheck prueft das Alter der Datei (unhealthy ab 180 s, Exit 1), restart startet den Worker neu.
         # Voraussetzung: storage ist ein gemeinsames Volume von Scheduler und Worker.
+        healthcheck:
+            test: ["CMD", "php", "artisan", "hub:heartbeat:check", "worker", "--max-age=180"]
+            interval: 60s
+            timeout: 20s
+            retries: 3
+            start_period: 30s
+        deploy:
+            replicas: 1
+
+    # Mail- und Vorgangsbearbeitung (docs/mail/09-deployment.md Abschnitt 4): eigener Prozess nur fuer mail-high, damit
+    # Notfalleskalation (EmergencyAlertJob), SLA-Pruefung (SlaCheckJob) und freigegebene Aktionen (ExecuteActionJob) nie
+    # hinter einem Massenimport (mail-sync) oder KI-Aufrufen (mail-ai) warten. Healthcheck wie beim Hub-Worker ueber das
+    # Heartbeat-Alter; der Scheduler stellt den Heartbeat-Job auf die Queue high, deshalb prueft dieser Worker den
+    # gemeinsamen Worker-Heartbeat nur als Lebenszeichen der Queue-Infrastruktur (siehe docs/mail/09-deployment.md).
+    mail-worker-high:
+        <<: *app-base
+        container_name: immoware-hub-mail-worker-high
+        command:
+            - php
+            - artisan
+            - queue:work
+            - redis
+            - --queue=mail-high
+            - --sleep=1
+            - --tries=1
+            - --max-time=3600
+            - --memory=256
+            - --timeout=300
+        healthcheck:
+            test: ["CMD", "php", "artisan", "hub:heartbeat:check", "worker", "--max-age=180"]
+            interval: 60s
+            timeout: 20s
+            retries: 3
+            start_period: 30s
+        deploy:
+            replicas: 1
+
+    # Zweiter Mail-Worker fuer Import und Abgleich (mail-sync) sowie KI-Vorschlaege (mail-ai). Reihenfolge = Prioritaet.
+    mail-worker:
+        <<: *app-base
+        container_name: immoware-hub-mail-worker
+        command:
+            - php
+            - artisan
+            - queue:work
+            - redis
+            - --queue=mail-sync,mail-ai
+            - --sleep=3
+            - --tries=1
+            - --max-time=3600
+            - --memory=256
+            - --timeout=600
         healthcheck:
             test: ["CMD", "php", "artisan", "hub:heartbeat:check", "worker", "--max-age=180"]
             interval: 60s

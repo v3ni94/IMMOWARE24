@@ -1,3 +1,32 @@
+## Mail-Modul
+
+Stand 12.09.2026, Phase 1 umgesetzt und verdrahtet. Interne Mail- und Vorgangsbearbeitung der Hausverwaltung Müller GmbH unter `https://mail.muellerhv.de`, additiv in derselben Anwendung (domaingebundene Routen, eigene Middleware-Gruppe `mail`, eigene Queues `mail-high`, `mail-sync`, `mail-ai`, alle Tabellen mit Präfix `mail_`). Bestehende Funktionen, Routen, Tabellen und Tests bleiben unverändert; der Immoware-Connector wird nur über seine öffentlichen Services genutzt. Gmail ist Mailsystem, Immoware24 Fachsystem, Lexware Office Rechnungsprogramm, Google Drive Dokumentenquelle. Nicht konfigurierte Integrationen erscheinen sichtbar als "Nicht eingerichtet" (Oberfläche und `hub:doctor`).
+
+Leitregeln: Gelesen ist nicht bearbeitet. Beantwortet ist nicht erledigt. Ein erfolgreicher HTTP-Aufruf ist kein verifiziertes Geschäftsergebnis. Jeder offene Vorgang hat Verantwortlichen, nächsten Schritt und Fälligkeit. Technische Fehler erscheinen nie als Erfolg.
+
+Feature-Flags, alle Standard `false`: `MAIL_IMPORT_ENABLED`, `MAIL_AI_ENABLED`, `MAIL_GMAIL_DRAFTS_ENABLED`, `MAIL_GMAIL_SEND_ENABLED`, `MAIL_IMMOWARE_WRITE_ENABLED`, `MAIL_LEXWARE_WRITE_ENABLED`. Aktivierung einzeln nach Freigabe der Geschäftsführung; Schreib- und Versand-Flags sind in Staging gesperrt (`MailBootGuard`).
+
+Module: `Mail` (Kern, Flags, Rechte, Middleware), `Gmail` (OAuth2, Push mit JWT-Prüfung, History-Sync, MIME, Entwürfe, Versand mit Abgleich), `Cases` (Vorgänge, Teilanliegen, drei Statusdimensionen, Zuordnung nur über Kennungen, Aufgaben, Sperren, Vertretung), `Sla` (Prioritäten, vier Uhren, Arbeitskalender, Notfallqueue), `Actions` (Aktionspläne, Vier-Augen, Identitätsprüfung, Ausführung mit Idempotenz, Verifikation), `Lexware`, `Ai` (nur Vorschläge, Schema-Validierung, Maskierung, Budget), `Drive` (lesend), `MailUi` (Blade-Oberfläche, Administration, Einrichtungsassistent), `MailIntegration` (Verdrahtung der Module untereinander und mit der Oberfläche, Ereignisketten, regelbasierte Vorgangsanlage). Zeitpläne zentral in `routes/console.php`; Betrieb in `compose.yaml` (Mail-Worker), `deploy/`, `docker/nginx/mail.muellerhv.de.conf`.
+
+Stand der Tests (12.09.2026): `php artisan test` 787 Tests, 779 bestanden, 8 übersprungen, 5.773 Assertions; davon 233 Tests der Mail-Module einschließlich zwei End-to-End-Abläufen (`tests/Feature/MailEndToEnd/`). Pint und PHPStan Level 5 ohne Befund, `migrate:fresh` auf SQLite vollständig (43 Migrationen), `route:list` ohne Duplikate (199 Routen, davon 56 auf der Mail-Domain). Alle Fremdsysteme laufen in Tests als Fakes (`FakeGmailProvider`, `FakeLexwareApi`, `FakeAiProvider`, `Http::fake`); es gab keinen Live-Test gegen Gmail, Lexware, Drive oder OpenAI, und alle Aussagen zu deren APIs stammen aus WebSearch-Snippets (Doku-Hosts gesperrt) und sind vor Inbetriebnahme am Original zu prüfen. Ein Mock-Erfolg gilt nie als Live-Test.
+
+Offen: Freigaben der Geschäftsführung je Flag, Google-Cloud-Projekt und Pub/Sub, Lexware-Key, OpenAI-AVV, Branding, Drive-OAuth-Anmeldefluss, Anhangsablage, Retention-Befehl, Übernahme modul-lokaler Verträge nach `app/Core/Contracts/Mail` (Details in `docs/mail/10-implementierungsliste.md`).
+
+| Dokument | Inhalt |
+|---|---|
+| `docs/mail/00-bestandsaufnahme.md` | Befunde am Repository, Wiederverwendung, Schutzregeln |
+| `docs/mail/01-architekturentscheidung.md` | Domain-Routing, Sitzungen, Middleware, Queues, Modulschnitt, Flags, Staging-Schutz |
+| `docs/mail/02-datenmodell.md` | Alle `mail_`-Tabellen mit Spalten, Indizes, Fremdschlüsseln |
+| `docs/mail/03-capability-matrix.md` | Fähigkeiten je Zielsystem, für Immoware24 aus der Capability-Registry abgeleitet |
+| `docs/mail/04-status-und-sla.md` | Drei Statusdimensionen, Abschlussbedingungen, P0 bis P3, vier Uhren, zwei Ampeln, Arbeitskalender |
+| `docs/mail/05-rollen-und-rechte.md` | Permission-Katalog `mail.*`, Mail-Rollen, Vier-Augen, Re-Authentifizierung |
+| `docs/mail/06-testplan.md` | 20 Abnahmefälle mit Testklasse und Status |
+| `docs/mail/07-gmail-berechtigungen.md` | Minimale OAuth-Scope-Matrix |
+| `docs/mail/08-datenschutz-sicherheit.md` | AVV, Datenflüsse, Maskierung, Retention, Logging |
+| `docs/mail/09-deployment.md` | DNS, TLS, nginx-Blöcke, Worker, Zeitpläne, Staging und Produktion |
+| `docs/mail/10-implementierungsliste.md` | Anforderungen je Abschnitt des Auftrags mit Umsetzungs- und Teststatus |
+| `docs/mail/research/` | Rechercheergebnisse zu Gmail, Lexware, OpenAI, Drive (Snippets) |
+
 # Immoware Hub
 
 Integrationsschicht der Hausverwaltung Müller GmbH um den Immoware24-Mandanten. Laravel 13, PHP 8.4, MariaDB 10.11+ (Produktion), SQLite in-memory (Tests), Redis 7 (Queue, Cache, Locks), Scheduler.
@@ -198,6 +227,31 @@ Internes Projekt der Hausverwaltung Müller GmbH. Keine Zugangsdaten, Steuernumm
 ## Betriebsdomain
 
 Der Hub wird unter `https://immoware.muellerhv.de` betrieben (Vorgabe der Geschäftsführung vom 11.09.2026). Admin-Oberfläche, API (`/api/v1`), API-Dokumentation (`/api/docs`) und Health-Endpunkte laufen unter dieser Domain. DNS, TLS-Zertifikat und Reverse Proxy sind Bestandteil von Phase 1.
+
+## Mail-Modul
+
+Stand 12.09.2026, Phase 0 (Konzept). Interne Mail- und Vorgangsbearbeitung der Hausverwaltung Müller GmbH unter `https://mail.muellerhv.de`, additiv in derselben Anwendung (domaingebundene Routen, eigene Middleware-Gruppe `mail`, eigene Queues `mail-high`, `mail-sync`, `mail-ai`, alle Tabellen mit Präfix `mail_`). Bestehende Funktionen, Routen, Tabellen und Tests bleiben unverändert; der Immoware-Connector wird nur über seine öffentlichen Services genutzt. Gmail ist Mailsystem, Immoware24 Fachsystem, Lexware Office Rechnungsprogramm, Google Drive Dokumentenquelle. Nicht konfigurierte Integrationen erscheinen sichtbar als "Nicht eingerichtet".
+
+Leitregeln: Gelesen ist nicht bearbeitet. Beantwortet ist nicht erledigt. Ein erfolgreicher HTTP-Aufruf ist kein verifiziertes Geschäftsergebnis. Jeder offene Vorgang hat Verantwortlichen, nächsten Schritt und Fälligkeit. Technische Fehler erscheinen nie als Erfolg.
+
+Feature-Flags, alle Standard `false`: `MAIL_IMPORT_ENABLED`, `MAIL_AI_ENABLED`, `MAIL_GMAIL_DRAFTS_ENABLED`, `MAIL_GMAIL_SEND_ENABLED`, `MAIL_IMMOWARE_WRITE_ENABLED`, `MAIL_LEXWARE_WRITE_ENABLED`. Aktivierung einzeln nach Freigabe der Geschäftsführung; Schreib- und Versand-Flags sind in Staging gesperrt.
+
+Stand der Umsetzung: kein Anwendungscode, keine Migrationen, keine Tests des Mail-Moduls vorhanden. Alle Aussagen zu Gmail-, Lexware-, Drive- und OpenAI-APIs stammen aus WebSearch-Snippets (Doku-Hosts gesperrt) und sind vor Implementierung am Original zu prüfen; Live-Tests sind in der Entwicklungsumgebung nicht möglich, ein Mock-Erfolg (`Http::fake`) gilt nie als Live-Test.
+
+| Dokument | Inhalt |
+|---|---|
+| `docs/mail/00-bestandsaufnahme.md` | Befunde am Repository, Wiederverwendung, Schutzregeln |
+| `docs/mail/01-architekturentscheidung.md` | Domain-Routing, Sitzungen, Middleware, Queues, Modulschnitt, Flags, Staging-Schutz |
+| `docs/mail/02-datenmodell.md` | Alle `mail_`-Tabellen mit Spalten, Indizes, Fremdschlüsseln |
+| `docs/mail/03-capability-matrix.md` | Fähigkeiten je Zielsystem, für Immoware24 aus der Capability-Registry abgeleitet |
+| `docs/mail/04-status-und-sla.md` | Drei Statusdimensionen, Abschlussbedingungen, P0 bis P3, vier Uhren, zwei Ampeln, Arbeitskalender |
+| `docs/mail/05-rollen-und-rechte.md` | Permission-Katalog `mail.*`, Mail-Rollen, Vier-Augen, Re-Authentifizierung |
+| `docs/mail/06-testplan.md` | 20 Abnahmefälle als Testmatrix |
+| `docs/mail/07-gmail-berechtigungen.md` | Minimale OAuth-Scope-Matrix |
+| `docs/mail/08-datenschutz-sicherheit.md` | AVV, Datenflüsse, Maskierung, Retention, Logging |
+| `docs/mail/09-deployment.md` | DNS, TLS, nginx-Block, Staging und Produktion |
+| `docs/mail/10-implementierungsliste.md` | Anforderungen je Abschnitt des Auftrags mit Status |
+| `docs/mail/research/` | Rechercheergebnisse zu Gmail, Lexware, OpenAI, Drive (Snippets) |
 
 ## Betrieb
 
