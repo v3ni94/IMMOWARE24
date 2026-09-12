@@ -1,8 +1,8 @@
 # 10 Testprotokoll Immoware Hub
 
-Stand: 11.09.2026
+Stand: 12.09.2026
 Gesellschaft: Hausverwaltung Müller GmbH (Mandant Immoware24)
-Status: Vorlage. Es wurden noch keine Tests am eigenen Mandanten durchgeführt.
+Status: Automatisierte Tests gegen simulierte Server grün (Abschnitt 6). Es wurden noch keine Tests am eigenen Mandanten durchgeführt.
 
 ## 0. Grundsätze
 
@@ -184,3 +184,26 @@ Datenschutz: Fixtures enthalten ausschließlich synthetische Daten. Keine Kontak
 | Spaltenformat CSV und DATEV | NICHT VERFÜGBAR | T-P0-10 |
 | Automatische Objektzuordnung hochgeladener Dateien im DMS | NICHT VERFÜGBAR | T-W-09, nur Beobachtung |
 | Technologie des Mock-Servers (PHP oder Node) | offen | Entscheidung vor Sprint 1 |
+
+## 6. Automatisierte Tests
+
+Stand 12.09.2026, Lauf `php artisan test` auf Branch claude/vibrant-lovelace-c624qw: **284 Tests, 2.220 Assertions, alle bestanden**, Laufzeit rund 4,6 Sekunden. `vendor/bin/pint --test` sauber, `phpstan analyse --no-progress` (Level 5) ohne Fehler. Umgebung: PHPUnit, `RefreshDatabase`, SQLite in-memory, Queue `sync`, Cache `array`, alle Schreib-Flags false, `HUB_BOOT_GUARD=true`. HTTP nach außen ausschließlich über die `Http`-Facade mit `Http::fake()`, es wurde kein Immoware24-System kontaktiert.
+
+Zahlen je Modul (Filter `Feature\<Modul>|Unit\<Modul>`, Summe 284):
+
+| Modul | Tests | Assertions | Abdeckung (Auswahl) |
+|---|---|---|---|
+| Security | 58 | 281 | TOTP nach RFC 6238 (SHA1, 6 und 8 Stellen, Fenster), Base32, Login-Sperre nach Fehlversuchen, 2FA-Challenge und Recovery-Codes, API-Key-Middleware (Bearer, Scopes, IP-Bindung, Ablauf, Widerruf, Rate Limit), Audit-Hash-Kette (append-only, Verifikation, Anker), Rollen und Gates, Sitzungsverwaltung, Console-Commands, Schreib-Flags (Default false, 403 problem+json beim Upload, BootGuard bei DELETE-Flag true) |
+| Connector | 47 | 252 | DAV-Multistatus-Parser, ConnectorManager (alle fünf Adapter registriert, Ablehnung unbekannter Namen, Zugangsdaten nur im Speicher), CapabilityRegistry (Hard Locks, Config-Flags, Teststatus), RateLimitManager (Token-Bucket, 429-Rückmeldung), CircuitBreaker (Zustände, Halboffen), HttpClientFactory (blockierte Methoden, User-Agent), RemoteRequestLogger (Maskierung, Prune), Probe (OPTIONS, PROPFIND, ETag-Stabilität, Auth-Erkennung) und `hub:probe` |
+| Documents | 23 | 243 | Multistatus mit Umlauten und URL-Encoding, Ordner- und Dokumentspiegel, Sweep als Soft Delete mit Restore, ETag-Wechsel, Move-Erkennung über content_hash, Chunking mit Cursor, Posteingang-Upload idempotent (kein zweites PUT), Timeout → unknown, Auflösung nur per PROPFIND, 412, Precheck, Präfix- und Größengrenzen, Dry-Run, DELETE/MOVE/COPY/MKCOL werfen WriteBlockedException, Audit-Einträge |
+| Contacts | 25 | 169 | vCard 2.1/3.0/4.0 (Quoted-Printable, Faltung, fehlende UID, mehrere TEL-Typen), Mapper, CardDAV-Pull (CTag unverändert → nur PROPFIND, ETag-Diff, Multiget-Batches, sync-collection), Sweep ohne Hard Delete, Duplikatvorschläge ohne Merge, Rollen nur mit Mapping-Regel, Schreibpfad gesperrt |
+| Calendar | 8 | 55 | iCalendar-Parser (TZID, ganztägig, UTC mit DURATION, RRULE, RECURRENCE-ID), CalDAV-Pull, Schreibpfad gesperrt |
+| Sync | 34 | 326 | RunSyncJob (Chunk-Loop, Cursor, Lock, Skip bei laufendem Full Sync, Fehler → DLQ), DLQ (Retry, Ignore, Replay), Konflikte und Auflösung, proposed_change, Field-Mapping-Versionen, Payload-Archiv (Maskierung, gzip, Prune), Datenalter und Stale, Bootstrap-Stufen, Zeitpläne, Backoff |
+| Imports | 32 | 209 | CSV-Reader (Windows-1252, BOM, Trennzeichen), Header-Fingerprint und Formatbestätigung, Drop-Ordner mit Sidecar und Quarantäne, Stammdaten-Importer, OP-Snapshot, DATEV-EXTF (Vorzeichen, Duplikate), CAMT.053 v02 und v08, Export-Erinnerungen, Export-Job |
+| Api | 21 | 449 | Directory-Antwort, Pagination und Provenance, Filter und Sortierung, RFC-7807-Fehler, Scopes (403), Cases (POST, PATCH, Idempotency-Key), Kontakt-PATCH → 202 proposed_change, Upload 403 bei Flag false, Directory (json, vcf, xml) ohne Notizen, Health-Endpunkte, OpenAPI-Generator, vCard-Writer |
+| Webhooks | 8 | 72 | Outbox und Zustellungen je Endpunkt, HMAC-Signatur `t=<ts>,v1=<hex>` und Replay-Fenster, Retry-Plan und DLQ, Endpunkt-API mit Scope |
+| Core | 25 | 115 | BootGuard (alle hart gesperrten Flags, String-true, Boot-Abbruch im Prozess), Migrationen auf SQLite, Formatter (Datum, Beträge), Checksummen und externe Identität (Trait), SecretMasker, `hub:doctor` (Exit-Code 0 ohne Redis, 1 bei Flag-Verletzung) |
+| EndToEnd | 3 | 49 | WebDAV-Multistatus mit drei Dateien → RunSyncJob synchron → `GET /api/v1/documents` mit Scope documents:read liefert drei Dokumente mit Provenance, Outbox `document.created`; CardDAV mit zwei vCards → `/api/v1/contacts`, `/api/v1/directory`, vcf-Suche, Outbox `contact.created`; fehlgeschlagener Lauf → SyncRun failed, DLQ-Eintrag, Outbox `sync.failed` |
+
+Nicht durch automatisierte Tests abgedeckt: Verhalten des echten Immoware24-DAV-Servers (Abschnitt 3.2), MariaDB-spezifisches Verhalten (Tests laufen auf SQLite, Migrationen sind für beide Systeme geschrieben), Redis-Locks im Mehrprozessbetrieb, Horizon, Mailversand, Admin-Oberfläche. Diese Punkte sind Bestandteil der Phasen 0 und 9 am eigenen Mandanten.
+

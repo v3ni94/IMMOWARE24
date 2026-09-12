@@ -1,0 +1,9 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:c5-firma
+FN:Dachdecker Schmidt GmbH
+ORG:Dachdecker Schmidt GmbH
+TEL;TYPE=WORK:+49 211 4444
+EMAIL;TYPE=WORK:info@schmidt-dach.example
+CATEGORIES:Handwerker
+END:VCARD

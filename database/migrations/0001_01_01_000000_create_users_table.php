@@ -18,7 +18,18 @@ return new class extends Migration
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
             $table->rememberToken();
+            // Erweiterung Immoware Hub: Mandant, Rolle, Pflicht-2FA, Kontosperre (docs/immoware/08-security.md)
+            $table->unsignedBigInteger('organization_id')->nullable()->index();
+            $table->string('role', 32)->default('read_only');
+            $table->text('totp_secret')->nullable();
+            $table->timestamp('totp_confirmed_at')->nullable();
+            $table->text('recovery_codes')->nullable();
+            $table->timestamp('locked_until')->nullable();
+            $table->unsignedInteger('failed_login_count')->default(0);
+            $table->timestamp('last_login_at')->nullable();
+            $table->timestamp('disabled_at')->nullable();
             $table->timestamps();
+            $table->index(['organization_id', 'role']);
         });
 
         Schema::create('password_reset_tokens', function (Blueprint $table) {

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+  <BkToCstmrStmt>
+    <GrpHdr><MsgId>STMT-2</MsgId><CreDtTm>2026-09-01T06:00:00</CreDtTm></GrpHdr>
+    <Stmt>
+      <Id>2</Id>
+      <Acct><Id><IBAN>DE89370400440532013000</IBAN></Id></Acct>
+      <Ntry>
+        <Amt Ccy="EUR">320.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts><Cd>BOOK</Cd></Sts>
+        <BookgDt><Dt>2026-08-10</Dt></BookgDt>
+        <ValDt><Dt>2026-08-11</Dt></ValDt>
+        <AcctSvcrRef>REF-002</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <Refs><EndToEndId>E2E-002</EndToEndId></Refs>
+          <RltdPties>
+            <Dbtr><Pty><Nm>Erika Musterfrau</Nm></Pty></Dbtr>
+            <DbtrAcct><Id><IBAN>DE02500105170137075030</IBAN></Id></DbtrAcct>
+          </RltdPties>
+          <RmtInf><Ustrd>Hausgeld</Ustrd><Ustrd>September</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>

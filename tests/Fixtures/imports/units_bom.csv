@@ -1,0 +1,4 @@
+﻿Objektnummer,VE-Nummer,Einheitentyp,Etage,Wohnfläche
+OBJ-001,VE-01,Wohnung,EG,"65,50"
+OBJ-001,VE-02,Wohnung,1. OG,"72,00"
+OBJ-999,VE-01,Wohnung,EG,"40,00"

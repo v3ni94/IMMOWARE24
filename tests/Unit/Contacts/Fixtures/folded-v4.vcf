@@ -1,0 +1,16 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:urn:uuid:c3-folded
+FN:Anna Beispiel
+N:Beispiel;Anna;;;
+EMAIL;TYPE="work,pref":anna.beispiel@example.com
+TEL;VALUE=uri;TYPE=cell:tel:+49-172-555-0001
+TEL;VALUE=uri;TYPE=work:tel:+49-211-555-0002
+ADR;TYPE=home;LABEL="Musterweg 5^n40213 Düsseldorf":;;Musterweg 5;Düsseldorf;;40213;DE
+NOTE:Dies ist eine sehr lange Notiz die vom Server gefaltet wurde weil sie mehr 
+ als fünfundsiebzig Zeichen enthält und deshalb auf mehrere physische Zeilen v
+ erteilt ist.
+CATEGORIES:Beirat
+X-HUB-TEST:wert1
+X-HUB-TEST:wert2
+END:VCARD

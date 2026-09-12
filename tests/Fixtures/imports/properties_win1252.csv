@@ -1,0 +1,4 @@
+Objektnummer;Bezeichnung;Verwaltungsart;Straße;Hausnummer;PLZ;Ort
+OBJ-001;WEG Königsallee;WEG;Königsallee;12;40212;Düsseldorf
+OBJ-002;MFH Mühlenstraße;Mietverwaltung;Mühlenstraße;7a;40213;Düsseldorf
+;Ohne Nummer;WEG;Teststraße;1;40000;Nirgendwo

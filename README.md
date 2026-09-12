@@ -1,8 +1,72 @@
 # Immoware Hub
 
-Integrationsschicht der Hausverwaltung Müller GmbH um den Immoware24-Mandanten. Laravel 12, PHP 8.4, MariaDB 10.11+, Redis 7, Horizon, Scheduler.
+Integrationsschicht der Hausverwaltung Müller GmbH um den Immoware24-Mandanten. Laravel 13, PHP 8.4, MariaDB 10.11+ (Produktion), SQLite in-memory (Tests), Redis 7 (Queue, Cache, Locks), Scheduler.
 
-Stand: 11.09.2026. Projektphase: Konzeption abgeschlossen, Phase 0 (Voraussetzungen und Probe) nicht begonnen. Es existiert noch kein Anwendungscode.
+Stand: 12.09.2026. Projektphase: Anwendungscode der Phasen 1 bis 8 des Implementierungsplans vorhanden und automatisiert getestet, Phase 0 (Zugang und Probe am eigenen Mandanten) nicht begonnen. Siehe Abschnitt Status.
+
+## Status
+
+| Phase | Inhalt | Stand im Code |
+|---|---|---|
+| 0 | Voraussetzungen, Zugang, Probe am Mandanten | nicht begonnen, WAITING_FOR_VENDOR_ACCESS (DAV-Modul, Supportbestätigung) |
+| 1 | Projektgerüst, Core, Auth (2FA TOTP), Rollen, API-Keys, Audit-Hash-Kette | vorhanden, Modul Security |
+| 2 | Capability Registry, Probe-Kommando `hub:probe`, Connection-Verwaltung, Rate Limit, Circuit Breaker | vorhanden, Modul Connector |
+| 3 | WebDAV-Dokumentenspiegel (lesend), Chunking, Mark-and-Sweep | vorhanden, Modul Documents |
+| 4 | CardDAV-Kontaktspiegel (lesend), Duplikatvorschläge | vorhanden, Modul Contacts |
+| 5 | CSV-Import Stammdaten, Drop-Ordner, Formatbestätigung | vorhanden, Modul Imports |
+| 6 | Konfliktqueue, proposed_change, Datenalter, Export-Erinnerungen | vorhanden, Modul Sync und Imports |
+| 7 | Resilienz, DLQ, Locks, Payload-Archiv, Metriken, Zeitpläne | vorhanden, Modul Sync |
+| 8 | Schreibpfad Posteingang (create-only PUT, Idempotenz, Verify), Flags, BootGuard | vorhanden, Modul Documents und Api, Standard deaktiviert |
+| 10, 11, 12 | DATEV-CSV, CAMT.053 (lesend), CalDAV-Terminspiegel | vorhanden (Importer, Parser, Modul Calendar), MT940 nur Stub |
+| 13, 14 | Ausgehende HMAC-Webhooks (Outbox), REST-API v1 mit Scopes, OpenAPI, Directory, Health | vorhanden, Module Webhooks und Api, Webhooks standardmäßig deaktiviert |
+
+Alle Bausteine sind ausschließlich gegen simulierte DAV-Server (`Http::fake()`) und Testdateien geprüft. Kein Baustein wurde bisher am echten Immoware24-Mandanten getestet. Verhalten des DAV-Servers (Auth-Schema, ETag-Stabilität, sync-token, 412 bei If-None-Match) bleibt VERMUTET bis zur Probe in Phase 0. Die Admin-Oberfläche (Modul Admin) ist noch nicht ausgebaut. Die Zahlen der automatisierten Tests stehen in `docs/immoware/10-test-report.md`, Abschnitt 6.
+
+## Entwicklung
+
+Voraussetzungen: PHP 8.4 mit den Erweiterungen pdo_sqlite, pdo_mysql, redis, mbstring, openssl, Composer. Kein Node, kein Frontend-Build. Neue Composer- oder npm-Pakete nur nach Rücksprache (die Entwicklungsumgebung hat keinen Zugriff auf GitHub-Downloads).
+
+Setup:
+
+```
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+php artisan hub:doctor                 Konfiguration, Flags, Queue, DB, Redis, BootGuard, Adapter prüfen
+php artisan hub:user:create            Ersten Nutzer anlegen
+php artisan hub:api-key:create         API-Key mit Scopes anlegen
+```
+
+Wichtige Befehle:
+
+```
+php artisan hub:probe {connection}                  Probe einer Connection (OPTIONS, PROPFIND, ETag-Stabilität)
+php artisan hub:sync:dispatch {entity} --mode=...   Sync-Jobs einplanen (document, contact, calendar_event, all)
+php artisan hub:sync:run {connection} {entity}      Einzelnen Lauf ausführen
+php artisan hub:sync:bootstrap {connection} {entity} --stages=1,10,100,1000,alle
+php artisan hub:imports:scan --process              Drop-Ordner erfassen und verarbeiten
+php artisan hub:imports:remind                      Überfällige manuelle Exporte auflisten
+php artisan documents:scan {connection}             WebDAV-Ordner scannen
+php artisan hub:openapi:export                      OpenAPI nach docs/api/openapi.json schreiben
+php artisan audit:verify, audit:anchor              Audit-Hash-Kette prüfen und verankern
+php artisan hub:webhooks:redeliver                  Fehlgeschlagene Zustellungen erneut versuchen
+php artisan schedule:list                           Alle Zeitpläne (routes/console.php, Modul-Provider)
+```
+
+Testlauf und Qualitätssicherung (vor jedem Commit):
+
+```
+php artisan test                                            Gesamte Suite, SQLite in-memory
+php artisan test --filter=Documents                         Teilmenge je Modul
+DB_CONNECTION=sqlite DB_DATABASE=:memory: php artisan migrate:fresh --env=testing
+vendor/bin/pint --test                                      Codestil
+phpstan analyse --no-progress                               Statische Analyse, Level 5
+```
+
+Hinweis: `migrate:fresh --env=testing` greift ohne die beiden DB-Variablen auf die MariaDB-Verbindung der lokalen `.env` zu. Die Testsuite selbst setzt SQLite in-memory über `phpunit.xml`.
+
+Alle Schreib-Flags (`IMMOWARE_WRITE_*`) stehen standardmäßig auf false. Die hart gesperrten Flags (Overwrite, Delete, Move, CardDAV, CalDAV) lassen die Anwendung beim Start mit Exception abbrechen, wenn sie auf true stehen (BootGuard). Der Upload in den Posteingang über `POST /api/v1/documents` antwortet ohne Freigabe mit 403 `application/problem+json`, Code `write_disabled`.
 
 ## Zweck
 
@@ -59,20 +123,23 @@ Vollständige Herleitung mit Quellen in `docs/immoware/` und in der Architekture
     └── immoware/                  Schnittstellenrecherche (01 bis 10)
 ```
 
-Geplante Anwendungsstruktur (ab Phase 1, siehe ADR 0001):
+Anwendungsstruktur (modularer Monolith, siehe ADR 0001 und CLAUDE.md):
 
 ```
+app/Core/                 Contracts, DTOs, Enums, BootGuard, Correlation-ID, hub:doctor
 app/Modules/
-  Core         Auth (2FA TOTP), Rollen, API-Keys, Audit (append-only, Hash-Kette)
-  Connectors   ImmowareConnectorInterface, WebDav-, CardDav-, CalDav-, Csv-, Datev-, BankFile-Connector
-  Capability   CapabilityRegistry (Belegstatus, Test, Hard Lock)
-  Probe        ServerProbe (Strategie je Connection, Server-Fingerprint)
-  Sync         SyncOrchestrator, ChangeDetector, Mapper, Reconciler, Bootstrap
-  Domain       properties, units, contacts, contracts, documents, open_items, transactions
-  Writes       WriteOperationService (Idempotenz, Precheck, Verify)
-  Conflicts    ConflictQueue inkl. proposed_change
-  Resilience   feste Limits, CircuitBreaker, DLQ, Degraded-Mode
-  Outbound     HMAC-Webhooks (erst mit benanntem Konsumenten aktiv)
+  Security     Users, Rollen, 2FA TOTP, API-Keys, Scopes, Audit (append-only, Hash-Kette)
+  Connector    ImmowareConnectorInterface, ConnectorManager, CapabilityRegistry, RateLimitManager, CircuitBreaker, Probe, REST-API-Slot
+  Documents    WebDAV-Adapter, Dokumentenspiegel, Posteingang-Upload (einziger Schreibpfad)
+  Contacts     CardDAV-Adapter, vCard-Parser, Kontaktspiegel, Duplikatvorschläge
+  Calendar     CalDAV-Adapter, iCalendar-Parser, Terminspiegel
+  Sync         Jobs, Queues, Retry, DLQ, Locks, Konflikte, proposed_change, Payload-Archiv, Mapping-Versionen, Zeitpläne
+  Imports      CSV, DATEV-CSV, CAMT.053, Drop-Ordner, Export-Erinnerungen, file_import-Adapter
+  Estate       Spiegeltabellen properties, units, contracts, open_items, transactions
+  Api          REST v1, OpenAPI, Directory, Health, RFC-7807-Fehler
+  Webhooks     Outbox, HMAC-Signatur, Zustellungen, Redelivery
+  Admin        Blade-Oberfläche (im Aufbau)
+routes/modules/<name>.php, config/hub/<name>.php, resources/views/<name>/, tests/Feature|Unit/<Name>/
 ```
 
 ## Leitprinzipien

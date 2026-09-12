@@ -1,0 +1,4 @@
+OP-Nummer;Objektnummer;VE-Nummer;Art;Fälligkeit;Betrag;Offen
+OP-1;OBJ-001;VE-01;Miete;01.08.2026;850,00;850,00
+OP-2;OBJ-001;VE-02;Hausgeld;01.08.2026;320,00;120,00
+OP-3;OBJ-001;VE-01;Nebenkosten;15.08.2026;1.200,50;1.200,50

@@ -1,0 +1,18 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:c1-mueller
+FN:Jürgen Müller-Lüdenscheidt
+N:Müller-Lüdenscheidt;Jürgen;;Herr;
+ORG:Hausverwaltung Müller GmbH;Buchhaltung
+TITLE:Geschäftsführer
+EMAIL;TYPE=INTERNET,WORK,PREF:juergen.mueller@Example.DE
+EMAIL;TYPE=HOME:privat@example.org
+TEL;TYPE=WORK,VOICE:+49 (0) 2103 123456
+TEL;TYPE=CELL:0171 9876543
+TEL;TYPE=HOME:02103 654321
+ADR;TYPE=WORK:;;Hauptstraße 12\, Hinterhaus;Hilden;NRW;40721;Deutschland
+NOTE:Zeile eins\nZeile zwei\; mit Semikolon\, Komma und Backslash \\ am Ende
+CATEGORIES:Eigentümer,Mieter
+X-IMMOWARE-KUNDENNUMMER:K-4711
+REV:2026-09-01T10:00:00Z
+END:VCARD

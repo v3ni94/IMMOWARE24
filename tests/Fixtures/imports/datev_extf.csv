@@ -1,0 +1,5 @@
+"EXTF";700;21;"Buchungsstapel";12;20260901120000000;;"RE";"HUB";"";12345;67890;20260101;4;20260801;20260831;"Immoware24 Export August";"";1;0;0;"EUR";;;;;"";;;""
+Umsatz (ohne Soll/Haben-Kz);Soll/Haben-Kennzeichen;WKZ Umsatz;Kurs;Basis-Umsatz;WKZ Basis-Umsatz;Konto;Gegenkonto (ohne BU-Schlüssel);BU-Schlüssel;Belegdatum;Belegfeld 1;Belegfeld 2;Skonto;Buchungstext;Postensperre;Diverse Adressnummer;Geschäftspartnerbank;Sachverhalt;Zinssperre;Beleglink;KOST1 - Kostenstelle;KOST2 - Kostenstelle
+850,00;S;;;;;1200;8400;;0108;RE-2026-001;;;"Miete Müller VE-01";;;;;;;100;OBJ-001
+1.234,56;H;;;;;1800;4400;;1508;RE-2026-002;;;"Hausgeld Rückzahlung";;;;;;;;OBJ-001
+850,00;S;;;;;1200;8400;;0108;RE-2026-001;;;"Miete Müller VE-01";;;;;;;100;OBJ-001

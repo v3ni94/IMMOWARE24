@@ -19,6 +19,18 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <env name="APP_KEY" value="base64:8uZk3F2sV5m1cJzT9pQwXh7rL0aBdE4gN6yK1sU2vW8="/>
+        <env name="HUB_BOOT_GUARD" value="true"/>
+        <env name="IMMOWARE_READ_ENABLED" value="true"/>
+        <env name="IMMOWARE_WRITE_ENABLED" value="false"/>
+        <env name="IMMOWARE_WRITE_WEBDAV_CREATE_ENABLED" value="false"/>
+        <env name="IMMOWARE_WRITE_WEBDAV_OVERWRITE_ENABLED" value="false"/>
+        <env name="IMMOWARE_WRITE_WEBDAV_DELETE_ENABLED" value="false"/>
+        <env name="IMMOWARE_WRITE_WEBDAV_MOVE_ENABLED" value="false"/>
+        <env name="IMMOWARE_WRITE_CARDDAV_ENABLED" value="false"/>
+        <env name="IMMOWARE_WRITE_CALDAV_ENABLED" value="false"/>
+        <env name="HUB_WEBHOOKS_ENABLED" value="false"/>
+        <env name="HUB_API_KEYS_ENABLED" value="false"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>

@@ -1,0 +1,5026 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Immoware Hub API",
+        "version": "v1",
+        "summary": "REST-API des Immoware Hub für Spiegeldaten aus Immoware24, Hub-Vorgänge, Verzeichnis und Health.",
+        "description": "Alle Ressourcen liefern Spiegeldaten mit Herkunftsblock provenance (source_system, external_id, last_synced_at, connector, mapping_version, data_age_seconds, stale). Immoware24 ist Master; der Hub schreibt ausschließlich neue Dateien in den WebDAV-Posteingang (POST /api/v1/documents) und legt für alle anderen Änderungswünsche Änderungsvorschläge an.\n\n**Authentifizierung**: Authorization: Bearer hub_live_<prefix>_<secret>. Jede Operation nennt in x-scope die benötigten Scopes; admin umfasst alle Scopes.\n\n**Pagination**: page und per_page (maximal 500), Antwort {data, meta:{page, per_page, total}, links}. Sortierung über sort=-updated_at, Feldauswahl über fields=.\n\n**Fehler**: application/problem+json nach RFC 7807 mit type unter https://immoware.muellerhv.de/errors/<code>, request_id entspricht X-Correlation-Id.\n\n**Rate Limits**: 600 Requests pro Minute lesend, 60 pro Minute schreibend je Key. Header RateLimit-Limit, RateLimit-Remaining, bei 429 Retry-After.\n\n**Idempotenz**: Header Idempotency-Key ist für POST und PATCH Pflicht. Antworten werden 24 Stunden gespeichert und mit Idempotent-Replayed: true wiederholt.\n\n**Webhooks**: ausgehend, HMAC-SHA256-signiert, Ereigniskatalog im Abschnitt webhooks. Es gibt keine eingehenden Webhooks von Immoware24.",
+        "contact": {
+            "name": "Hausverwaltung Müller GmbH"
+        }
+    },
+    "servers": [
+        {
+            "url": "https://immoware.muellerhv.de",
+            "description": "Produktion"
+        }
+    ],
+    "tags": [
+        {
+            "name": "meta",
+            "description": "Verzeichnis, Aufrufer, Sync-Status, Capabilities"
+        },
+        {
+            "name": "directory",
+            "description": "Telefonbuch aus dem Kontaktspiegel"
+        },
+        {
+            "name": "health",
+            "description": "Health-Checks ohne Pflicht-Auth, Details nur mit Scope admin"
+        },
+        {
+            "name": "docs",
+            "description": "OpenAPI und HTML-Dokumentation"
+        },
+        {
+            "name": "webhooks",
+            "description": "Verwaltung ausgehender Webhook-Endpunkte"
+        },
+        {
+            "name": "properties",
+            "description": "Objekte (Liegenschaften) aus dem Immoware24-Spiegel."
+        },
+        {
+            "name": "units",
+            "description": "Verwaltungseinheiten je Objekt."
+        },
+        {
+            "name": "contacts",
+            "description": "Kontakte aus dem CardDAV-Spiegel. PATCH erzeugt ausschließlich einen Änderungsvorschlag."
+        },
+        {
+            "name": "contracts",
+            "description": "Mietverträge je Einheit."
+        },
+        {
+            "name": "documents",
+            "description": "Dokumentmetadaten aus dem WebDAV-Spiegel. POST legt einen Upload-Antrag für den Posteingang an."
+        },
+        {
+            "name": "invoices",
+            "description": "Rechnungen aus Importen (Phase 3)."
+        },
+        {
+            "name": "open-items",
+            "description": "Offene Posten je Stichtag (Phase 3)."
+        },
+        {
+            "name": "transactions",
+            "description": "Buchungen aus DATEV-CSV und CAMT.053 (Phase 3). Duplikate werden nicht verschmolzen, row_hash dient der Deduplikation."
+        },
+        {
+            "name": "cases",
+            "description": "Hub-eigene Vorgänge. Kein Schreibpfad nach Immoware24."
+        },
+        {
+            "name": "calendar-events",
+            "description": "Kalendereinträge aus dem CalDAV-Spiegel (lesend, Phase 3)."
+        }
+    ],
+    "paths": {
+        "/api/docs": {
+            "get": {
+                "operationId": "api_docs_html",
+                "summary": "API-Dokumentation",
+                "tags": [
+                    "docs"
+                ],
+                "parameters": [],
+                "responses": {
+                    "200": {
+                        "description": "HTML-Dokumentation"
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    }
+                },
+                "x-scope": [],
+                "x-effect": "hub",
+                "x-evidence-status": null,
+                "x-phase": 1
+            }
+        },
+        "/api/docs/openapi.json": {
+            "get": {
+                "operationId": "api_docs_openapi",
+                "summary": "API-Dokumentation",
+                "tags": [
+                    "docs"
+                ],
+                "parameters": [],
+                "responses": {
+                    "200": {
+                        "description": "OpenAPI-Spezifikation"
+                    },
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    }
+                },
+                "x-scope": [],
+                "x-effect": "hub",
+                "x-evidence-status": null,
+                "x-phase": 1
+            }
+        },
+        "/api/v1": {
+            "get": {
+                "operationId": "api_v1_root",
+                "summary": "Ressourcenverzeichnis",
+                "tags": [
+                    "meta"
+                ],
+                "parameters": [],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "x-scope": [],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/calendar-events": {
+            "get": {
+                "operationId": "api_v1_calendar_events_index",
+                "summary": "calendar-events auflisten",
+                "tags": [
+                    "calendar-events"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "unit_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "contact_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "case_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "starts_at",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/CalendarEvent"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "properties:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "VERIFIZIERT",
+                "x-phase": 3
+            }
+        },
+        "/api/v1/calendar-events/{id}": {
+            "get": {
+                "operationId": "api_v1_calendar_events_show",
+                "summary": "calendar-events einzeln lesen",
+                "tags": [
+                    "calendar-events"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/CalendarEvent"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "properties:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "VERIFIZIERT",
+                "x-phase": 3
+            }
+        },
+        "/api/v1/capabilities": {
+            "get": {
+                "operationId": "api_v1_capabilities",
+                "summary": "Capability Registry",
+                "tags": [
+                    "meta"
+                ],
+                "parameters": [],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "x-scope": [
+                    "sync:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/cases": {
+            "get": {
+                "operationId": "api_v1_cases_index",
+                "summary": "cases auflisten",
+                "tags": [
+                    "cases"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "unit_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "contact_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "immoware_ticket_reference",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Case"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "cases:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            },
+            "post": {
+                "operationId": "api_v1_cases_store",
+                "summary": "cases anlegen",
+                "tags": [
+                    "cases"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/IdempotencyKey"
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    },
+                    "409": {
+                        "$ref": "#/components/responses/Conflict"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    },
+                    "201": {
+                        "description": "Vorgang",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Case"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "cases:write"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1,
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CaseWrite"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/cases/{id}": {
+            "get": {
+                "operationId": "api_v1_cases_show",
+                "summary": "cases einzeln lesen",
+                "tags": [
+                    "cases"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Case"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "cases:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            },
+            "patch": {
+                "operationId": "api_v1_cases_update",
+                "summary": "cases ändern",
+                "tags": [
+                    "cases"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "$ref": "#/components/parameters/IdempotencyKey"
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    },
+                    "409": {
+                        "$ref": "#/components/responses/Conflict"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    },
+                    "200": {
+                        "description": "Vorgang",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Case"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "cases:write"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1,
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CaseWrite"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/contacts": {
+            "get": {
+                "operationId": "api_v1_contacts_index",
+                "summary": "contacts auflisten",
+                "tags": [
+                    "contacts"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "kind",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "last_name",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "unit_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "role",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "company_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Contact"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "contacts:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "VERIFIZIERT",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/contacts/{id}": {
+            "get": {
+                "operationId": "api_v1_contacts_show",
+                "summary": "contacts einzeln lesen",
+                "tags": [
+                    "contacts"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Contact"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "contacts:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "VERIFIZIERT",
+                "x-phase": 1
+            },
+            "patch": {
+                "operationId": "api_v1_contacts_propose",
+                "summary": "Änderungsvorschlag für Kontakt anlegen (kein Writeback)",
+                "tags": [
+                    "contacts"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "$ref": "#/components/parameters/IdempotencyKey"
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    },
+                    "409": {
+                        "$ref": "#/components/responses/Conflict"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    },
+                    "202": {
+                        "description": "Änderungsvorschlag angelegt",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/ContactProposalResult"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "contacts:write"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "VERIFIZIERT",
+                "x-phase": 1,
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ContactProposal"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/contracts": {
+            "get": {
+                "operationId": "api_v1_contracts_index",
+                "summary": "contracts auflisten",
+                "tags": [
+                    "contracts"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "unit_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "contact_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "contract_number",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Contract"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "contracts:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/contracts/{id}": {
+            "get": {
+                "operationId": "api_v1_contracts_show",
+                "summary": "contracts einzeln lesen",
+                "tags": [
+                    "contracts"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Contract"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "contracts:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/directory": {
+            "get": {
+                "operationId": "api_v1_directory_index",
+                "summary": "Telefonbuch",
+                "tags": [
+                    "directory"
+                ],
+                "parameters": [
+                    {
+                        "name": "format",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "json",
+                                "vcf",
+                                "xml"
+                            ]
+                        },
+                        "description": "json (Standard), vcf (vCard 3.0 Liste), xml (generische Telefonbuchstruktur)."
+                    },
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Verzeichnis",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/DirectoryEntry"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        }
+                                    }
+                                }
+                            },
+                            "text/vcard": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            "application/xml": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "directory:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/directory/search": {
+            "get": {
+                "operationId": "api_v1_directory_search",
+                "summary": "Telefonbuch durchsuchen",
+                "tags": [
+                    "directory"
+                ],
+                "parameters": [
+                    {
+                        "name": "format",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "json",
+                                "vcf",
+                                "xml"
+                            ]
+                        },
+                        "description": "json (Standard), vcf (vCard 3.0 Liste), xml (generische Telefonbuchstruktur)."
+                    },
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 2
+                        },
+                        "description": "Suche über Name, Firma, Telefon, Mobil, Rolle, Objekt, Einheit."
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Verzeichnis",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/DirectoryEntry"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        }
+                                    }
+                                }
+                            },
+                            "text/vcard": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            "application/xml": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "directory:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/documents": {
+            "get": {
+                "operationId": "api_v1_documents_index",
+                "summary": "documents auflisten",
+                "tags": [
+                    "documents"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "unit_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "contact_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "case_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "folder_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "content_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "document_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "origin",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Document"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "documents:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "VERIFIZIERT",
+                "x-phase": 1
+            },
+            "post": {
+                "operationId": "api_v1_documents_upload",
+                "summary": "Upload-Antrag für den Posteingang anlegen",
+                "tags": [
+                    "documents"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/IdempotencyKey"
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    },
+                    "409": {
+                        "$ref": "#/components/responses/Conflict"
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    },
+                    "202": {
+                        "description": "Upload-Antrag angenommen",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/DocumentUploadResult"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "501": {
+                        "$ref": "#/components/responses/NotImplemented"
+                    }
+                },
+                "x-scope": [
+                    "documents:write"
+                ],
+                "x-effect": "immoware24",
+                "x-evidence-status": "VERIFIZIERT",
+                "x-phase": 1,
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DocumentUpload"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/documents/{id}": {
+            "get": {
+                "operationId": "api_v1_documents_show",
+                "summary": "documents einzeln lesen",
+                "tags": [
+                    "documents"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Document"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "documents:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "VERIFIZIERT",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/invoices": {
+            "get": {
+                "operationId": "api_v1_invoices_index",
+                "summary": "invoices auflisten",
+                "tags": [
+                    "invoices"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "contact_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "invoice_number",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Invoice"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "finance:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 3
+            }
+        },
+        "/api/v1/invoices/{id}": {
+            "get": {
+                "operationId": "api_v1_invoices_show",
+                "summary": "invoices einzeln lesen",
+                "tags": [
+                    "invoices"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Invoice"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "finance:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 3
+            }
+        },
+        "/api/v1/me": {
+            "get": {
+                "operationId": "api_v1_me",
+                "summary": "Aktueller Aufrufer",
+                "tags": [
+                    "meta"
+                ],
+                "parameters": [],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "x-scope": [],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/open-items": {
+            "get": {
+                "operationId": "api_v1_open_items_index",
+                "summary": "open-items auflisten",
+                "tags": [
+                    "open-items"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "unit_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "contact_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "kind",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "as_of_date",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/OpenItem"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "finance:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 3
+            }
+        },
+        "/api/v1/open-items/{id}": {
+            "get": {
+                "operationId": "api_v1_open_items_show",
+                "summary": "open-items einzeln lesen",
+                "tags": [
+                    "open-items"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/OpenItem"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "finance:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 3
+            }
+        },
+        "/api/v1/properties": {
+            "get": {
+                "operationId": "api_v1_properties_index",
+                "summary": "properties auflisten",
+                "tags": [
+                    "properties"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "management_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "postal_code",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "city",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "immoware_object_number",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Propertie"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "properties:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/properties/{id}": {
+            "get": {
+                "operationId": "api_v1_properties_show",
+                "summary": "properties einzeln lesen",
+                "tags": [
+                    "properties"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Propertie"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "properties:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/sync/status": {
+            "get": {
+                "operationId": "api_v1_sync_status",
+                "summary": "Synchronisationsstatus je Connection",
+                "tags": [
+                    "meta"
+                ],
+                "parameters": [],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "x-scope": [
+                    "sync:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/transactions": {
+            "get": {
+                "operationId": "api_v1_transactions_index",
+                "summary": "transactions auflisten",
+                "tags": [
+                    "transactions"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "bank_account_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "kind",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "booking_date",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Transaction"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "finance:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 3
+            }
+        },
+        "/api/v1/transactions/{id}": {
+            "get": {
+                "operationId": "api_v1_transactions_show",
+                "summary": "transactions einzeln lesen",
+                "tags": [
+                    "transactions"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Transaction"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "finance:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 3
+            }
+        },
+        "/api/v1/units": {
+            "get": {
+                "operationId": "api_v1_units_index",
+                "summary": "units auflisten",
+                "tags": [
+                    "units"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/per_page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/sort"
+                    },
+                    {
+                        "$ref": "#/components/parameters/fields"
+                    },
+                    {
+                        "$ref": "#/components/parameters/q"
+                    },
+                    {
+                        "$ref": "#/components/parameters/updated_since"
+                    },
+                    {
+                        "$ref": "#/components/parameters/external_id"
+                    },
+                    {
+                        "$ref": "#/components/parameters/status"
+                    },
+                    {
+                        "$ref": "#/components/parameters/include_deleted"
+                    },
+                    {
+                        "name": "property_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "unit_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "unit_number",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "floor",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Seite",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/Unit"
+                                            }
+                                        },
+                                        "meta": {
+                                            "$ref": "#/components/schemas/PageMeta"
+                                        },
+                                        "links": {
+                                            "$ref": "#/components/schemas/Links"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "x-scope": [
+                    "units:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/units/{id}": {
+            "get": {
+                "operationId": "api_v1_units_show",
+                "summary": "units einzeln lesen",
+                "tags": [
+                    "units"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Einzelressource",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/Unit"
+                                        },
+                                        "meta": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "units:read"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "DOKUMENTIERT",
+                "x-phase": 1
+            }
+        },
+        "/api/v1/webhook-endpoints": {
+            "get": {
+                "operationId": "api_v1_webhook_endpoints_index",
+                "summary": "Webhook-Endpunkte auflisten",
+                "tags": [
+                    "webhooks"
+                ],
+                "parameters": [],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "200": {
+                        "description": "Webhook-Endpunkt",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/WebhookEndpoint"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "webhooks:manage"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 4
+            },
+            "post": {
+                "operationId": "api_v1_webhook_endpoints_store",
+                "summary": "Webhook-Endpunkt anlegen",
+                "tags": [
+                    "webhooks"
+                ],
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/IdempotencyKey"
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "201": {
+                        "description": "Webhook-Endpunkt",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/WebhookEndpoint"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "webhooks:manage"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 4,
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookEndpointWrite"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/webhook-endpoints/{id}": {
+            "delete": {
+                "operationId": "api_v1_webhook_endpoints_destroy",
+                "summary": "Webhook-Endpunkt entfernen",
+                "tags": [
+                    "webhooks"
+                ],
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "401": {
+                        "$ref": "#/components/responses/Unauthenticated"
+                    },
+                    "403": {
+                        "$ref": "#/components/responses/Forbidden"
+                    },
+                    "429": {
+                        "$ref": "#/components/responses/RateLimited"
+                    },
+                    "204": {
+                        "description": "Webhook-Endpunkt",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/components/schemas/WebhookEndpoint"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "$ref": "#/components/responses/ValidationFailed"
+                    },
+                    "404": {
+                        "$ref": "#/components/responses/NotFound"
+                    }
+                },
+                "x-scope": [
+                    "webhooks:manage"
+                ],
+                "x-effect": "hub",
+                "x-evidence-status": "HUB",
+                "x-phase": 4
+            }
+        },
+        "/health": {
+            "get": {
+                "operationId": "health_index",
+                "summary": "Aggregierter Health-Status",
+                "tags": [
+                    "health"
+                ],
+                "parameters": [],
+                "responses": {
+                    "200": {
+                        "description": "Dienst gesund oder degraded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Mindestens ein Check ist down (z. B. Spiegeldaten stale)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        }
+                    }
+                },
+                "x-scope": [],
+                "x-effect": "hub",
+                "x-evidence-status": null,
+                "x-phase": 1,
+                "security": [
+                    [],
+                    {
+                        "apiKey": []
+                    }
+                ]
+            }
+        },
+        "/health/database": {
+            "get": {
+                "operationId": "health_database",
+                "summary": "Health-Check database",
+                "tags": [
+                    "health"
+                ],
+                "parameters": [],
+                "responses": {
+                    "200": {
+                        "description": "Dienst gesund oder degraded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Mindestens ein Check ist down (z. B. Spiegeldaten stale)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        }
+                    }
+                },
+                "x-scope": [],
+                "x-effect": "hub",
+                "x-evidence-status": null,
+                "x-phase": 1,
+                "security": [
+                    [],
+                    {
+                        "apiKey": []
+                    }
+                ]
+            }
+        },
+        "/health/immoware": {
+            "get": {
+                "operationId": "health_immoware",
+                "summary": "Health-Check immoware",
+                "tags": [
+                    "health"
+                ],
+                "parameters": [],
+                "responses": {
+                    "200": {
+                        "description": "Dienst gesund oder degraded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Mindestens ein Check ist down (z. B. Spiegeldaten stale)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        }
+                    }
+                },
+                "x-scope": [],
+                "x-effect": "hub",
+                "x-evidence-status": null,
+                "x-phase": 1,
+                "security": [
+                    [],
+                    {
+                        "apiKey": []
+                    }
+                ]
+            }
+        },
+        "/health/queue": {
+            "get": {
+                "operationId": "health_queue",
+                "summary": "Health-Check queue",
+                "tags": [
+                    "health"
+                ],
+                "parameters": [],
+                "responses": {
+                    "200": {
+                        "description": "Dienst gesund oder degraded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Mindestens ein Check ist down (z. B. Spiegeldaten stale)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        }
+                    }
+                },
+                "x-scope": [],
+                "x-effect": "hub",
+                "x-evidence-status": null,
+                "x-phase": 1,
+                "security": [
+                    [],
+                    {
+                        "apiKey": []
+                    }
+                ]
+            }
+        }
+    },
+    "webhooks": {
+        "contact.created": {
+            "post": {
+                "summary": "Neuer Kontakt im Spiegel",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "contact.updated": {
+            "post": {
+                "summary": "Kontakt im Spiegel geändert",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "property.updated": {
+            "post": {
+                "summary": "Objekt im Spiegel geändert",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "unit.updated": {
+            "post": {
+                "summary": "Einheit im Spiegel geändert",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "contract.created": {
+            "post": {
+                "summary": "Neuer Vertrag im Spiegel",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "contract.terminated": {
+            "post": {
+                "summary": "Vertrag beendet (end_date gesetzt)",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "document.created": {
+            "post": {
+                "summary": "Neues Dokument im Spiegel",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "invoice.created": {
+            "post": {
+                "summary": "Neue Rechnung importiert",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "open_item.created": {
+            "post": {
+                "summary": "Neuer offener Posten",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "open_item.paid": {
+            "post": {
+                "summary": "Offener Posten ausgeglichen",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "case.created": {
+            "post": {
+                "summary": "Neuer Hub-Vorgang",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "case.updated": {
+            "post": {
+                "summary": "Hub-Vorgang geändert",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "sync.failed": {
+            "post": {
+                "summary": "Synchronisationslauf fehlgeschlagen",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        },
+        "sync.stale": {
+            "post": {
+                "summary": "Spiegeldaten überschreiten das zulässige Datenalter",
+                "description": "Signatur: Header X-Hub-Signature mit t=<unix-sekunden>,v1=<hex HMAC-SHA256 über \"<t>.<body>\">. Header X-Hub-Event und X-Hub-Delivery. Zeitstempel älter als 300 Sekunden verwerfen (Replay-Schutz). Antwort 2xx gilt als zugestellt, Timeout 10 Sekunden, Wiederholung nach 30, 120, 600, 1800 Sekunden, danach DLQ.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WebhookPayload"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "2XX": {
+                        "description": "Zugestellt"
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "apiKey": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "hub_live_<prefix>_<secret>",
+                "description": "API-Key im Authorization-Header. Scopes je Key, siehe x-scope je Operation. Der Scope admin umfasst alle Scopes."
+            }
+        },
+        "parameters": {
+            "page": {
+                "name": "page",
+                "in": "query",
+                "schema": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1
+                }
+            },
+            "per_page": {
+                "name": "per_page",
+                "in": "query",
+                "schema": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 100
+                },
+                "description": "Maximal 500."
+            },
+            "sort": {
+                "name": "sort",
+                "in": "query",
+                "schema": {
+                    "type": "string",
+                    "default": "-updated_at"
+                },
+                "description": "Feld, optional mit führendem Minus für absteigend. Erlaubte Felder je Ressource."
+            },
+            "fields": {
+                "name": "fields",
+                "in": "query",
+                "schema": {
+                    "type": "string"
+                },
+                "description": "Sparse Fieldsets, kommagetrennt. id und provenance werden immer ausgegeben."
+            },
+            "q": {
+                "name": "q",
+                "in": "query",
+                "schema": {
+                    "type": "string"
+                },
+                "description": "Volltextsuche über die suchbaren Spalten der Ressource."
+            },
+            "updated_since": {
+                "name": "updated_since",
+                "in": "query",
+                "schema": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "description": "Änderung im Hub seit diesem Zeitpunkt (Hub-updated_at, nicht Immoware24)."
+            },
+            "external_id": {
+                "name": "external_id",
+                "in": "query",
+                "schema": {
+                    "type": "string"
+                },
+                "description": "Exakter externer Schlüssel des Quellsystems."
+            },
+            "status": {
+                "name": "status",
+                "in": "query",
+                "schema": {
+                    "type": "string"
+                }
+            },
+            "include_deleted": {
+                "name": "include_deleted",
+                "in": "query",
+                "schema": {
+                    "type": "boolean",
+                    "default": false
+                },
+                "description": "Soft-gelöschte Spiegeldaten einbeziehen."
+            },
+            "IdempotencyKey": {
+                "name": "Idempotency-Key",
+                "in": "header",
+                "required": true,
+                "schema": {
+                    "type": "string",
+                    "maxLength": 128
+                },
+                "description": "Pflicht für POST und PATCH. Wiederholung liefert die gespeicherte Antwort (24 Stunden) mit Header Idempotent-Replayed: true; abweichender Body liefert 409 idempotency_mismatch."
+            }
+        },
+        "headers": {
+            "RateLimit-Limit": {
+                "schema": {
+                    "type": "integer"
+                },
+                "description": "Erlaubte Requests pro Minute."
+            },
+            "RateLimit-Remaining": {
+                "schema": {
+                    "type": "integer"
+                }
+            },
+            "Retry-After": {
+                "schema": {
+                    "type": "integer"
+                },
+                "description": "Sekunden bis zum nächsten Versuch (bei 429)."
+            },
+            "X-Correlation-Id": {
+                "schema": {
+                    "type": "string"
+                },
+                "description": "Wird gespiegelt oder erzeugt, erscheint als request_id im Fehlerobjekt."
+            },
+            "Idempotent-Replayed": {
+                "schema": {
+                    "type": "boolean"
+                },
+                "description": "true, wenn eine gespeicherte Antwort geliefert wurde."
+            }
+        },
+        "responses": {
+            "BadRequest": {
+                "description": "400 bad_request, invalid_filter, idempotency_key_required",
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            },
+            "Unauthenticated": {
+                "description": "401 unauthenticated, key_expired, key_revoked",
+                "headers": {
+                    "WWW-Authenticate": {
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            },
+            "Forbidden": {
+                "description": "403 insufficient_scope, role_forbidden, ip_not_allowed, write_disabled, connection_degraded, capability_locked",
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            },
+            "NotFound": {
+                "description": "404 not_found",
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            },
+            "Conflict": {
+                "description": "409 conflict, write_target_exists, idempotency_mismatch",
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            },
+            "ValidationFailed": {
+                "description": "422 validation_failed mit Array errors",
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            },
+            "RateLimited": {
+                "description": "429 rate_limited",
+                "headers": {
+                    "Retry-After": {
+                        "$ref": "#/components/headers/Retry-After"
+                    },
+                    "RateLimit-Limit": {
+                        "$ref": "#/components/headers/RateLimit-Limit"
+                    }
+                },
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            },
+            "NotImplemented": {
+                "description": "501 not_implemented, Hinweis WAITING_FOR_MODULE im Feld hint",
+                "content": {
+                    "application/problem+json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/Problem"
+                        }
+                    }
+                }
+            }
+        },
+        "schemas": {
+            "Provenance": {
+                "type": "object",
+                "description": "Herkunft und Datenalter der Spiegeldaten. Der Hub liefert nie Live-Daten aus Immoware24.",
+                "required": [
+                    "source_system",
+                    "stale"
+                ],
+                "properties": {
+                    "source_system": {
+                        "type": "string",
+                        "enum": [
+                            "immoware24",
+                            "hub"
+                        ]
+                    },
+                    "external_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Externer Schlüssel des Quellsystems, nur Zusatzinformation."
+                    },
+                    "last_synced_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "connector": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "connector_type der Connection, z. B. webdav_documents, carddav_contacts."
+                    },
+                    "mapping_version": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "data_age_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "stale": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "Problem": {
+                "type": "object",
+                "description": "Fehlerobjekt nach RFC 7807 (application/problem+json).",
+                "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                ],
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "format": "uri",
+                        "example": "https://immoware.muellerhv.de/errors/not_found"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "integer"
+                    },
+                    "code": {
+                        "type": "string"
+                    },
+                    "detail": {
+                        "type": "string"
+                    },
+                    "instance": {
+                        "type": "string"
+                    },
+                    "request_id": {
+                        "type": "string"
+                    },
+                    "errors": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "field": {
+                                    "type": "string"
+                                },
+                                "code": {
+                                    "type": "string"
+                                },
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "PageMeta": {
+                "type": "object",
+                "required": [
+                    "page",
+                    "per_page",
+                    "total"
+                ],
+                "properties": {
+                    "page": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500
+                    },
+                    "total": {
+                        "type": "integer"
+                    },
+                    "last_page": {
+                        "type": "integer"
+                    },
+                    "request_id": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "$ref": "#/components/schemas/SourceMeta"
+                    }
+                }
+            },
+            "SourceMeta": {
+                "type": "object",
+                "properties": {
+                    "system": {
+                        "type": "string"
+                    },
+                    "access_path": {
+                        "type": "string"
+                    },
+                    "evidence_status": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "source_status": {
+                        "type": "string",
+                        "enum": [
+                            "fresh",
+                            "stale",
+                            "degraded"
+                        ]
+                    },
+                    "data_age_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "last_synced_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    }
+                }
+            },
+            "Links": {
+                "type": "object",
+                "properties": {
+                    "self": {
+                        "type": "string"
+                    },
+                    "first": {
+                        "type": "string"
+                    },
+                    "last": {
+                        "type": "string"
+                    },
+                    "next": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "prev": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "CaseWrite": {
+                "type": "object",
+                "required": [
+                    "title"
+                ],
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 300
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "open",
+                            "in_progress",
+                            "waiting",
+                            "closed"
+                        ]
+                    },
+                    "property_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "unit_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "contact_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "immoware_ticket_reference": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 64,
+                        "description": "Nur Text, kein Sync belegt."
+                    }
+                }
+            },
+            "ContactProposal": {
+                "type": "object",
+                "required": [
+                    "changes"
+                ],
+                "properties": {
+                    "changes": {
+                        "type": "object",
+                        "description": "Feldname zu neuem Wert. Erlaubt: salutation, first_name, last_name, company_name, job_title, emails, phones, addresses",
+                        "additionalProperties": true
+                    },
+                    "reason": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 1000
+                    }
+                }
+            },
+            "ContactProposalResult": {
+                "type": "object",
+                "properties": {
+                    "contact_id": {
+                        "type": "integer"
+                    },
+                    "proposals": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "integer"
+                                },
+                                "field": {
+                                    "type": "string"
+                                },
+                                "old_value": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ]
+                                },
+                                "new_value": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ]
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "effect": {
+                        "type": "string",
+                        "enum": [
+                            "hub"
+                        ]
+                    },
+                    "note": {
+                        "type": "string"
+                    }
+                }
+            },
+            "DocumentUpload": {
+                "type": "object",
+                "required": [
+                    "file",
+                    "filename"
+                ],
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "format": "binary"
+                    },
+                    "filename": {
+                        "type": "string",
+                        "maxLength": 120,
+                        "description": "ASCII, keine Pfadtrenner, kein führender Punkt."
+                    },
+                    "connection_id": {
+                        "type": "integer"
+                    },
+                    "case_id": {
+                        "type": "integer"
+                    },
+                    "source_document_id": {
+                        "type": "integer"
+                    },
+                    "note": {
+                        "type": "string",
+                        "maxLength": 500
+                    }
+                }
+            },
+            "DocumentUploadResult": {
+                "type": "object",
+                "properties": {
+                    "upload_id": {
+                        "type": "integer"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "prechecked",
+                            "sent",
+                            "unknown",
+                            "verified",
+                            "failed",
+                            "rejected"
+                        ]
+                    },
+                    "outcome": {
+                        "type": "string"
+                    },
+                    "target_path": {
+                        "type": "string"
+                    },
+                    "effect": {
+                        "type": "string",
+                        "enum": [
+                            "immoware24"
+                        ]
+                    }
+                }
+            },
+            "DirectoryEntry": {
+                "type": "object",
+                "description": "Minimierter Telefonbucheintrag ohne Notizen, IBAN oder Geburtsdatum.",
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "display_name": {
+                        "type": "string"
+                    },
+                    "first_name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "last_name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "company": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "phones": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "mobiles": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "emails": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "roles": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {
+                                    "type": "string"
+                                },
+                                "property_id": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ]
+                                },
+                                "property": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ]
+                                },
+                                "unit_id": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ]
+                                },
+                                "unit": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    }
+                }
+            },
+            "Health": {
+                "type": "object",
+                "required": [
+                    "status"
+                ],
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "ok",
+                            "degraded",
+                            "down"
+                        ]
+                    },
+                    "checks": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "status": {
+                                    "type": "string"
+                                },
+                                "details": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "checked_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "WebhookEndpoint": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "url": {
+                        "type": "string",
+                        "format": "uri"
+                    },
+                    "events": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "active": {
+                        "type": "boolean"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "WebhookEndpointWrite": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "url",
+                    "events"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "maxLength": 120
+                    },
+                    "url": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Nur https."
+                    },
+                    "events": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "active": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "WebhookPayload": {
+                "type": "object",
+                "description": "Ausgehendes Ereignis. Enthält nur IDs, Typ, Link und Herkunft, keine personenbezogenen Feldwerte und keine Beträge.",
+                "required": [
+                    "event_id",
+                    "event",
+                    "occurred_at",
+                    "organization_id",
+                    "data"
+                ],
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "event": {
+                        "type": "string"
+                    },
+                    "occurred_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "organization_id": {
+                        "type": "integer"
+                    },
+                    "data": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "integer"
+                            },
+                            "type": {
+                                "type": "string"
+                            },
+                            "href": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "source": {
+                        "type": "object"
+                    }
+                }
+            },
+            "Propertie": {
+                "type": "object",
+                "description": "Objekte (Liegenschaften) aus dem Immoware24-Spiegel.",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "immoware_object_number": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "management_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "street": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "house_number": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "postal_code": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "city": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "identity_confidence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Unit": {
+                "type": "object",
+                "description": "Verwaltungseinheiten je Objekt.",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "property_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "building_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "unit_number": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "unit_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "floor": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "living_area_sqm": {
+                        "type": [
+                            "string",
+                            "number",
+                            "null"
+                        ]
+                    },
+                    "co_ownership_share_numerator": {
+                        "type": [
+                            "string",
+                            "number",
+                            "null"
+                        ]
+                    },
+                    "co_ownership_share_denominator": {
+                        "type": [
+                            "string",
+                            "number",
+                            "null"
+                        ]
+                    },
+                    "identity_confidence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Contact": {
+                "type": "object",
+                "description": "Kontakte aus dem CardDAV-Spiegel. PATCH erzeugt ausschließlich einen Änderungsvorschlag.",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "kind": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "salutation": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "first_name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "last_name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "company_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "company_name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "job_title": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "emails": {
+                        "type": [
+                            "array",
+                            "null"
+                        ],
+                        "items": {
+                            "type": "object"
+                        }
+                    },
+                    "phones": {
+                        "type": [
+                            "array",
+                            "null"
+                        ],
+                        "items": {
+                            "type": "object"
+                        }
+                    },
+                    "addresses": {
+                        "type": [
+                            "array",
+                            "null"
+                        ],
+                        "items": {
+                            "type": "object"
+                        }
+                    },
+                    "categories": {
+                        "type": [
+                            "array",
+                            "null"
+                        ],
+                        "items": {
+                            "type": "object"
+                        }
+                    },
+                    "merged_into_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "identity_confidence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Contract": {
+                "type": "object",
+                "description": "Mietverträge je Einheit.",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "unit_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "contract_number": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "start_date": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date"
+                    },
+                    "end_date": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date"
+                    },
+                    "net_rent_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "ancillary_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "heating_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "total_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "currency": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "status": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "identity_confidence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Document": {
+                "type": "object",
+                "description": "Dokumentmetadaten aus dem WebDAV-Spiegel. POST legt einen Upload-Antrag für den Posteingang an.",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "folder_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "path": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "filename": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "display_name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "content_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "document_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "size_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "remote_etag": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "remote_last_modified": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "content_hash": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "content_stored": {
+                        "type": "boolean"
+                    },
+                    "property_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "unit_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "contact_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "case_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "assignment_confidence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "origin": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "identity_confidence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Invoice": {
+                "type": "object",
+                "description": "Rechnungen aus Importen (Phase 3).",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "property_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "creditor_contact_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "invoice_number": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "invoice_date": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date"
+                    },
+                    "due_date": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date"
+                    },
+                    "gross_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "net_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "vat_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "currency": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "document_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "status": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "OpenItem": {
+                "type": "object",
+                "description": "Offene Posten je Stichtag (Phase 3).",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "property_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "unit_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "contact_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "kind": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "due_date": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date"
+                    },
+                    "amount_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "open_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "currency": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "as_of_date": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date"
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Transaction": {
+                "type": "object",
+                "description": "Buchungen aus DATEV-CSV und CAMT.053 (Phase 3). Duplikate werden nicht verschmolzen, row_hash dient der Deduplikation.",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "property_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "bank_account_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "kind": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "booking_date": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date"
+                    },
+                    "value_date": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date"
+                    },
+                    "amount_cents": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Betrag in Cent."
+                    },
+                    "currency": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "debit_account": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "credit_account": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "cost_center": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "text": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "end_to_end_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "row_hash": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "occurrence_no": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "Case": {
+                "type": "object",
+                "description": "Hub-eigene Vorgänge. Kein Schreibpfad nach Immoware24.",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "property_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "unit_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "contact_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "title": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "status": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "immoware_ticket_reference": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "source_system": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "created_by": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            },
+            "CalendarEvent": {
+                "type": "object",
+                "description": "Kalendereinträge aus dem CalDAV-Spiegel (lesend, Phase 3).",
+                "required": [
+                    "id",
+                    "provenance"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "ical_uid": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "summary": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "location": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "starts_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "ends_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "all_day": {
+                        "type": "boolean"
+                    },
+                    "timezone": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "status": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "recurrence_rule": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "property_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "unit_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "contact_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "case_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "identity_uncertain": {
+                        "type": "boolean",
+                        "description": "true, wenn die Zuordnung zur externen ID unsicher ist."
+                    },
+                    "provenance": {
+                        "$ref": "#/components/schemas/Provenance"
+                    }
+                }
+            }
+        }
+    },
+    "security": [
+        {
+            "apiKey": []
+        }
+    ]
+}
