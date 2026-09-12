@@ -1,0 +1,10 @@
+parameters:
+    paths:
+        - app
+    level: 5
+    treatPhpDocTypesAsCertain: false
+    reportUnmatchedIgnoredErrors: false
+    ignoreErrors:
+        - identifier: staticMethod.notFound
+        - identifier: method.notFound
+        - identifier: property.notFound
