@@ -34,6 +34,16 @@
             <span class="hub-stat-value"><span aria-hidden="true">{{ $incomplete > 0 ? '▲' : '●' }}</span> {{ $incomplete }}</span>
             <span class="hub-stat-hint">Ohne Verantwortlichen, nächsten Schritt oder Fälligkeit</span>
         </div>
+        <div class="hub-stat {{ $pushRateLimited > 0 ? 'hub-stat-warn' : 'hub-stat-ok' }}">
+            <span class="hub-stat-label">Push-Drosselungen (429)</span>
+            <span class="hub-stat-value"><span aria-hidden="true">{{ $pushRateLimited > 0 ? '▲' : '●' }}</span> {{ $pushRateLimited }}</span>
+            <span class="hub-stat-hint">Pub/Sub-Zustellungen mit 429, Import verzögert</span>
+        </div>
+        <div class="hub-stat {{ $watchProblems !== [] ? (collect($watchProblems)->contains(static fn (array $row): bool => $row['level'] === 'fail') ? 'hub-stat-fail' : 'hub-stat-warn') : 'hub-stat-ok' }}">
+            <span class="hub-stat-label">Watch-Ablauf</span>
+            <span class="hub-stat-value"><span aria-hidden="true">{{ $watchProblems !== [] ? '▲' : '●' }}</span> {{ count($watchProblems) }}</span>
+            <span class="hub-stat-hint">Postfächer ohne gültigen Gmail-Watch</span>
+        </div>
     </div>
 
     <div class="hub-card-grid">
@@ -108,6 +118,21 @@
                     @endforeach
                 </ul>
                 <p><a href="{{ route('mail.integrations.index') }}">Zu den Integrationen</a></p>
+            @endif
+        </section>
+
+        <section class="hub-card" aria-labelledby="h-ops">
+            <h2 id="h-ops">Betrieb: Push und Watch</h2>
+            <p>Push-Drosselungen (429) seit Zählerstart: <strong>{{ $pushRateLimited }}</strong>.</p>
+            @if ($watchProblems === [])
+                <p class="hub-muted">Alle Postfächer haben einen gültigen Gmail-Watch.</p>
+            @else
+                <ul class="mail-list">
+                    @foreach ($watchProblems as $row)
+                        <li><span class="hub-badge hub-badge-{{ $row['level'] }}"><span aria-hidden="true">{{ $row['level'] === 'fail' ? '■' : '▲' }}</span> {{ $row['label'] }}</span> {{ $row['mailbox'] }}
+                            <small class="hub-muted">{{ $row['expires_at'] !== null ? 'Ablauf '.GermanDate::formatDateTime($row['expires_at']) : 'kein Ablaufdatum' }}</small></li>
+                    @endforeach
+                </ul>
             @endif
         </section>
 

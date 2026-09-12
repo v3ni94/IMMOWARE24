@@ -8,7 +8,7 @@ Feature-Flags, alle Standard `false`: `MAIL_IMPORT_ENABLED`, `MAIL_AI_ENABLED`, 
 
 Module: `Mail` (Kern, Flags, Rechte, Middleware), `Gmail` (OAuth2, Push mit JWT-Prüfung, History-Sync, MIME, Entwürfe, Versand mit Abgleich), `Cases` (Vorgänge, Teilanliegen, drei Statusdimensionen, Zuordnung nur über Kennungen, Aufgaben, Sperren, Vertretung), `Sla` (Prioritäten, vier Uhren, Arbeitskalender, Notfallqueue), `Actions` (Aktionspläne, Vier-Augen, Identitätsprüfung, Ausführung mit Idempotenz, Verifikation), `Lexware`, `Ai` (nur Vorschläge, Schema-Validierung, Maskierung, Budget), `Drive` (lesend), `MailUi` (Blade-Oberfläche, Administration, Einrichtungsassistent), `MailIntegration` (Verdrahtung der Module untereinander und mit der Oberfläche, Ereignisketten, regelbasierte Vorgangsanlage). Zeitpläne zentral in `routes/console.php`; Betrieb in `compose.yaml` (Mail-Worker), `deploy/`, `docker/nginx/mail.muellerhv.de.conf`.
 
-Stand der Tests (13.09.2026, nach Security-Review und Fix-Lauf, siehe `docs/mail/08-datenschutz-sicherheit.md` Abschnitt 11): `php artisan test` 844 Tests, 836 bestanden, 8 übersprungen, 6.115 Assertions; davon 282 Tests der Mail-Module einschließlich zwei End-to-End-Abläufen (`tests/Feature/MailEndToEnd/`). Pint und PHPStan Level 5 ohne Befund, `migrate:fresh` auf SQLite vollständig (43 Migrationen), `route:list` ohne Duplikate (200 Routen, davon 57 auf der Mail-Domain). Alle Fremdsysteme laufen in Tests als Fakes (`FakeGmailProvider`, `FakeLexwareApi`, `FakeAiProvider`, `Http::fake`); es gab keinen Live-Test gegen Gmail, Lexware, Drive oder OpenAI, und alle Aussagen zu deren APIs stammen aus WebSearch-Snippets (Doku-Hosts gesperrt) und sind vor Inbetriebnahme am Original zu prüfen. Ein Mock-Erfolg gilt nie als Live-Test.
+Stand der Tests (13.09.2026, Abschlusslauf 2 nach Abarbeitung der offenen Punkte aus `docs/mail/08-datenschutz-sicherheit.md` Abschnitt 11.2, siehe `docs/immoware/10-test-report.md` Abschnitt 6.3): `php artisan test` 891 Tests, 883 bestanden, 8 übersprungen, 6.781 Assertions; davon 321 Tests der Mail-Module einschließlich zwei End-to-End-Abläufen (`tests/Feature/MailEndToEnd/`). Pint und PHPStan Level 5 ohne Befund, `migrate:fresh` auf SQLite vollständig (46 Migrationen), `route:list` ohne Duplikate (205 Routen, davon 62 auf der Mail-Domain). Alle Fremdsysteme laufen in Tests als Fakes (`FakeGmailProvider`, `FakeLexwareApi`, `FakeAiProvider`, `Http::fake`); es gab keinen Live-Test gegen Gmail, Lexware, Drive oder OpenAI, und alle Aussagen zu deren APIs stammen aus WebSearch-Snippets (Doku-Hosts gesperrt) und sind vor Inbetriebnahme am Original zu prüfen. Ein Mock-Erfolg gilt nie als Live-Test.
 
 Offen: Freigaben der Geschäftsführung je Flag, Google-Cloud-Projekt und Pub/Sub, Lexware-Key, OpenAI-AVV, Branding, Drive-OAuth-Anmeldefluss, Anhangsablage, Retention-Befehl, Übernahme modul-lokaler Verträge nach `app/Core/Contracts/Mail` (Details in `docs/mail/10-implementierungsliste.md`).
 
@@ -44,7 +44,7 @@ Stand: 12.09.2026. Projektphase: Anwendungscode der Phasen 1 bis 8 sowie 10 bis 
 | 4 | CardDAV-Kontaktspiegel (lesend), Duplikatvorschläge | vorhanden, Modul Contacts |
 | 5 | CSV-Import Stammdaten, Drop-Ordner, Formatbestätigung | vorhanden, Modul Imports |
 | 6 | Konfliktqueue, proposed_change, Datenalter, Export-Erinnerungen | vorhanden, Modul Sync und Imports |
-| 7 | Resilienz, DLQ, Locks, Payload-Archiv, Metriken, Zeitpläne | vorhanden, Modul Sync |
+| 7 | Resilienz, DLQ (Admin-UI und `hub:dlq:*`), Locks, Payload-Archiv (PROPFIND-Antworten des Dokumentenspiegels; vCard und iCalendar noch nicht archiviert), Replay `hub:replay`, Metriken, Zeitpläne | vorhanden, Modul Sync |
 | 8 | Schreibpfad Posteingang (create-only PUT, Idempotenz, Verify), Flags, BootGuard | vorhanden, Modul Documents und Api, Standard deaktiviert |
 | 10, 11, 12 | DATEV-CSV, CAMT.053 (lesend), CalDAV-Terminspiegel | vorhanden (Importer, Parser, Modul Calendar), MT940 nur Stub |
 | 13, 14 | Ausgehende HMAC-Webhooks (Outbox), REST-API v1 mit Scopes, OpenAPI, Directory, Health | vorhanden, Module Webhooks und Api, Webhooks standardmäßig deaktiviert |
@@ -79,6 +79,12 @@ php artisan hub:probe {connection}                  Probe einer Connection (OPTI
 php artisan hub:sync:dispatch {entity} --mode=...   Sync-Jobs einplanen (document, contact, calendar_event, all)
 php artisan hub:sync:run {connection} {entity}      Einzelnen Lauf ausführen
 php artisan hub:sync:bootstrap {connection} {entity} --stages=1,10,100,1000,alle
+php artisan hub:replay {entity} {external_id|--all} --from=payload   Spiegel aus external_payloads neu aufbauen (--dry-run, --latest)
+php artisan hub:dlq:list | hub:dlq:retry {id|--all-failed} | hub:dlq:ignore {id} --reason=   Dead Letter Queue
+php artisan hub:sync:queue-depth                    Queue-Tiefe je Queue messen, Gauge queue_depth setzen (minütlich im Scheduler)
+php artisan mail:push:prune --chunk=1000            Gmail-Push-Ereignisse älter als die Aufbewahrungsfrist entfernen (täglich 04:05)
+php artisan mail:retention:apply [--dry-run|--apply] [--organization=]   Aufbewahrungsregeln des Mail-Moduls (Standard Vorschau, Legal Hold schützt)
+php artisan mail:subject-access-export {contact} --user= [--format=json|csv] [--sync]   Auskunftsexport DSGVO Art. 15 je Kontakt
 php artisan hub:imports:scan --process              Drop-Ordner erfassen und verarbeiten
 php artisan hub:imports:remind                      Überfällige manuelle Exporte auflisten
 php artisan documents:scan {connection}             WebDAV-Ordner scannen

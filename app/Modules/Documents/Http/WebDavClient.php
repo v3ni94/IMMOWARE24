@@ -75,7 +75,7 @@ final class WebDavClient
 
         $entries = $response->status() === 207 ? $this->parser->parse($response->body(), $this->context->baseUrl) : [];
 
-        return new PropfindResult($response->status(), $normalized, $entries);
+        return new PropfindResult($response->status(), $normalized, $entries, $response->status() === 207 ? $response->body() : null);
     }
 
     /**

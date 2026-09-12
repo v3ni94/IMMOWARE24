@@ -22,6 +22,12 @@ return [
         'etag_stable_default' => (bool) env('IMMOWARE_WEBDAV_ETAG_STABLE', false),
     ],
 
+    'payloads' => [
+        // AP 3.7: jede erfolgreiche PROPFIND-Depth-1-Antwort in external_payloads (propfind_xml) archivieren.
+        // Datenbasis für hub:replay document --from=payload; Retention über hub.sync.payloads.retention_days.
+        'archive_propfind' => (bool) env('IMMOWARE_WEBDAV_ARCHIVE_PROPFIND', true),
+    ],
+
     'content_hash' => [
         // SHA-256 über den Dateiinhalt (GET) für Dateien unterhalb dieser Größe.
         'enabled' => (bool) env('IMMOWARE_WEBDAV_CONTENT_HASH_ENABLED', false),

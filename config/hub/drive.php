@@ -10,15 +10,33 @@ declare(strict_types=1);
  */
 return [
 
+    /*
+     * OAuth2 Authorization Code mit PKCE (S256) je Organisation, eine Drive-Verbindung je Organisation
+     * (DriveOAuthService). Scope ausschließlich drive.readonly; Tokens verschlüsselt in mail_drive_connections.
+     * Google-Endpunkte aus Snippets, vor Produktivbetrieb am Original prüfen.
+     */
     'oauth' => [
         'client_id' => env('MAIL_DRIVE_CLIENT_ID'),
         'client_secret' => env('MAIL_DRIVE_CLIENT_SECRET'),
         'redirect_path' => '/mail/integrations/drive/callback',
         'scopes' => ['https://www.googleapis.com/auth/drive.readonly'],
+        'authorization_url' => 'https://accounts.google.com/o/oauth2/v2/auth',
         // Google-Token-Endpunkt wie beim Gmail-Modul (aus Snippets).
         'token_url' => env('MAIL_GOOGLE_TOKEN_URL', 'https://oauth2.googleapis.com/token'),
+        'revoke_url' => 'https://oauth2.googleapis.com/revoke',
+        // Getrennte Redirect-URIs je Umgebung; alle müssen in der Google-Cloud-Konsole eingetragen sein.
+        'redirect_uris' => [
+            'production' => env('MAIL_DRIVE_REDIRECT_URI_PRODUCTION', 'https://mail.muellerhv.de/mail/integrations/drive/callback'),
+            'staging' => env('MAIL_DRIVE_REDIRECT_URI_STAGING'),
+            'local' => env('MAIL_DRIVE_REDIRECT_URI_LOCAL', 'http://mail.test/mail/integrations/drive/callback'),
+            'testing' => 'http://mail.test/mail/integrations/drive/callback',
+        ],
+        // Gültigkeit des state-Parameters (Cache) in Sekunden.
+        'state_ttl_seconds' => 600,
         // Sicherheitsabstand vor Ablauf des Access-Tokens in Sekunden.
         'refresh_leeway_seconds' => 120,
+        // Bezeichnung der automatisch angelegten Verbindung je Organisation.
+        'connection_label' => 'Google Drive',
     ],
 
     'api_base_url' => env('MAIL_DRIVE_API_BASE_URL', 'https://www.googleapis.com/drive/v3'),

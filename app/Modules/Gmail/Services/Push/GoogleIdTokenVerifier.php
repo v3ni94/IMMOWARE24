@@ -160,12 +160,12 @@ final class GoogleIdTokenVerifier
     }
 
     /**
-     * Höchstens ein erzwungenes Neuladen je Mindestabstand (atomar über add), damit viele Anfragen mit unbekannter kid
-     * nicht je einen ausgehenden Aufruf auslösen.
+     * Höchstens ein erzwungenes Neuladen je Mindestabstand (Standard 5 Minuten), gesichert über eine Cache-Sperre
+     * (add ist atomar), damit viele Anfragen mit unbekannter kid nicht je einen ausgehenden Aufruf auslösen.
      */
     private function reloadAllowed(): bool
     {
-        $interval = max(1, (int) $this->config->get('hub.gmail.push.certs_reload_min_seconds', 60));
+        $interval = max(1, (int) $this->config->get('hub.gmail.push.certs_reload_min_seconds', 300));
 
         return $this->cache->add(self::RELOAD_KEY, time(), $interval);
     }

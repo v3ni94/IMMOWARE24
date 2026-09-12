@@ -8,7 +8,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * Versandabgleich eines Entwurfs: Nachlesen der Nachricht mit Label SENT.
+ * Versandabgleich eines Entwurfs: Nachlesen der Nachricht mit Label SENT. open_key trägt die draft_id, solange der
+ * Abgleich pending ist (Unique-Index: je Entwurf höchstens ein offener Abgleich), und NULL nach Abschluss.
  *
  * Tabelle mail_send_reconciliations (docs/mail/02-datenmodell.md). Massenzuweisung offen ($guarded leer): Eingaben werden in
  * FormRequests und Services validiert, Models erhalten nur geprüfte Werte.
@@ -28,6 +29,7 @@ class SendReconciliation extends Model
         return [
             'requested_at' => 'immutable_datetime',
             'found_in_sent_at' => 'immutable_datetime',
+            'open_key' => 'integer',
             'attempts' => 'integer',
             'next_check_at' => 'immutable_datetime',
         ];

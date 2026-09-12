@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Modules\Gmail;
 
 use App\Core\Contracts\Mail\MailboxProviderInterface;
+use App\Modules\Gmail\Console\PrunePushEventsCommand;
 use App\Modules\Gmail\Contracts\GmailProviderInterface;
 use App\Modules\Gmail\Http\Middleware\AuthenticatePubSubPush;
 use App\Modules\Gmail\Mime\HeaderDecoder;
@@ -28,8 +29,9 @@ use Illuminate\Support\ServiceProvider;
  * Bindung des Postfachvertrags: testing oder MAIL_GMAIL_PROVIDER=fake → FakeGmailProvider; MAIL_GMAIL_PROVIDER=live mit
  * Client-ID und -Secret → GmailProvider; sonst NotConfiguredMailboxProvider (sichtbar "Nicht eingerichtet").
  * Routen aus routes/modules/gmail.php: Push-Endpunkt ohne Domain-Bindung, OAuth-Routen domaingebunden.
- * Zeitpläne: Watch-Erneuerung täglich, Abgleich alle reconcile_interval_minutes, Versandabgleich minütlich,
- * Push-Ereignisse älter als dedup_retention_days täglich entfernen.
+ * Zeitpläne (zentral in routes/console.php): Watch-Erneuerung täglich, Abgleich alle reconcile_interval_minutes,
+ * Versandabgleich minütlich, Alias-Abgleich täglich (AliasSyncJob), Push-Ereignisse älter als dedup_retention_days
+ * täglich entfernen (mail:push:prune).
  */
 class GmailServiceProvider extends ServiceProvider
 {
@@ -84,7 +86,11 @@ class GmailServiceProvider extends ServiceProvider
             $this->loadViewsFrom($views, self::MODULE);
         }
 
-        // Zeitpläne (Watch-Erneuerung, Reconcile, Versandabgleich, Push-Bereinigung) liegen zentral in routes/console.php.
+        if ($this->app->runningInConsole()) {
+            $this->commands([PrunePushEventsCommand::class]);
+        }
+
+        // Zeitpläne (Watch-Erneuerung, Reconcile, Versandabgleich, Alias-Abgleich, Push-Bereinigung) liegen zentral in routes/console.php.
     }
 
     /**

@@ -41,7 +41,7 @@ Cron-Beispiel:
 | Hub-Datenbank verloren | Vollrestore (Abschnitt 5), danach `php artisan migrate --force`, `hub:doctor`, Full Reconcile über `hub:sync:dispatch all --mode=full`. Entscheidungen aus dem Entscheidungsexport prüfen, falls das Vollbackup älter ist |
 | Einzelne Tabelle beschädigt | Restore in Prüfdatenbank, Tabelle per `INSERT ... SELECT` übernehmen, nie `TRUNCATE` auf Spiegeldaten |
 | Zeitpunkt vor einem Fehler nötig | Vollbackup einspielen, dann `mariadb-binlog --start-position=<aus --master-data> --stop-datetime=<Zeitpunkt>` einspielen |
-| Mapper-Fehler | Kein Restore, sondern Replay aus `external_payloads` mit neuer `sync_version` (Architekturentscheidung Abschnitt 8). Hinweis: das dort genannte Kommando `hub:replay --from payload` ist im Code am 12.09.2026 noch nicht vorhanden, siehe Abschnitt 7 |
+| Mapper-Fehler oder verlorener Spiegelstand | Kein Restore, sondern Replay aus `external_payloads` mit neuer `sync_version` (Architekturentscheidung Abschnitt 8): `php artisan hub:replay {entity} {external_id|--all} --from=payload`, Details in Abschnitt 7 |
 | Fehlerhafter Upload in den Posteingang | Kein Restore und kein DELETE. Manuelle Bereinigung im DMS durch berechtigten Mitarbeiter innerhalb von 7 Tagen, Konflikteintrag, Audit |
 
 ## 5. Vollrestore (Produktion)
@@ -63,7 +63,7 @@ Nur mit Freigabe der Geschäftsführung, Vier-Augen-Prinzip, Protokoll.
 
 `deploy/scripts/restore-test.sh <backupdatei>` spielt ein Backup in `immoware_hub_restoretest` auf einer Prüfinstanz ein (Datenbankname muss `restoretest` enthalten, Schutz vor Verwechslung), prüft Prüfsumme, Tabellenzahl, Zeilenzahlen der Kerntabellen, letzte Migration und optional `migrate:status` sowie `audit:verify` gegen die Prüfdatenbank. Anschließend wird die Prüfdatenbank gelöscht (`KEEP_RESTORE_DB=1` behält sie).
 
-Zusätzlich getrennt zu testen (AP 7.5): Replay-Restore aus Payloads, sobald das Kommando existiert.
+Zusätzlich getrennt zu testen (AP 7.5): Replay-Restore aus Payloads mit `hub:replay document --all --latest --dry-run` (Zählung) und anschließend ohne `--dry-run` auf der Prüfinstanz; Abnahmekriterium ist die identische `checksum` je Dokument (automatisiert in `tests/Feature/Documents/DocumentMirrorTest.php`, am Mandanten offen).
 
 Protokoll:
 
@@ -72,8 +72,24 @@ Protokoll:
 | noch kein Lauf | | Vollrestore | | | | |
 | noch kein Lauf | | Replay-Restore | | | | |
 
-## 7. Offene Punkte
+## 7. Replay aus Nutzlasten und offene Punkte
 
-- `hub:replay --from payload` (Plan AP 3.9, AP 7.5) ist im Code nicht vorhanden. Bis dahin ist nur der Vollrestore testbar; der Replay-Restore ist als offen zu führen. Zuständig: Entwicklung Modul Sync.
+Kommando (Modul Sync, Änderungsvermerk 12.09.2026):
+
+```
+php artisan hub:replay {entity} {external_id} --from=payload        eine externe ID (Ordnerpfad, vCard-UID, Termin-UID)
+php artisan hub:replay {entity} --all --from=payload                alle archivierten Nutzlasten der Entität, chronologisch
+php artisan hub:replay {entity} --all --latest                      nur die jüngste Nutzlast je externer ID
+php artisan hub:replay {entity} --all --connection={id} --dry-run   nur zählen, nichts schreiben
+```
+
+- Entitäten und Nutzlasttypen: `document` aus `propfind_xml` (PROPFIND-Antwort je Ordner, archiviert vom Dokumentenspiegel bei jedem Depth-1-Scan, abschaltbar über `IMMOWARE_WEBDAV_ARCHIVE_PROPFIND`), `contact` aus `vcard`, `calendar_event` aus `ical`.
+- Der Replay läuft über die vorhandenen Mirror-Services (`DocumentMirrorService`, `ContactMirrorService`, `CalendarMirrorService`), sendet keinen Request an Immoware24, führt keinen Sweep und kein Soft Delete aus. Dokument-Replays erzeugen einen `sync_run` vom Typ `replay` je Connection, `sync_events` hängen daran. Jeder Lauf ohne `--dry-run` wird auditiert (`sync.replay`).
+- Verarbeitung chunked (`--chunk`, Standard 200) mit Fortschrittsanzeige; `-v` zeigt das Ergebnis je Nutzlast. Pseudonymisierte Nutzlasten (`pseudonymized_at` gesetzt) und Nutzlasten ohne lesbaren Inhalt werden gezählt und übersprungen; ein Replay dieser Datensätze ist nicht mehr möglich (08-security.md Abschnitt 6).
+- Reichweite: Der Replay stellt nur wieder her, was innerhalb der Retention (`HUB_SYNC_PAYLOAD_RETENTION_DAYS`, Standard 90 Tage) archiviert wurde. Ältere Stände kommen nur über den Vollrestore oder einen Full Reconcile gegen Immoware24 zurück.
+
+Offene Punkte:
+
+- CardDAV- und CalDAV-Läufe (Module Contacts und Calendar) archivieren ihre Ressourcen am 12.09.2026 noch nicht in `external_payloads`; `hub:replay contact` und `hub:replay calendar_event` haben deshalb erst dann eine Datenbasis, wenn die Archivierung in `DavPullRunner::loadAndHandle()` ergänzt ist (`payload_type` vcard bzw. ical, `import_metadata` href, etag, collection_path, organization_id). Zuständig: Entwicklung Module Contacts und Calendar.
 - Löschfristen personenbezogener Daten in Backups (Backups enthalten Kontaktdaten) mit Rechtsanwalt abstimmen; Aufbewahrung 35 Tage ist ein Vorschlag, Aufbewahrung buchhaltungsrelevanter Daten (10 Jahre) betrifft die Quellsysteme, nicht den Spiegel, mit Steuerberater klären.
 - Offsite-Ziel (Anbieter, Region, Object Lock) durch Geschäftsführung festlegen.

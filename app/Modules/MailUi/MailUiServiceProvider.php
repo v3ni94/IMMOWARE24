@@ -8,13 +8,16 @@ use App\Modules\MailUi\Contracts\ApprovalWorkflowInterface;
 use App\Modules\MailUi\Contracts\CandidateResolverInterface;
 use App\Modules\MailUi\Contracts\CaseCommandInterface;
 use App\Modules\MailUi\Contracts\DraftWorkflowInterface;
+use App\Modules\MailUi\Contracts\SubjectAccessExportInterface;
 use App\Modules\MailUi\Services\CaseVisibility;
 use App\Modules\MailUi\Services\DashboardMetrics;
 use App\Modules\MailUi\Services\IntegrationOverview;
+use App\Modules\MailUi\Services\MailOpsMetrics;
 use App\Modules\MailUi\Services\NullApprovalWorkflow;
 use App\Modules\MailUi\Services\NullCandidateResolver;
 use App\Modules\MailUi\Services\NullCaseCommand;
 use App\Modules\MailUi\Services\NullDraftWorkflow;
+use App\Modules\MailUi\Services\NullSubjectAccessExport;
 use App\Modules\MailUi\Services\OrgSettings;
 use Illuminate\Support\ServiceProvider;
 
@@ -38,6 +41,7 @@ class MailUiServiceProvider extends ServiceProvider
         $this->app->singleton(CaseVisibility::class);
         $this->app->singleton(DashboardMetrics::class);
         $this->app->singleton(IntegrationOverview::class);
+        $this->app->singleton(MailOpsMetrics::class);
         $this->app->singleton(OrgSettings::class);
 
         // Dünne Schnittstellen zu den Fachmodulen. Null-Implementierungen bis der Integrationsagent die Live-Dienste
@@ -46,6 +50,7 @@ class MailUiServiceProvider extends ServiceProvider
         $this->app->bindIf(DraftWorkflowInterface::class, NullDraftWorkflow::class);
         $this->app->bindIf(ApprovalWorkflowInterface::class, NullApprovalWorkflow::class);
         $this->app->bindIf(CandidateResolverInterface::class, NullCandidateResolver::class);
+        $this->app->bindIf(SubjectAccessExportInterface::class, NullSubjectAccessExport::class);
     }
 
     public function boot(): void

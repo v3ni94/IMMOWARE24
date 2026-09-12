@@ -7,12 +7,13 @@ namespace App\Modules\MailUi\Http\Controllers;
 use App\Modules\Mail\Services\MailFeatureFlags;
 use App\Modules\MailUi\Services\DashboardMetrics;
 use App\Modules\MailUi\Services\IntegrationOverview;
+use App\Modules\MailUi\Services\MailOpsMetrics;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
 
 /**
  * Übersicht: Notfälle, unzugeordnete Vorgänge, überfällige Rückmeldungen, offene Freigaben, blockierte Integrationen
- * ("Nicht eingerichtet" oder Fehler) und Teamlast. Alle Zahlen aus sichtbaren Vorgängen des Nutzers.
+ * ("Nicht eingerichtet" oder Fehler), Teamlast sowie Betrieb (Push-Drosselungen 429, Watch-Ablauf je Postfach). Alle Zahlen aus sichtbaren Vorgängen des Nutzers.
  */
 final class DashboardController extends MailUiController
 {
@@ -20,6 +21,7 @@ final class DashboardController extends MailUiController
         private readonly DashboardMetrics $metrics,
         private readonly IntegrationOverview $integrations,
         private readonly MailFeatureFlags $flags,
+        private readonly MailOpsMetrics $ops,
     ) {}
 
     public function __invoke(Request $request): View
@@ -37,6 +39,8 @@ final class DashboardController extends MailUiController
             'incomplete' => $this->metrics->incompleteCount($user),
             'blocked' => $this->integrations->blocked($organizationId),
             'teamLoad' => $this->metrics->teamLoad($user),
+            'pushRateLimited' => $this->ops->pushRateLimited(),
+            'watchProblems' => $this->ops->watchProblems($organizationId),
             'flags' => $this->flags->all(),
             'canApprove' => $this->access()->can($user, 'mail.approve.standard'),
         ]);

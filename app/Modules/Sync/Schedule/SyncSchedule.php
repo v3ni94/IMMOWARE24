@@ -47,6 +47,13 @@ final class SyncSchedule
             self::DESCRIPTION_PREFIX.'stale check',
         );
 
+        // Gauge queue_depth je Queue, minütlich (03-monitoring.md Abschnitt 3, Dashboard und Alarm A5 lesen das Gauge).
+        $schedule->command('hub:sync:queue-depth')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->onOneServer()
+            ->description(self::DESCRIPTION_PREFIX.'queue depth');
+
         $this->configure(
             $schedule->command('hub:payloads:prune'),
             (string) config('hub.sync.schedule.payload_prune', '15 4 * * *'),

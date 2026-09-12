@@ -21,7 +21,7 @@ Aufwandsangaben sind Schätzungen in Personenwochen (PW) für ein Team aus einer
 | 1 | Projektgerüst, Core, Auth, Audit | 1 | 1,5 PW | keine | Code vorhanden, am Mandanten ungetestet |
 | 2 | Capability Registry, Probe-Kommando, Connection-Verwaltung | 1 | 1 PW | Phase 0 Probe-Ergebnisse, Phase 1 | Code vorhanden, am Mandanten ungetestet |
 | 3 | WebDAV-Dokumentenspiegel (lesend) | 1 | 1,5 PW | Phase 2 | Code vorhanden, am Mandanten ungetestet |
-| 4 | CardDAV-Kontaktspiegel (lesend) | 1 | 1 PW | Phase 2 | Code vorhanden, am Mandanten ungetestet |
+| 4 | CardDAV-Kontaktspiegel (lesend) | 1 | 1 PW | Phase 2 | Code vorhanden, am Mandanten ungetestet (Archivierung der vCard-Ressourcen in external_payloads offen) |
 | 5 | CSV-Import Stammdaten mit Bootstrap | 1 | 1,5 PW | Phase 0 CSV-Dateien, Phase 1 | Code vorhanden, am Mandanten ungetestet (Spaltenformate offen) |
 | 6 | Konfliktqueue, proposed_change, Datenalter, Export-Erinnerungen | 1 | 1 PW | Phasen 3 bis 5 | Code vorhanden, am Mandanten ungetestet |
 | 7 | Resilienz, Degraded-Mode, DLQ, Backups, Betrieb | 1 | 1 PW | Phase 6 | Code vorhanden, am Mandanten ungetestet (Betriebsunterlagen unter docs/operations/) |
@@ -29,7 +29,7 @@ Aufwandsangaben sind Schätzungen in Personenwochen (PW) für ein Team aus einer
 | 9 | Pilotbetrieb Schreibpfad und Abnahme | 2 | 0,5 PW plus 4 Wochen Pilot | Phase 8 | offen |
 | 10 | DATEV-Buchungsexport und OP-Listen (lesend) | 3 | 1 PW | Phase 5, DATEV-Datei aus Phase 0 | Code vorhanden, am Mandanten ungetestet (DATEV-Datei offen) |
 | 11 | CAMT.053 und optional HeiWaKo (lesend) | 3 | 1 PW | Phase 10 | Code vorhanden, am Mandanten ungetestet (CAMT.053, HeiWaKo nicht gebaut) |
-| 12 | CalDAV-Terminspiegel (lesend) | 3 | 0,5 PW | Phase 4 | Code vorhanden, am Mandanten ungetestet |
+| 12 | CalDAV-Terminspiegel (lesend) | 3 | 0,5 PW | Phase 4 | Code vorhanden, am Mandanten ungetestet (Archivierung der iCalendar-Ressourcen in external_payloads offen) |
 | 13 | Ausgehende Webhooks für benannte Konsumenten (n8n) | 4 | 1 PW | Phase 9, benannter Konsument | Code vorhanden, am Mandanten ungetestet, standardmäßig deaktiviert |
 | 14 | Lesende API mit Scopes, Regelbetrieb, Review | 4 | 1 PW | Phase 13 | Code vorhanden, am Mandanten ungetestet |
 
@@ -131,9 +131,9 @@ Arbeitspakete:
 - AP 3.4 Änderungserkennung nach persistierter Strategie: neue Version nur bei Änderung von content_hash (falls vorhanden) oder Größe plus lastmodified; ETag-Wechsel ohne Änderung dieser Merkmale als unchanged_meta_noise. content_policy je Ordner: metadata_only Standard, hash_on_change für Posteingang, store nur explizit.
 - AP 3.5 Move-Erkennung: fehlende Ressource plus neue Ressource mit identischer Größe und lastmodified, Hash-Vergleich nur wenn alter content_hash vorliegt, sonst moved_probable in die Konfliktqueue (Konflikttyp existiert ab Phase 6, bis dahin als sync_event moved_probable).
 - AP 3.6 Soft Delete erst nach zwei aufeinanderfolgenden Läufen mit Fehlen, beide mit erfolgreichem Health-Check und erreichbarem Ordner. Beim ersten Fehlen nur missing_since. Mark-and-Sweep läuft nur bei vollständiger Enumeration der Collection (etag_only, lastmodified_size_hash, full_hash, Full Reconcile), nie nach sync_token, unverändertem CTag oder übersprungenem Ordner-Fingerprint (07-sync-strategy.md Abschnitt 4).
-- AP 3.7 Archivierung jeder PROPFIND-Antwort in external_payloads (propfind_xml), Blobs über 64 KB im Blob-Speicher (EU).
+- AP 3.7 Archivierung jeder PROPFIND-Antwort in external_payloads (propfind_xml), Blobs über 64 KB im Blob-Speicher (EU). Stand 12.09.2026: umgesetzt in `DocumentMirrorService::scanFolder()` (gzip, maskiert, Storage-Disk über 64 KB, abschaltbar über `IMMOWARE_WEBDAV_ARCHIVE_PROPFIND`).
 - AP 3.8 sync-collection (RFC 6578) nur, wenn die Probe es festgestellt hat.
-- AP 3.9 Kommando `hub:replay --from payload` für documents.
+- AP 3.9 Kommando `hub:replay --from payload` für documents. Stand 12.09.2026: vorhanden als `hub:replay {entity} {external_id|--all} --from=payload` (Modul Sync) für document, contact und calendar_event; für contact und calendar_event fehlt noch die Archivierung der DAV-Ressourcen in den Pull-Läufen (Phasen 4 und 12).
 
 Definition of Done:
 
@@ -238,7 +238,7 @@ Arbeitspakete:
 - AP 7.2 dlq_items nach 5 Versuchen, manuelle Wiederaufnahme durch operator.
 - AP 7.3 Degraded-Mode vollständig: Lesen läuft weiter, Uploads pausieren, Rückschaltung nur durch release mit Begründung.
 - AP 7.4 Backups: MariaDB täglich voll, Binlog kontinuierlich, Blobs versioniert. hub_decision_backups täglich (conflicts, contact_merges, external_mappings manual und bootstrap, import_formats, capabilities, users, api_keys, webhook_endpoints). Wöchentlicher Export der Audit-Kettenwurzel (audit_anchors) an Object-Lock-Speicher.
-- AP 7.5 Wiederherstellungstest: Vollrestore und Replay-Restore (`hub:replay --from payload`) getrennt, Protokoll im Repository. Quartalsweise Wiederholung als Betriebsprozess.
+- AP 7.5 Wiederherstellungstest: Vollrestore und Replay-Restore (`hub:replay --from payload`) getrennt, Protokoll im Repository. Quartalsweise Wiederholung als Betriebsprozess. Stand 12.09.2026: Kommando vorhanden, automatisierter Test des Replay-Restores für Dokumente in `tests/Feature/Documents/DocumentMirrorTest.php`, Protokoll am Mandanten offen (`docs/operations/02-backup-restore.md` Abschnitt 6).
 - AP 7.6 Monitoring und Alarmierung: Sync-Fehler, Breaker offen, degraded, DLQ-Wachstum, Backup-Ausfall.
 - AP 7.7 Exit-Strategie als Betriebsprozess unabhängig vom Hub: monatlich DATEV-Export, CSV-Auswertungen aller Objekte, Dokumentliste per WebDAV sichern (Regelung bei Vertragsende in den AGB laut Snippet nicht belegt, VERMUTET, Prüfung durch Rechtsanwalt aus Phase 0 einfließen lassen).
 - AP 7.8 Secret-Rotation dokumentiert und einmal durchgeführt (Freigabe-Passwort des Lesenutzers).

@@ -71,8 +71,9 @@ class MailServiceProvider extends ServiceProvider
         // Reihenfolge: Session (web), Anmeldung, Hostprüfung, Rollen- und Rechteprüfung mit Mandantenkontext, danach 2FA.
         // mail.headers setzt die Content-Security-Policy als zweite Sperre hinter dem HtmlSanitizer.
         $router->middlewareGroup(self::MIDDLEWARE_GROUP, ['web', 'auth', 'mail.domain', 'mail.headers', 'mail.access', '2fa']);
-        // Pub/Sub-Push: zustandslos, kein CSRF, Hostprüfung, Rate Limit. Die JWT-Prüfung (mail.push.auth) ergänzt das Modul Gmail.
-        $router->middlewareGroup(self::MIDDLEWARE_GROUP_PUSH, ['mail.domain', 'throttle:mail-push']);
+        // Pub/Sub-Push: zustandslos, kein CSRF, Hostprüfung, globales Rate Limit, Rate Limit je Postfach oder IP.
+        // Die JWT-Prüfung (mail.push.auth) ergänzt das Modul Gmail.
+        $router->middlewareGroup(self::MIDDLEWARE_GROUP_PUSH, ['mail.domain', 'throttle:mail-push-global', 'throttle:mail-push']);
         // Freigaben, Versand, Bankdatenansicht, Integrationsänderungen, Export verlangen Re-Authentifizierung.
         $router->middlewareGroup(self::MIDDLEWARE_GROUP_FRESH, [self::MIDDLEWARE_GROUP, '2fa.fresh']);
 
@@ -85,6 +86,17 @@ class MailServiceProvider extends ServiceProvider
                 ->by($key)
                 ->response(static function (Request $request, array $headers) use ($key): Response {
                     Log::warning('mail.push.rate_limited', ['key' => hash('sha256', $key), 'retry_after' => $headers['Retry-After'] ?? null]);
+
+                    return response('Too Many Requests', 429, $headers);
+                });
+        });
+
+        // Globales Limit über alle Schlüssel (Schutz der Gesamtkapazität, unabhängig von Postfachadresse oder IP).
+        RateLimiter::for('mail-push-global', static function (Request $request): Limit {
+            return Limit::perMinute((int) config('hub.mail.push_rate_limit_global_per_minute', 3000))
+                ->by('global')
+                ->response(static function (Request $request, array $headers): Response {
+                    Log::warning('mail.push.rate_limited', ['key' => 'global', 'retry_after' => $headers['Retry-After'] ?? null]);
 
                     return response('Too Many Requests', 429, $headers);
                 });

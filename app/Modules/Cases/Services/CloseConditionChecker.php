@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Modules\Cases\Services;
 
 use App\Modules\Actions\Enums\ActionStatus;
+use App\Modules\Actions\Models\ActionPlan;
+use App\Modules\Actions\Models\Execution;
 use App\Modules\Cases\Enums\CaseStatus;
 use App\Modules\Cases\Enums\CommunicationStatus;
 use App\Modules\Cases\Enums\TaskStatus;
@@ -19,9 +21,49 @@ use Illuminate\Contracts\Config\Repository;
  * Abschlussbedingungen je Vorgangstyp (hub.cases.close_conditions): Pflichtaufgaben erledigt, Aktionen verifiziert,
  * keine offenen Teilfehler, Kommunikation abgeschlossen oder begründet entbehrlich. Eine reine Auskunft ohne
  * Schreibaktion ist abschließbar. Liefert die offenen Bedingungen im Klartext.
+ *
+ * Das Geschäftsergebnis wird aus zwei Quellen bestimmt: status_business des Teilanliegens (gespiegelt) und dem
+ * tatsächlichen Stand der Aktionspläne (mail_action_plans) samt Ausführungen (mail_executions) des Teilanliegens
+ * beziehungsweise des Vorgangs. Die strengste Aussage gewinnt: ein fehlgeschlagener oder unklarer Plan blockiert
+ * den Abschluss auch dann, wenn die Spiegelung in status_business ausgeblieben ist.
  */
 final class CloseConditionChecker
 {
+    /**
+     * Strenge der Geschäftszustände für die Wahl der strengsten Quelle (höher = strenger).
+     *
+     * @var array<string, int>
+     */
+    private const array SEVERITY = [
+        'failed' => 100,
+        'result_unclear' => 90,
+        'manual_review' => 80,
+        'executed' => 60,
+        'executing' => 55,
+        'scheduled' => 50,
+        'approved' => 45,
+        'approval_required' => 40,
+        'validated' => 30,
+        'proposed' => 10,
+        'verified' => 0,
+    ];
+
+    /**
+     * Abbildung technischer Ausführungsstatus (mail_executions.status) auf das Geschäftsergebnis.
+     *
+     * @var array<string, ActionStatus>
+     */
+    private const array EXECUTION_STATUS = [
+        'pending' => ActionStatus::Scheduled,
+        'running' => ActionStatus::Executing,
+        'http_ok_unverified' => ActionStatus::Executed,
+        'verified' => ActionStatus::Verified,
+        'failed' => ActionStatus::Failed,
+        'blocked_flag' => ActionStatus::ManualReview,
+        'blocked_capability' => ActionStatus::ManualReview,
+        'blocked_permission' => ActionStatus::ManualReview,
+    ];
+
     public function __construct(
         private readonly Repository $config,
         private readonly BusinessStateMachine $business,
@@ -66,7 +108,7 @@ final class CloseConditionChecker
             }
         }
 
-        $businessStatus = $item->status_business instanceof ActionStatus ? $item->status_business : ActionStatus::from((string) $item->status_business);
+        $businessStatus = $this->effectiveBusinessStatus($item);
 
         if ((bool) ($rules['requires_verified_business_result'] ?? false) && ! $businessStatus->isBusinessComplete()) {
             $unmet[] = sprintf('Geschäftsergebnis ist "%s", verlangt ist "Verifiziert".', $businessStatus->label());
@@ -92,6 +134,52 @@ final class CloseConditionChecker
         }
 
         return $unmet;
+    }
+
+    /**
+     * Strengstes Geschäftsergebnis aus status_business des Teilanliegens, den Aktionsplänen des Teilanliegens
+     * (oder des Vorgangs ohne Teilanliegenbezug) und deren Ausführungen der aktuellen Planversion.
+     */
+    public function effectiveBusinessStatus(CaseItem $item): ActionStatus
+    {
+        $mirrored = $item->status_business instanceof ActionStatus ? $item->status_business : ActionStatus::from((string) $item->status_business);
+        $strictest = $mirrored;
+
+        $plans = ActionPlan::query()->withoutGlobalScopes()
+            ->where(static function ($q) use ($item): void {
+                $q->where('case_item_id', $item->getKey())
+                    ->orWhere(static fn ($q2) => $q2->where('case_id', $item->case_id)->whereNull('case_item_id'));
+            })
+            ->get(['id', 'status', 'current_version_id']);
+
+        foreach ($plans as $plan) {
+            $planStatus = $plan->status instanceof ActionStatus ? $plan->status : ActionStatus::tryFrom((string) $plan->getAttribute('status'));
+            $strictest = $this->stricter($strictest, $planStatus);
+        }
+
+        $versionIds = $plans->pluck('current_version_id')->filter()->map(static fn (mixed $id): int => (int) $id)->values()->all();
+
+        if ($versionIds !== []) {
+            $executionStatuses = Execution::query()
+                ->whereIn('action_plan_version_id', $versionIds)
+                ->distinct()
+                ->pluck('status');
+
+            foreach ($executionStatuses as $status) {
+                $strictest = $this->stricter($strictest, self::EXECUTION_STATUS[(string) $status] ?? null);
+            }
+        }
+
+        return $strictest;
+    }
+
+    private function stricter(ActionStatus $current, ?ActionStatus $candidate): ActionStatus
+    {
+        if ($candidate === null) {
+            return $current;
+        }
+
+        return (self::SEVERITY[$candidate->value] ?? 0) > (self::SEVERITY[$current->value] ?? 0) ? $candidate : $current;
     }
 
     /**

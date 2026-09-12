@@ -9,6 +9,7 @@ use App\Core\Enums\ConflictState;
 use App\Modules\Connector\Models\ImmowareConnection;
 use App\Modules\Documents\DTO\FolderScanResult;
 use App\Modules\Documents\DTO\ScanContext;
+use App\Modules\Documents\Http\PropfindResult;
 use App\Modules\Documents\Http\WebDavClient;
 use App\Modules\Documents\Models\Document;
 use App\Modules\Documents\Models\DocumentFolder;
@@ -18,6 +19,7 @@ use App\Modules\Documents\Support\DocumentTypeClassifier;
 use App\Modules\Documents\Support\WebDavPath;
 use App\Modules\Sync\Models\Conflict;
 use App\Modules\Sync\Models\SyncEvent;
+use App\Modules\Sync\Services\ExternalPayloadArchiver;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
@@ -55,10 +57,14 @@ final class DocumentMirrorService
     /** conflict_type für einen per 404 nicht mehr erreichbaren Ordner. */
     public const string CONFLICT_FOLDER_MISSING = 'folder_missing';
 
+    /** payload_type der archivierten PROPFIND-Antworten (02-data-model.md, AP 3.7); Quelle für hub:replay document. */
+    public const string PAYLOAD_TYPE_PROPFIND = 'propfind_xml';
+
     public function __construct(
         private readonly DocumentTypeClassifier $classifier,
         private readonly DocumentAssignmentResolver $assignments,
         private readonly WebhookDispatcherInterface $webhooks,
+        private readonly ExternalPayloadArchiver $payloads,
     ) {}
 
     /**
@@ -82,6 +88,8 @@ final class DocumentMirrorService
                 errors: [['path' => $folderPath, 'status' => $result->status, 'reason' => $result->isNotFound() ? 'folder_not_found' : 'folder_unreachable']],
             );
         }
+
+        $this->archivePropfind($client, $result, $folderPath, $context);
 
         $folder = $this->upsertFolder($folderPath, $context, $result->self(), $scanStartedAt);
 
@@ -167,6 +175,37 @@ final class DocumentMirrorService
             sweepBlocked: $sweepBlocked,
             truncated: $truncated,
         );
+    }
+
+    /**
+     * AP 3.7: jede erfolgreiche Depth-1-Antwort wandert maskiert und komprimiert in external_payloads
+     * (payload_type propfind_xml, external_id = Ordnerpfad, import_metadata path und base_url), damit
+     * hub:replay document den Spiegelstand ohne Request an Immoware24 wiederherstellen kann. Ein Fehler beim
+     * Archivieren bricht den Scan nicht ab. Abschaltbar über hub.documents.payloads.archive_propfind.
+     */
+    private function archivePropfind(WebDavClient $client, PropfindResult $result, string $folderPath, ScanContext $context): void
+    {
+        if ($result->body === null || ! (bool) config('hub.documents.payloads.archive_propfind', true)) {
+            return;
+        }
+
+        try {
+            $this->payloads->archive(
+                $context->connectionId,
+                self::PAYLOAD_TYPE_PROPFIND,
+                $result->body,
+                $folderPath,
+                $context->syncRunId,
+                ['path' => $folderPath, 'base_url' => $client->context()->baseUrl, 'organization_id' => $context->organizationId],
+                $result->status,
+            );
+        } catch (Throwable $e) {
+            Log::warning('PROPFIND-Antwort konnte nicht archiviert werden.', [
+                'connection_id' => $context->connectionId,
+                'folder' => $folderPath,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

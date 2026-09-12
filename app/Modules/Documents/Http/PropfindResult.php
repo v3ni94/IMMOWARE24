@@ -13,11 +13,13 @@ final readonly class PropfindResult
 {
     /**
      * @param  array<int, DavEntry>  $entries  Alle Einträge inklusive der Ressource selbst
+     * @param  string|null  $body  Rohes Multistatus-XML für das Payload-Archiv (propfind_xml), null wenn kein 207
      */
     public function __construct(
         public int $status,
         public string $path,
         public array $entries = [],
+        public ?string $body = null,
     ) {}
 
     public function isMultistatus(): bool

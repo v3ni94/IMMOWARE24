@@ -14,11 +14,14 @@ use App\Modules\Documents\Models\Document;
 use App\Modules\Documents\Models\DocumentFolder;
 use App\Modules\Estate\Models\Property;
 use App\Modules\Sync\Models\Conflict;
+use App\Modules\Sync\Models\ExternalPayload;
 use App\Modules\Sync\Models\SyncEvent;
 use App\Modules\Sync\Models\SyncRun;
+use App\Modules\Sync\Services\ExternalPayloadArchiver;
 use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -93,6 +96,48 @@ final class DocumentMirrorTest extends TestCase
 
         $run = SyncRun::query()->firstOrFail();
         $this->assertSame(1, $run->getAttribute('counters')['full_enumeration']);
+
+        // AP 3.7: je gescanntem Ordner eine archivierte PROPFIND-Antwort (Datenbasis für hub:replay document).
+        $payloads = ExternalPayload::query()->where('payload_type', 'propfind_xml')->get();
+        $this->assertCount(3, $payloads);
+        $payload = $payloads->firstWhere('external_id_hash', hash('sha256', '/Posteingang/'));
+        $this->assertNotNull($payload);
+        $this->assertSame((int) $run->getKey(), (int) $payload->getAttribute('sync_run_id'));
+        $this->assertSame('/Posteingang/', $payload->getAttribute('import_metadata')['path']);
+        $this->assertStringContainsString('Scan_001.pdf', (string) $this->app->make(ExternalPayloadArchiver::class)->contents($payload));
+    }
+
+    public function test_replay_from_archived_propfind_payloads_restores_identical_mirror_state(): void
+    {
+        $connection = $this->readConnection();
+        $this->fakeTree($connection, [
+            '/Posteingang/' => [
+                ['href' => '/Posteingang/', 'collection' => true],
+                ['href' => '/Posteingang/Scan_001.pdf', 'etag' => 'p1', 'length' => 100, 'modified' => 'Fri, 11 Sep 2026 10:00:00 GMT', 'type' => 'application/pdf'],
+            ],
+            '/Dokumente/' => [
+                ['href' => '/Dokumente/', 'collection' => true],
+                ['href' => '/Dokumente/Vertrag.pdf', 'etag' => 'v1', 'length' => 300, 'modified' => 'Thu, 10 Sep 2026 09:00:00 GMT'],
+            ],
+        ]);
+
+        $this->resolve($connection)->pull(new SyncRequest((int) $connection->getKey(), 'document', SyncMode::Incremental));
+
+        $before = Document::query()->where('connection_id', $connection->getKey())->orderBy('external_id')->pluck('checksum', 'external_id')->all();
+        $this->assertCount(2, $before);
+        $requestsAfterScan = count(Http::recorded());
+
+        // Verlust des Spiegels simulieren (nur Test; im Betrieb gibt es kein Hard Delete auf Spiegeldaten).
+        Document::query()->withoutGlobalScopes()->where('connection_id', $connection->getKey())->forceDelete();
+        DocumentFolder::query()->withoutGlobalScopes()->where('connection_id', $connection->getKey())->forceDelete();
+
+        $this->assertSame(0, Artisan::call('hub:replay', ['entity' => 'document', '--all' => true, '--latest' => true, '--connection' => (int) $connection->getKey()]));
+
+        $this->assertCount($requestsAfterScan, Http::recorded(), 'Replay sendet keinen Request an Immoware24.');
+        $after = Document::query()->where('connection_id', $connection->getKey())->orderBy('external_id')->pluck('checksum', 'external_id')->all();
+        $this->assertSame($before, $after, 'Replay aus external_payloads liefert identische checksum (07-sync-strategy.md Abschnitt 8).');
+        $this->assertSame(2, DocumentFolder::query()->where('connection_id', $connection->getKey())->count());
+        $this->assertSame(1, SyncRun::query()->where('run_type', SyncRun::TYPE_REPLAY)->where('status', 'succeeded')->count());
     }
 
     public function test_unchanged_etag_produces_no_write_and_changed_etag_produces_update(): void

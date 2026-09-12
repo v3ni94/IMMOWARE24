@@ -59,7 +59,7 @@ final class BootstrapAndScheduleTest extends SyncTestCase
         (new SyncSchedule)->register($schedule);
 
         $events = collect($schedule->events());
-        $this->assertCount(6, $events, 'drei Incremental-Läufe, Full, Stale-Check, Payload-Prune');
+        $this->assertCount(7, $events, 'drei Incremental-Läufe, Full, Stale-Check, Queue-Tiefe, Payload-Prune');
 
         $contacts = $events->first(fn ($e): bool => $e->description === SyncSchedule::DESCRIPTION_PREFIX.'incremental contact');
         $this->assertNotNull($contacts);

@@ -7,14 +7,15 @@ namespace App\Modules\Drive;
 use App\Core\Contracts\Mail\DocumentSourceInterface;
 use App\Modules\Ai\Contracts\AiContextSourceInterface;
 use App\Modules\Drive\Services\DriveAiContextSource;
+use App\Modules\Drive\Services\DriveOAuthService;
 use App\Modules\Drive\Services\DriveProvider;
 use App\Modules\Drive\Services\NotConfiguredDocumentSource;
 use Illuminate\Support\ServiceProvider;
 
 /**
- * Modul Drive: Google Drive v3 lesend (Suche, Metadaten, Ordner, Berechtigungen) und Dokumentreferenzen je Vorgang.
- * Routen aus routes/modules/drive.php sind API- und Webhook-Routen ohne Domain-Bindung; Oberflächenrouten
- * gehören in routes/modules/mail.php (Domain mail.muellerhv.de, Modul MailUi).
+ * Modul Drive: Google Drive v3 lesend (Suche, Metadaten, Ordner, Berechtigungen), Dokumentreferenzen je Vorgang und
+ * OAuth-Anmeldefluss (DriveOAuthService, drive.readonly, PKCE). Routen aus routes/modules/drive.php: OAuth-Routen
+ * mail.integrations.drive.* domaingebunden an hub.mail.domain; die Integrationsseite selbst gehört dem Modul MailUi.
  */
 class DriveServiceProvider extends ServiceProvider
 {
@@ -27,6 +28,8 @@ class DriveServiceProvider extends ServiceProvider
         if (is_file($config)) {
             $this->mergeConfigFrom($config, 'hub.'.self::MODULE);
         }
+
+        $this->app->singleton(DriveOAuthService::class);
 
         if ($this->shouldBindLive()) {
             // DriveProvider wirft MailIntegrationNotConfiguredException, solange keine Verbindung mit Refresh-Token existiert.

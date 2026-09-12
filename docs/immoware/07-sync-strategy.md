@@ -158,7 +158,7 @@ Hard Delete existiert auf Spiegel-Tabellen nicht. Personenbezogene Felder werden
 | Collection | Redis-Lock hub:collection:{connection_id}:{collection_path_hash}, TTL 15 Minuten | Event-Lauf auf Posteingang darf nicht in einen laufenden Full Reconcile derselben Collection schreiben |
 | Cursor-Commit | Datenbanktransaktion in finalize, sync_states mit SELECT FOR UPDATE | Cursor wird nur committet, wenn alle Ressourcen des Laufs verarbeitet sind |
 | write_operations | Unique (idempotency_key), Trigger put_attempts maximal 1, Redis-Lock hub:write:{idempotency_key} | genau ein PUT je Zielpfad und Inhalt |
-| Datei-Import | Unique (connection_id, payload_type, dedup_hash) in external_payloads, wirksam nur für csv_file, datev_file, camt_file | Duplikatdatei wird abgewiesen, bevor Zeilen gelesen werden; DAV-Antworten werden je Lauf neu archiviert |
+| Datei-Import | Unique (connection_id, payload_type, dedup_hash) in external_payloads, wirksam nur für csv_file, datev_file, camt_file | Duplikatdatei wird abgewiesen, bevor Zeilen gelesen werden; DAV-Antworten werden je Lauf neu archiviert (Stand 12.09.2026: umgesetzt für PROPFIND-Antworten des Dokumentenspiegels als propfind_xml; vCard- und iCalendar-Ressourcen der CardDAV- und CalDAV-Läufe werden noch nicht archiviert, offener Punkt in docs/operations/02-backup-restore.md Abschnitt 7) |
 
 Regeln:
 
@@ -226,7 +226,7 @@ Gilt für jeden Adapter und jede Connection vor dem Produktivbetrieb sowie nach 
 
 | Stufe | Umfang | Ziel | Abnahmekriterium |
 |---|---|---|---|
-| 1 | eine Ressource (eine Datei, ein Kontakt, eine CSV-Zeile) | Mapping, Payload-Archiv, Versionierung, Audit | genau ein created, Replay aus external_payloads liefert identische checksum |
+| 1 | eine Ressource (eine Datei, ein Kontakt, eine CSV-Zeile) | Mapping, Payload-Archiv, Versionierung, Audit | genau ein created, Replay aus external_payloads (`hub:replay {entity} {external_id} --from=payload`) liefert identische checksum; für Kontakte und Termine erst nach Archivierung der DAV-Ressourcen möglich |
 | 10 | zehn Ressourcen, davon eine anschließend in Immoware24 manuell geändert | Hash-Änderungserkennung, unchanged_meta_noise | genau ein updated, neun unchanged, keine Konflikte |
 | 100 | hundert Ressourcen, eine in Immoware24 manuell verschoben (nur Ordner mit hash_on_change), eine gelöscht | Move-Erkennung, Mark-and-Sweep über zwei Läufe | moved korrekt, missing_since nach Lauf 1, soft_deleted nach Lauf 2 |
 | 1000 | tausend Ressourcen | Lastprofil, Rate, Lock-TTL, Paketgröße | Requests pro Sekunde kleiner gleich 2, keine 429, Laufdauer und counters dokumentiert |

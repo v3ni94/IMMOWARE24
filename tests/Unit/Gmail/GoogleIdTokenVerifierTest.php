@@ -71,6 +71,25 @@ final class GoogleIdTokenVerifierTest extends TestCase
         $this->assertSame(GoogleIdTokenVerifier::RESULT_OK, $verifier->verify($this->tokens->issue())['result'], 'Bekannte Schlüssel bleiben nutzbar.');
     }
 
+    public function test_forced_certificate_reload_is_locked_for_five_minutes(): void
+    {
+        $this->assertSame(300, config('hub.gmail.push.certs_reload_min_seconds'));
+        $verifier = $this->verifier();
+        $this->assertSame(GoogleIdTokenVerifier::RESULT_OK, $verifier->verify($this->tokens->issue())['result']);
+        Http::assertSentCount(1);
+
+        $this->assertSame(GoogleIdTokenVerifier::RESULT_INVALID, $verifier->verify($this->tokens->issue([], 'rotation-1'))['result']);
+        Http::assertSentCount(2, 'Erste unbekannte kid löst genau ein Neuladen aus.');
+
+        $this->travel(4)->minutes();
+        $this->assertSame(GoogleIdTokenVerifier::RESULT_INVALID, $verifier->verify($this->tokens->issue([], 'rotation-2'))['result']);
+        Http::assertSentCount(2, 'Innerhalb von 5 Minuten kein weiteres Neuladen (Cache-Sperre).');
+
+        $this->travel(2)->minutes();
+        $this->assertSame(GoogleIdTokenVerifier::RESULT_INVALID, $verifier->verify($this->tokens->issue([], 'rotation-3'))['result']);
+        Http::assertSentCount(3, 'Nach Ablauf der Sperre ist ein Neuladen wieder erlaubt.');
+    }
+
     private function verifier(): GoogleIdTokenVerifier
     {
         return $this->app->make(GoogleIdTokenVerifier::class);

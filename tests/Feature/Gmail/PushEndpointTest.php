@@ -136,6 +136,26 @@ final class PushEndpointTest extends TestCase
         $this->postJson(self::URL.'/geheim', $this->payload('verwaltung@muellerhv.de', '1', 'pt-2'), ['Authorization' => 'Bearer '.$this->tokens->issue()])->assertNoContent();
     }
 
+    public function test_global_rate_limit_applies_across_mailboxes_and_ips(): void
+    {
+        Bus::fake([HistorySyncJob::class]);
+        config()->set('hub.mail.push_rate_limit_global_per_minute', 2);
+        config()->set('hub.mail.push_rate_limit_per_minute', 600);
+
+        foreach (['a@muellerhv.de', 'b@muellerhv.de'] as $index => $email) {
+            $this->createMailbox(attributes: ['email_address' => $email, 'status' => 'active', 'import_enabled' => true]);
+            $this->push($email, '1', 'global-'.$index)->assertNoContent();
+        }
+
+        // Drittes Postfach, drittes Rate-Limit-Fenster je Postfach, aber das globale Fenster ist erschöpft.
+        $this->createMailbox(attributes: ['email_address' => 'c@muellerhv.de', 'status' => 'active', 'import_enabled' => true]);
+        $response = $this->push('c@muellerhv.de', '1', 'global-3');
+
+        $response->assertStatus(429);
+        $this->assertNotNull($response->headers->get('Retry-After'));
+        $this->assertSame(2, PushEvent::query()->count(), 'Die abgewiesene Anfrage wird nicht gespeichert.');
+    }
+
     /**
      * @return array<string, mixed>
      */

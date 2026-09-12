@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 use App\Modules\Actions\Jobs\DispatchActionOutboxJob;
 use App\Modules\Actions\Jobs\RunScheduledActionsJob;
+use App\Modules\Gmail\Jobs\AliasSyncJob;
 use App\Modules\Gmail\Jobs\ReconcileJob;
 use App\Modules\Gmail\Jobs\SendReconciliationJob;
 use App\Modules\Gmail\Jobs\WatchRenewJob;
-use App\Modules\Gmail\Services\Push\PushEventService;
 use App\Modules\Sla\Jobs\SlaCheckJob;
 use App\Modules\Sync\Schedule\SyncSchedule;
 use Illuminate\Console\Scheduling\Schedule;
@@ -76,10 +76,19 @@ ScheduleFacade::job(new SendReconciliationJob)
     ->withoutOverlapping()
     ->onOneServer();
 
-ScheduleFacade::call(static fn (): int => app(PushEventService::class)->prune())
+ScheduleFacade::command('mail:push:prune')
     ->dailyAt('04:05')
     ->timezone($mailTimezone)
     ->name('mail-gmail-push-prune')
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// Send-as-Aliasse je Postfach (sendAs.list, nur verifizierte Aliasse anlegen).
+ScheduleFacade::job(new AliasSyncJob)
+    ->dailyAt('03:45')
+    ->timezone($mailTimezone)
+    ->name('mail-gmail-alias-sync')
+    ->withoutOverlapping()
     ->onOneServer();
 
 ScheduleFacade::job(new SlaCheckJob, (string) config('hub.sla.emergency.queue', 'mail-high'))
@@ -108,3 +117,14 @@ ScheduleFacade::command('mail:actions:recheck-manual')
     ->name('mail-actions-recheck-manual')
     ->withoutOverlapping()
     ->onOneServer();
+
+// Aufbewahrung (docs/mail/08 Abschnitt 6): nächtlicher Lauf nur bei MAIL_RETENTION_ENABLED=true, sonst nur manuell
+// (Vorschau ohne --apply). Legal Hold auf Vorgängen sperrt Löschungen; jeder Lauf ist auditiert.
+if ((bool) config('hub.mail.retention.enabled', false)) {
+    ScheduleFacade::command('mail:retention:apply --apply')
+        ->dailyAt((string) config('hub.mail.retention.schedule_at', '03:45'))
+        ->timezone($mailTimezone)
+        ->name('mail-retention-apply')
+        ->withoutOverlapping(120)
+        ->onOneServer();
+}

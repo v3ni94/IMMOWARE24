@@ -30,6 +30,7 @@ return [
         ['key' => 'calendars', 'label' => 'Arbeitszeiten und Feiertage', 'route' => 'mail.admin.calendars.index'],
         ['key' => 'sla', 'label' => 'SLA-Regeln', 'route' => 'mail.admin.sla.index'],
         ['key' => 'settings', 'label' => 'Eskalation, Bereitschaft, KI, Aufbewahrung', 'route' => 'mail.admin.settings.index'],
+        ['key' => 'exports', 'label' => 'Auskunftsexport', 'route' => 'mail.admin.exports.index'],
         ['key' => 'setup', 'label' => 'Einrichtungsassistent', 'route' => 'mail.admin.setup.show'],
     ],
 

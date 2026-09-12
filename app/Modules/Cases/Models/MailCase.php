@@ -55,11 +55,20 @@ class MailCase extends Model
             'closed_at' => 'immutable_datetime',
             'archived_at' => 'immutable_datetime',
             'reopened_at' => 'immutable_datetime',
+            'legal_hold_at' => 'immutable_datetime',
             'closed_by_exception' => 'boolean',
             'reopen_count' => 'integer',
             'ai_classification_json' => 'array',
             'tags_json' => 'array',
         ];
+    }
+
+    /**
+     * Rechtliche Sperre: verhindert jede Löschung durch die Aufbewahrungsregeln (mail:retention:apply).
+     */
+    public function hasLegalHold(): bool
+    {
+        return $this->getAttribute('legal_hold_at') !== null;
     }
 
     /**

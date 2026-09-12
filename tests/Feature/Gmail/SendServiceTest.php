@@ -18,6 +18,7 @@ use App\Modules\Gmail\Testing\FakeGmailProvider;
 use App\Modules\Mail\Exceptions\MailRemoteException;
 use App\Modules\Mail\Models\MailboxAlias;
 use App\Modules\Security\Models\User;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
 use Tests\TestCase;
@@ -122,6 +123,41 @@ final class SendServiceTest extends TestCase
         $reconciliation->forceFill(['next_check_at' => now()->subMinute()])->save();
         $this->assertSame(1, $this->app->make(SendReconciliationService::class)->processDue());
         $this->assertSame('sent_verified', $draft->refresh()->getAttribute('status'));
+    }
+
+    public function test_only_one_open_reconciliation_exists_per_draft(): void
+    {
+        config()->set('hub.gmail.send.reconcile_attempts', 3);
+        $draft = $this->draft();
+        $this->gmail->failNext('listSent', new MailRemoteException('Vorübergehend', 'gmail', 503, null));
+        $this->app->make(SendService::class)->send($draft, $this->user);
+
+        $service = $this->app->make(SendReconciliationService::class);
+        $first = SendReconciliation::query()->firstOrFail();
+        $this->assertSame((int) $draft->getKey(), $first->getAttribute('open_key'));
+
+        // Ein Retry von drafts.send darf keinen zweiten offenen Abgleich anlegen; eine vorhandene Antwort-ID bleibt.
+        $second = $service->start($draft->refresh(), 'antwort-42');
+        $this->assertSame((int) $first->getKey(), (int) $second->getKey());
+        $this->assertSame($first->getAttribute('gmail_response_message_id'), $second->getAttribute('gmail_response_message_id'));
+        $first->forceFill(['gmail_response_message_id' => null])->save();
+        $this->assertSame('antwort-42', $service->start($draft->refresh(), 'antwort-42')->getAttribute('gmail_response_message_id'), 'Fehlende Antwort-ID wird ergänzt.');
+        $this->assertSame(1, SendReconciliation::query()->count());
+
+        // Der Unique-Index greift auch bei einem direkten Insert unter Umgehung des Services.
+        try {
+            SendReconciliation::query()->create(['draft_id' => $draft->getKey(), 'open_key' => $draft->getKey(), 'requested_at' => now(), 'expected_rfc_message_id' => 'x', 'result' => 'pending']);
+            $this->fail('Unique-Index auf open_key erwartet.');
+        } catch (QueryException) {
+            $this->assertSame(1, SendReconciliation::query()->count());
+        }
+
+        // Nach Abschluss ist open_key leer; ein neuer Abgleich desselben Entwurfs ist wieder möglich.
+        $first->forceFill(['next_check_at' => now()->subMinute()])->save();
+        $service->processDue();
+        $this->assertSame('verified', $first->refresh()->getAttribute('result'));
+        $this->assertNull($first->getAttribute('open_key'));
+        $this->assertNotSame((int) $first->getKey(), (int) $service->start($draft->refresh(), null)->getKey());
     }
 
     public function test_new_inbound_thread_message_blocks_send_until_draft_is_reviewed(): void

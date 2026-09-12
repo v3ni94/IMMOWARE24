@@ -185,6 +185,7 @@ final class DoctorCommand extends Command
         }
 
         $this->checkMailQueuesAndMailboxes($config, $stagingLike, $productionDomain);
+        $this->checkMailEmergencyRecipient($config, $env);
 
         foreach ($status->overview() as $key => $row) {
             $mode = (string) $row['mode'];
@@ -266,6 +267,24 @@ final class DoctorCommand extends Command
         }
 
         $this->add('mail.watch', $problems === [] ? 'ok' : 'warn', $problems === [] ? count($importing).' Postfach/Postfächer mit Watch über 24 h' : implode('; ', $problems));
+    }
+
+    /**
+     * MAIL_EMERGENCY_TEST_RECIPIENT (hub.mail.emergency.test_recipient): Empfänger für Testalarme und die
+     * Notfallprobe. In staging Pflicht für den Abnahmetest des Notfallpfads (warn, wenn leer), sonst Hinweis.
+     */
+    private function checkMailEmergencyRecipient(ConfigRepository $config, string $env): void
+    {
+        $recipient = trim((string) ($config->get('hub.mail.emergency.test_recipient') ?? ''));
+
+        if ($recipient === '') {
+            $this->add('mail.emergency.test_recipient', $env === 'staging' ? 'warn' : 'ok', 'MAIL_EMERGENCY_TEST_RECIPIENT nicht gesetzt'.($env === 'staging' ? ', in staging für den Test des Notfallpfads erforderlich' : ', kein Testversand konfiguriert'));
+
+            return;
+        }
+
+        $valid = filter_var($recipient, FILTER_VALIDATE_EMAIL) !== false;
+        $this->add('mail.emergency.test_recipient', $valid ? 'ok' : 'warn', $valid ? 'gesetzt ('.$recipient.')' : 'gesetzt, aber keine gültige E-Mail-Adresse');
     }
 
     private function add(string $check, string $status, string $detail): void

@@ -15,6 +15,7 @@ use App\Modules\Mail\Models\Mailbox;
 use App\Modules\Security\Services\AuditLogger;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -38,19 +39,58 @@ final class SendReconciliationService
         private readonly AuditLogger $audit,
     ) {}
 
+    /**
+     * Legt den Abgleich an. Je Entwurf ist höchstens ein Abgleich offen (Unique-Index auf open_key = draft_id):
+     * existiert bereits ein pending-Abgleich, wird dieser zurückgegeben und nur die Antwort-ID ergänzt, damit ein
+     * Retry von drafts.send nie einen zweiten offenen Abgleich erzeugt.
+     */
     public function start(MailDraft $draft, ?string $gmailResponseMessageId): SendReconciliation
     {
+        $existing = $this->openFor($draft);
+
+        if ($existing instanceof SendReconciliation) {
+            return $this->mergeResponseId($existing, $gmailResponseMessageId);
+        }
+
         $intervals = (array) $this->config->get('hub.gmail.send.reconcile_interval_seconds', [60]);
 
-        return SendReconciliation::query()->create([
-            'draft_id' => $draft->getKey(),
-            'requested_at' => CarbonImmutable::now(),
-            'gmail_response_message_id' => $gmailResponseMessageId,
-            'expected_rfc_message_id' => (string) $draft->getAttribute('rfc_message_id'),
-            'attempts' => 0,
-            'next_check_at' => CarbonImmutable::now()->addSeconds((int) ($intervals[0] ?? 60)),
-            'result' => 'pending',
-        ]);
+        try {
+            return SendReconciliation::query()->create([
+                'draft_id' => $draft->getKey(),
+                'open_key' => (int) $draft->getKey(),
+                'requested_at' => CarbonImmutable::now(),
+                'gmail_response_message_id' => $gmailResponseMessageId,
+                'expected_rfc_message_id' => (string) $draft->getAttribute('rfc_message_id'),
+                'attempts' => 0,
+                'next_check_at' => CarbonImmutable::now()->addSeconds((int) ($intervals[0] ?? 60)),
+                'result' => 'pending',
+            ]);
+        } catch (QueryException $exception) {
+            // Wettlauf zweier Läufe: der Unique-Index hat den zweiten offenen Abgleich verhindert.
+            $existing = $this->openFor($draft);
+
+            if (! $existing instanceof SendReconciliation) {
+                throw $exception;
+            }
+
+            Log::notice('Gmail: offener Versandabgleich existiert bereits, kein zweiter angelegt.', ['draft_id' => $draft->getKey()]);
+
+            return $this->mergeResponseId($existing, $gmailResponseMessageId);
+        }
+    }
+
+    private function openFor(MailDraft $draft): ?SendReconciliation
+    {
+        return SendReconciliation::query()->where('open_key', (int) $draft->getKey())->where('result', 'pending')->first();
+    }
+
+    private function mergeResponseId(SendReconciliation $reconciliation, ?string $gmailResponseMessageId): SendReconciliation
+    {
+        if ($gmailResponseMessageId !== null && $gmailResponseMessageId !== '' && $reconciliation->getAttribute('gmail_response_message_id') === null) {
+            $reconciliation->forceFill(['gmail_response_message_id' => $gmailResponseMessageId])->save();
+        }
+
+        return $reconciliation;
     }
 
     public function reconcile(SendReconciliation $reconciliation): string
@@ -58,7 +98,7 @@ final class SendReconciliationService
         $draft = $reconciliation->draft()->withoutGlobalScopes()->first();
 
         if (! $draft instanceof MailDraft) {
-            $reconciliation->forceFill(['result' => 'mismatch'])->save();
+            $reconciliation->forceFill(['result' => 'mismatch', 'open_key' => null])->save();
 
             return self::UNCLEAR;
         }
@@ -93,6 +133,7 @@ final class SendReconciliationService
                 'attempts' => $attempts,
                 'found_in_sent_at' => CarbonImmutable::now(),
                 'result' => 'verified',
+                'open_key' => null,
                 'next_check_at' => null,
             ])->save();
 
@@ -111,7 +152,7 @@ final class SendReconciliationService
 
         if ($found !== null) {
             // Nachricht existiert, aber Message-ID widerspricht: unklar, kein erneuter Versand.
-            $reconciliation->forceFill(['attempts' => $attempts, 'result' => 'mismatch', 'next_check_at' => null])->save();
+            $reconciliation->forceFill(['attempts' => $attempts, 'result' => 'mismatch', 'open_key' => null, 'next_check_at' => null])->save();
             $draft->forceFill(['send_verification' => self::UNCLEAR])->save();
             event(new SendVerificationCompleted((int) $draft->getKey(), self::UNCLEAR));
 
@@ -119,7 +160,7 @@ final class SendReconciliationService
         }
 
         if ($attempts >= $maxAttempts) {
-            $reconciliation->forceFill(['attempts' => $attempts, 'result' => 'not_found', 'next_check_at' => null])->save();
+            $reconciliation->forceFill(['attempts' => $attempts, 'result' => 'not_found', 'open_key' => null, 'next_check_at' => null])->save();
             $draft->forceFill(['send_verification' => self::UNCLEAR])->save();
             $this->audit->record('mail.draft.send_unclear', $draft, [], ['attempts' => $attempts], AuditSource::Mail);
             event(new SendVerificationCompleted((int) $draft->getKey(), self::UNCLEAR));

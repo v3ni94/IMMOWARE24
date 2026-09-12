@@ -70,12 +70,12 @@ Symptom: A2, `dlq_open > 0`. Status je Eintrag: open, retrying, replayed, ignore
 
 Vorgehen:
 
-1. Einträge sichten (Admin-UI Bereich Sync, im Aufbau; bis dahin lesend per SQL auf `dlq_items`: `job_class`, `queue`, `exception_class`, `trace` bis 8000 Zeichen, `payload_ref`). Correlation-ID notieren und die zugehörigen Logzeilen lesen.
+1. Einträge sichten: Admin-UI Bereich DLQ oder `php artisan hub:dlq:list` (Standard Status open und failed, `--status=` für andere Status, `--connection=`, `--json`). Die Spalte Fehler zeigt die maskierte erste Zeile der Exception; Correlation-ID notieren und die zugehörigen Logzeilen lesen. Vollständiger Payload nur über die Admin-UI (maskiert, auditiert).
 2. Einordnen: transient (429, 5xx, Timeout, Breaker offen) oder fachlich (Mapping-Fehler, ungültige Datei, Guard-Verletzung).
-3. Transient: Ursache beheben (Störfall 1 bis 4), dann Retry über `DlqService::retry()` (Admin-UI oder `php artisan tinker` mit angemeldetem operator; Audit `dlq.retry_requested`). Retry ist idempotent: Sync-Läufe sind cursor- und hashbasiert, Uploads laufen über `idempotency_key`.
+3. Transient: Ursache beheben (Störfall 1 bis 4), dann Retry über die Admin-UI oder `php artisan hub:dlq:retry {id}`; alle offenen und fehlgeschlagenen Einträge mit `hub:dlq:retry --all-failed` (vorher `--dry-run`). Der Retry stellt `ProcessDlqRetryJob` in die Queue und wird auditiert (`dlq.retry_requested`). Retry ist idempotent: Sync-Läufe sind cursor- und hashbasiert, Uploads laufen über `idempotency_key`.
 4. Fachlich: Ticket an Entwicklung mit `dlq_items.id`; Eintrag bleibt `open`. Nach Fix und Deploy Retry.
-5. Nicht mehr relevant (z. B. Datei inzwischen manuell importiert): `DlqService::ignore()` mit Begründung (Audit `dlq.ignored`). Ignorierte Einträge können nicht erneut ausgeführt werden.
-6. DLQ-Einträge der Queue `write`: vor jedem Retry den Zustand der `write_operation` prüfen (`sent` oder `unknown` nie retryen, nur PROPFIND-Auflösung abwarten). Freigabe durch release.
+5. Nicht mehr relevant (z. B. Datei inzwischen manuell importiert): `php artisan hub:dlq:ignore {id} --reason="Ticket 4711, manuell importiert"` oder Admin-UI (Audit `dlq.ignored`). Die Begründung ist Pflicht. Ignorierte Einträge können nicht erneut ausgeführt werden.
+6. DLQ-Einträge der Queue `write`: vor jedem Retry den Zustand der `write_operation` prüfen (`sent` oder `unknown` nie retryen, nur PROPFIND-Auflösung abwarten). `hub:dlq:retry --all-failed` überspringt Einträge der Queue `write` und nimmt sie nur mit `--include-write` auf. Freigabe durch release.
 7. Aufbewahrung 180 Tage (`hub.sync.dlq.retention_days`).
 
 Ziel: DLQ am Ende jedes Arbeitstags leer oder jeder offene Eintrag mit Ticket versehen.
@@ -96,6 +96,5 @@ Lesen aus dem Spiegel mit stale-Kennzeichnung, Uploads bleiben `queued`, keine D
 
 ## 9. Offene Punkte
 
-- Admin-UI für Connections (paused, active, Secret-Eingabe) und DLQ ist im Aufbau (README Status). Bis zur Fertigstellung laufen die Schritte über Services im `tinker` durch admin mit Protokoll; jede Aktion wird auditiert.
-- Kommando für Retry und Ignore der DLQ auf der Konsole fehlt; Vorschlag `hub:dlq:list|retry|ignore` an Entwicklung Modul Sync.
+- Admin-UI für Connections und DLQ ist vorhanden (Modul Admin, Bereiche Verbindungen und DLQ); die Konsolenbefehle `hub:dlq:list`, `hub:dlq:retry`, `hub:dlq:ignore` sind seit 12.09.2026 vorhanden (Modul Sync). Konsolenaktionen laufen ohne angemeldeten Nutzer und erscheinen im Audit ohne `user_id`; deshalb Bearbeiter und Correlation-ID zusätzlich im Störfallprotokoll (Abschnitt 8) festhalten.
 - Halbjährliche Rotation (Störfall 2) in den Terminkalender der Geschäftsführung eintragen.

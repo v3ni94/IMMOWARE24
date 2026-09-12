@@ -80,6 +80,9 @@ return [
     // Rate Limit des Pub/Sub-Push-Endpunkts (Middleware-Gruppe mail.push), Anfragen je Minute.
     // Je Postfach (emailAddress der Nutzlast), nicht je IP: Pub/Sub sendet aus wenigen Google-Adressen. 429 wird protokolliert.
     'push_rate_limit_per_minute' => (int) env('MAIL_PUSH_RATE_LIMIT_PER_MINUTE', 600),
+    // Zusätzliches globales Limit über alle Postfächer und Absender (Limiter mail-push-global, Schlüssel global):
+    // begrenzt die Gesamtlast des Endpunkts, auch wenn viele verschiedene Postfachadressen oder IPs verwendet werden.
+    'push_rate_limit_global_per_minute' => (int) env('MAIL_PUSH_RATE_LIMIT_GLOBAL_PER_MINUTE', 3000),
 
     /*
      * Globale Rechte des Mail-Moduls. Werden von MailServiceProvider::register() additiv in
@@ -162,5 +165,50 @@ return [
     'legal_entities' => [
         'HVM' => 'Hausverwaltung Müller GmbH',
         'MHAG' => 'Müller Holding AG',
+    ],
+
+    /*
+     * Aufbewahrung (docs/mail/08-datenschutz-sicherheit.md Abschnitt 6). Angewendet durch mail:retention:apply
+     * (Vorschau mit --dry-run, jeder Lauf auditiert). Fristen in Tagen sind Vorgaben je Organisation und werden durch
+     * die Aufbewahrungseinstellung der Organisation (mail_org_settings, Schlüssel retention) überschrieben, sofern
+     * dort gesetzt. Ein Vorgang mit legal_hold_at sperrt alle Löschungen an ihm und an seinen Nachrichten, Anhängen
+     * und KI-Läufen. Der nächtliche Zeitplan läuft nur bei MAIL_RETENTION_ENABLED=true; der Befehl selbst ist immer
+     * manuell aufrufbar. Fristen sind mit Steuerberater und Rechtsanwalt abzustimmen, nie eigenmächtig verkürzen.
+     */
+    'retention' => [
+        'enabled' => (bool) env('MAIL_RETENTION_ENABLED', false),
+        // Nachrichtentexte: body_text und body_html_sanitized werden entfernt, Metadaten bleiben (kein Hard Delete).
+        'messages_days' => (int) env('MAIL_RETENTION_MESSAGES_DAYS', 3650),
+        // Anhänge: Datei auf der Speicherdisk gelöscht, Zeile soft deleted, Metadaten bleiben.
+        'attachments_days' => (int) env('MAIL_RETENTION_ATTACHMENTS_DAYS', 3650),
+        // KI-Läufe (mail_ai_runs): Zeilen ohne Rohtext, werden nach Frist entfernt.
+        'ai_runs_days' => (int) env('MAIL_RETENTION_AI_RUNS_DAYS', 365),
+        // Push-Ereignisse (mail_push_events): nur Dedup-Zweck, 30 Tage.
+        'push_events_days' => (int) env('MAIL_RETENTION_PUSH_EVENTS_DAYS', 30),
+        // Abgeschlossene Vorgänge (closed oder archived): Soft Delete des Vorgangs samt Teilanliegen und Aufgaben.
+        'closed_cases_days' => (int) env('MAIL_RETENTION_CLOSED_CASES_DAYS', 3650),
+        // Zeilen je Durchlaufblock (chunkById), begrenzt Sperrdauer und Speicher.
+        'chunk' => (int) env('MAIL_RETENTION_CHUNK', 500),
+        // Uhrzeit des nächtlichen Laufs (display_timezone).
+        'schedule_at' => env('MAIL_RETENTION_SCHEDULE_AT', '03:45'),
+    ],
+
+    /*
+     * Auskunftsexport (DSGVO Art. 15, docs/mail/08 Abschnitt 7): mail:subject-access-export und Admin-Aktion. Läuft
+     * asynchron auf der Queue low, nur mit Recht mail.export, Bankdaten maskiert, Ablage auf der Disk unterhalb von path.
+     */
+    'subject_access_export' => [
+        'disk' => env('MAIL_EXPORT_DISK', 'local'),
+        'path' => 'mail-exports',
+        'queue' => 'low',
+    ],
+
+    /*
+     * Notfallpfad. test_recipient ist die Empfängeradresse für Testalarme und die Probe von hub:doctor
+     * (Bereitschaft, Eskalation). Leer bedeutet: kein Testversand konfiguriert, hub:doctor meldet warn.
+     * Es handelt sich ausschließlich um eine interne Adresse, nie um eine Adresse von Mietern oder Eigentümern.
+     */
+    'emergency' => [
+        'test_recipient' => env('MAIL_EMERGENCY_TEST_RECIPIENT'),
     ],
 ];

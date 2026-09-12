@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Modules\MailUi\Http\Controllers\Admin\CalendarsController;
+use App\Modules\MailUi\Http\Controllers\Admin\ExportsController;
 use App\Modules\MailUi\Http\Controllers\Admin\MailboxesController;
 use App\Modules\MailUi\Http\Controllers\Admin\ResponsibilitiesController;
 use App\Modules\MailUi\Http\Controllers\Admin\SettingsController;
@@ -94,6 +95,10 @@ Route::prefix('/admin')->name('admin.')->group(static function (): void {
 
     Route::get('/settings', [SettingsController::class, 'index'])->name('settings.index');
     Route::put('/settings/{key}', [SettingsController::class, 'update'])->where('key', '[a-z_]+')->name('settings.update');
+
+    // Auskunftsexport (DSGVO Art. 15): Anforderung asynchron, nur mit mail.export, Re-Auth, auditiert.
+    Route::get('/exports', [ExportsController::class, 'index'])->name('exports.index');
+    Route::post('/exports', [ExportsController::class, 'store'])->middleware('2fa.fresh')->name('exports.store');
 
     Route::get('/setup/{step?}', [SetupController::class, 'show'])->where('step', '[a-z]+')->name('setup.show');
     Route::post('/setup/{step}', [SetupController::class, 'store'])->where('step', '[a-z]+')->name('setup.store');

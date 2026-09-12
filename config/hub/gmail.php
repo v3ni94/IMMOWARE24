@@ -70,9 +70,10 @@ return [
         'certs_url' => 'https://www.googleapis.com/oauth2/v3/certs',
         'issuers' => ['https://accounts.google.com', 'accounts.google.com'],
         'certs_cache_seconds' => 3600,
-        // Unbekannte kid: kurzer Negativ-Cache und Mindestabstand zwischen erzwungenen JWKS-Abrufen (Amplifikationsschutz).
+        // Unbekannte kid: kurzer Negativ-Cache und Mindestabstand zwischen erzwungenen JWKS-Abrufen (Amplifikationsschutz,
+        // docs/mail/08 Abschnitt 11.2): höchstens ein Nachladen je 5 Minuten, gesichert über eine Cache-Sperre (add).
         'unknown_kid_cache_seconds' => 60,
-        'certs_reload_min_seconds' => 60,
+        'certs_reload_min_seconds' => 300,
         'clock_skew_seconds' => 60,
         'dedup_retention_days' => 30,
         // Watch läuft laut Snippets maximal 7 Tage; Erneuerung täglich, Alarm bei Restlaufzeit unter 24 Stunden.

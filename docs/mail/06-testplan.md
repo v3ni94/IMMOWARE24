@@ -62,7 +62,17 @@ Diese Zeilen stammen aus der früheren, rekonstruierten Liste und aus Review-Lä
 | KI-Schema und Maskierung | `tests/Unit/Ai/SchemaValidatorTest`, `tests/Unit/Ai/PromptMaskerTest`, `tests/Feature/Ai/AiSuggestionServiceTest::test_masked_values_are_restored_only_in_stored_payload_and_run_has_no_plaintext`, `::test_budget_exceeded_stops_calls_and_leaves_manual_processing` | Ungültiges JSON verworfen, Namen, IBAN, Adressen maskiert, Rückabbildung nur serverseitig, Budgetstopp | automatisiert getestet |
 | Drive nur lesend | `tests/Feature/Drive/DriveProviderTest` (nur GET auf files, permissions, export), `tests/Feature/Drive/DriveAccessTest::test_revoke_file_removes_all_excerpts`, `::test_permission_check_failure_yields_no_excerpt` | Kein Schreibaufruf gegen Drive; Berechtigungsprüfung je Datei | begrenzt: Sperre von permissions.create ohne expliziten Test |
 | Outbox | `tests/Feature/Actions/ReviewFindingsTest::test_outbox_entries_are_dispatched_and_marked_with_attempts` | Outbox-Dispatcher, Versuche protokolliert | begrenzt: Rollback-Test der fachlichen Änderung mit Outbox-Eintrag offen |
-| Push-Retention | keine Testklasse | Einträge älter 30 Tage entfernt | offen |
+| Push-Retention | `tests/Feature/Gmail/PushEndpointTest::test_push_prune_command_removes_only_events_older_than_retention` | `mail:push:prune` entfernt nur Einträge älter als die Aufbewahrungsfrist | automatisiert getestet |
+| Globales Push-Rate-Limit und JWKS-Sperre | `tests/Feature/Gmail/PushEndpointTest::test_global_rate_limit_applies_across_mailboxes_and_ips`, `tests/Unit/Gmail/GoogleIdTokenVerifierTest::test_forced_certificate_reload_is_locked_for_five_minutes` | 429 mit Retry-After über alle Postfächer und IPs, Zertifikatsnachladen höchstens alle 300 Sekunden | automatisiert getestet |
+| Ein offener Sendeabgleich je Entwurf | `tests/Feature/Gmail/SendServiceTest::test_only_one_open_reconciliation_exists_per_draft` | Unique-Index `open_key`, `start()` idempotent | automatisiert getestet |
+| Alias-Sync | `tests/Feature/Gmail/AliasSyncTest` | Nur akzeptierte Aliasse, Status aus Gmail, `legal_entity_code` bleibt, nicht gelieferte auf `missing`, DLQ bei Fehler | automatisiert getestet |
+| Drive OAuth nur lesend | `tests/Feature/Drive/DriveOAuthFlowTest` | PKCE und State, ausschließlich `drive.readonly`, weiter gehende Scopes verworfen und widerrufen, Tokens verschlüsselt, Statusanzeige | automatisiert getestet |
+| KI-Vorschläge verschlüsselt | `tests/Feature/Ai/AiSuggestionEncryptionTest` | `payload_json` verschlüsselt in der Datenbank, Altzeilen geleert | automatisiert getestet |
+| Abschluss bei Planquelle | `tests/Feature/Cases/CloseConditionPlanSourceTest` | Fehlgeschlagene Ausführung blockiert Abschluss auch ohne Spiegelung im Teilanliegen | automatisiert getestet |
+| Dashboard Betrieb | `tests/Feature/MailUi/DashboardOpsMetricsTest` | Kennzahl Push 429, Watch-Ablauf je Postfach | automatisiert getestet |
+| Aufbewahrung | `tests/Feature/MailIntegration/RetentionApplyTest` | Dry-Run zählt nur, Legal Hold und offene Vorgänge schützen, kein Hard Delete auf Nachrichten, Audit je Lauf | automatisiert getestet |
+| Auskunftsexport | `tests/Feature/MailIntegration/SubjectAccessExportTest` | Recht `mail.export`, nur eigene Organisation, Bankdaten maskiert, JSON und CSV mit manifest.json, Audit | automatisiert getestet |
+| Notfall-Testempfänger | `tests/Feature/MailIntegration/MailEmergencyConfigTest`, `tests/Feature/Core/DoctorCommandTest` | Schlüssel `hub.mail.emergency.test_recipient`, Warnung in staging | automatisiert getestet |
 | Audit-Pflichtereignisse Mail | Hash-Kette in `tests/Feature/Security`, einzelne Ereignisse in `tests/Feature/MailUi/ApprovalCenterTest`, `tests/Feature/MailUi/AdminMailboxesTest::test_mailbox_creation_starts_not_configured_and_is_audited` | Pflichtereignisse vorhanden, Secrets maskiert | begrenzt: vollständige Ereignisliste des Mail-Moduls ohne eigenen Test |
 | Teilerfolg im Geschäftsstatus | `tests/Feature/MailIntegration/PlanStatusMirrorTest` | Planstatus result_unclear, manual_review, executing spiegelt sich im Teilanliegen, Abschluss blockiert | automatisiert getestet |
 | Sperren, Vertretung, Teamlast | `tests/Feature/Cases/LockAndDelegationTest` | Bearbeitungssperre mit Ablauf und Übergabe, Abwesenheitsvertretung, Teamlast | automatisiert getestet |
@@ -72,11 +82,12 @@ Diese Zeilen stammen aus der früheren, rekonstruierten Liste und aus Review-Lä
 
 Befehle: `php artisan test`, `vendor/bin/pint --test tests/Feature/MailAcceptance`, `phpstan analyse --no-progress`.
 
-Ergebnis des Abschlusslaufs 12.09.2026: siehe Abschnitt "Abnahmekriterien" unten. Jeder Lauf ist ein Lauf gegen Fakes; kein Test in dieser Suite gilt als "mit echter Integration geprüft".
+Ergebnis des Abschlusslaufs 2 vom 13.09.2026: siehe Abschnitt "Abnahmekriterien" unten. Jeder Lauf ist ein Lauf gegen Fakes; kein Test in dieser Suite gilt als "mit echter Integration geprüft".
 
 ## Abnahmekriterien
 
 - Alle 20 Fälle im Status automatisiert getestet, Pint und PHPStan Level 5 ohne Befund.
 - Neue Abnahmetests: `tests/Feature/MailAcceptance/AcceptanceCase03Test`, `AcceptanceCase07Test`, `AcceptanceCase14Test`, `AcceptanceCase16Test`, `AcceptanceCase20Test` (8 Testmethoden).
 - Gesamtsuite Abschlusslauf 12.09.2026: 844 Tests, 836 bestanden, 8 übersprungen, 6.437 Assertions (davon 8 neue Abnahmetests mit 322 Assertions).
+- Gesamtsuite Abschlusslauf 2 vom 13.09.2026 (nach Abarbeitung von 08 Abschnitt 11.2): 891 Tests, 883 bestanden, 8 übersprungen, 6.781 Assertions; davon 321 Tests der Mail-Module mit 2.449 Assertions. Pint auf dem gesamten Repository und PHPStan Level 5 ohne Befund, `migrate:fresh` auf SQLite mit 46 Migrationen, `route:list` 205 Routen (62 auf der Mail-Domain), `hub:openapi:export` und `hub:mcp:export` regeneriert.
 - Live-Abnahme (echte Zugangsdaten, Testpostfach, Lexware-Testmandant) ist ein eigener Schritt außerhalb dieser Umgebung und wird gesondert protokolliert. Bis dahin gilt für alle 20 Fälle: mit echter Integration geprüft: nein.

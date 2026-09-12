@@ -4,12 +4,18 @@ declare(strict_types=1);
 
 namespace App\Modules\Sync;
 
+use App\Core\Contracts\AuditLoggerInterface;
 use App\Core\Support\CorrelationId;
 use App\Modules\Sync\Console\BootstrapSyncCommand;
 use App\Modules\Sync\Console\DispatchSyncCommand;
+use App\Modules\Sync\Console\DlqIgnoreCommand;
+use App\Modules\Sync\Console\DlqListCommand;
+use App\Modules\Sync\Console\DlqRetryCommand;
 use App\Modules\Sync\Console\HeartbeatCheckCommand;
 use App\Modules\Sync\Console\PrunePayloadsCommand;
+use App\Modules\Sync\Console\QueueDepthCommand;
 use App\Modules\Sync\Console\RefreshStalenessCommand;
+use App\Modules\Sync\Console\ReplayCommand;
 use App\Modules\Sync\Console\RunSyncCommand;
 use App\Modules\Sync\Console\WorkerHeartbeatCommand;
 use App\Modules\Sync\Services\BootstrapService;
@@ -20,6 +26,11 @@ use App\Modules\Sync\Services\DlqService;
 use App\Modules\Sync\Services\ExternalPayloadArchiver;
 use App\Modules\Sync\Services\FieldMappingService;
 use App\Modules\Sync\Services\ProposedChangeService;
+use App\Modules\Sync\Services\QueueDepthProbe;
+use App\Modules\Sync\Services\Replay\CalendarPayloadReplayer;
+use App\Modules\Sync\Services\Replay\ContactPayloadReplayer;
+use App\Modules\Sync\Services\Replay\DocumentPayloadReplayer;
+use App\Modules\Sync\Services\ReplayService;
 use App\Modules\Sync\Services\SyncDispatcher;
 use App\Modules\Sync\Services\SyncMetrics;
 use App\Modules\Sync\Services\SyncRunService;
@@ -57,10 +68,17 @@ class SyncServiceProvider extends ServiceProvider
             SyncLockManager::class, ConnectorResolver::class, SyncRunService::class, SyncStateService::class,
             DataAgeService::class, ExternalPayloadArchiver::class, DlqService::class, ConflictDetector::class,
             ConflictService::class, ProposedChangeService::class, FieldMappingService::class, SyncDispatcher::class,
-            BootstrapService::class,
+            BootstrapService::class, QueueDepthProbe::class,
         ] as $service) {
             $this->app->singleton($service);
         }
+
+        $this->app->singleton(ReplayService::class, static fn (Application $app): ReplayService => new ReplayService(
+            [$app->make(DocumentPayloadReplayer::class), $app->make(ContactPayloadReplayer::class), $app->make(CalendarPayloadReplayer::class)],
+            $app->make(ExternalPayloadArchiver::class),
+            $app->make(AuditLoggerInterface::class),
+            $app->make(CorrelationId::class),
+        ));
     }
 
     public function boot(): void
@@ -86,6 +104,11 @@ class SyncServiceProvider extends ServiceProvider
                 RefreshStalenessCommand::class,
                 WorkerHeartbeatCommand::class,
                 HeartbeatCheckCommand::class,
+                QueueDepthCommand::class,
+                ReplayCommand::class,
+                DlqListCommand::class,
+                DlqRetryCommand::class,
+                DlqIgnoreCommand::class,
             ]);
         }
 

@@ -164,16 +164,20 @@ Schwere: Die Fix-Berichte überliefern die Einstufung des Reviews nur für ein F
 | U18 | Mail | CSP nur in nginx | sicherheitsrelevant | behoben (`MailSecurityHeaders`); sandboxed iframe bewusst nicht umgesetzt |
 | U19 | MailUi | `status()`/`note()` ohne Recht | sicherheitsrelevant | behoben (`mail.task.manage`) |
 | U20 | MailUi | Entwürfe/Versand als aktiv ohne Scope | Anzeige | behoben |
-| U21 | Mail | Push-Rate-Limit nur je IP | sicherheitsrelevant | behoben (je Postfach, 600/min); Dashboard-Kennzahl offen |
+| U21 | Mail | Push-Rate-Limit nur je IP | sicherheitsrelevant | behoben (je Postfach 600/min, global 3000/min); Dashboard-Kennzahl vorhanden |
 | U22 | Datenmodell | Kaskadenlöschung auf Mail-Tabellen | datenverlustrelevant | behoben (Migration `2026_09_13_110001`, `restrictOnDelete`, No-op auf SQLite) |
 
-### 11.2 Offene Punkte nach dem Fix-Lauf
+### 11.2 Offene Punkte nach dem Fix-Lauf (Stand nach Abschlusslauf 2, 13.09.2026)
 
-1. Globales Rate Limit für `mail-push` (`Limit::perMinute(...)->by('global')`) zusätzlich zum Limit je Postfach (G3).
-2. Unique-Index `(draft_id)` für offene Abgleiche auf `mail_send_reconciliations` (G8).
-3. Spaltentyp `mail_ai_suggestions.payload_json` auf `longText` und Cast `encrypted:array` (G18); bis dahin liegen KI-Vorschläge unverschlüsselt in der Datenbank, IBAN-Felder werden maskiert gespeichert.
-4. Warnung in `hub:doctor` bei Staging ohne `MAIL_EMERGENCY_TEST_RECIPIENT` (C15).
-5. `CloseConditionChecker` fragt Aktionspläne direkt ab (U4, zweiter Teil).
-6. Kennzahl "Push 429" im Dashboard (U21).
-7. `mail:retention:apply` und Auskunftsexport (Abschnitt 6 und 7) weiterhin offen.
-8. Durchreichen von `2fa.fresh` an `DraftService::approve` ist über die Route erledigt, ein Test der Freigabe ohne frische Zwei-Faktor-Sitzung fehlt.
+| Nr. | Punkt | Status |
+|---|---|---|
+| 1 | Globales Rate Limit für `mail-push` (G3) | erledigt: `RateLimiter::for('mail-push-global')`, `hub.mail.push_rate_limit_global_per_minute` (Standard 3000), 429 mit Retry-After, Log `mail.push.rate_limited` mit key global; Middleware-Gruppe `mail.push` = `mail.domain, throttle:mail-push-global, throttle:mail-push`. Zusätzlich JWKS-Nachladen bei unbekannter kid auf 300 Sekunden gesperrt. Tests `PushEndpointTest::test_global_rate_limit_applies_across_mailboxes_and_ips`, `GoogleIdTokenVerifierTest::test_forced_certificate_reload_is_locked_for_five_minutes` |
+| 2 | Unique-Index für offene Abgleiche auf `mail_send_reconciliations` (G8) | erledigt: Migration `2026_09_14_000001`, Spalte `open_key` (= draft_id solange pending, NULL nach Abschluss), Unique-Index `mail_send_reconciliations_open_key_unique`; `SendReconciliationService::start()` idempotent. Test `SendServiceTest::test_only_one_open_reconciliation_exists_per_draft` |
+| 3 | `mail_ai_suggestions.payload_json` verschlüsselt (G18) | erledigt: Migration `2026_09_14_000002` (Spalte `longText nullable`, Altzeilen geleert, `proposed` auf `superseded`), Cast `encrypted:array`. Tests `AiSuggestionEncryptionTest` |
+| 4 | Warnung in `hub:doctor` bei Staging ohne `MAIL_EMERGENCY_TEST_RECIPIENT` (C15) | erledigt: Zeile `mail.emergency.test_recipient` (warn in staging bei leerem Wert, Adressprüfung). Tests `DoctorCommandTest` |
+| 5 | `CloseConditionChecker` fragt Aktionspläne direkt ab (U4) | erledigt: `effectiveBusinessStatus()` liest `status_business`, `mail_action_plans` und `mail_executions`, strengster Status gewinnt. Tests `CloseConditionPlanSourceTest` |
+| 6 | Kennzahl Push 429 im Dashboard (U21) | erledigt: Zähler `mail_push_429` in `SyncMetrics` über `CountPushRateLimit`, Kachel und Abschnitt "Betrieb: Push und Watch" (inklusive Watch-Ablauf je Postfach). Tests `DashboardOpsMetricsTest` |
+| 7 | `mail:retention:apply` und Auskunftsexport (Abschnitt 6 und 7) | erledigt: `RetentionService` mit Legal Hold (`mail_cases.legal_hold_at`), Dry-Run als Standard, Zeitplan `mail-retention-apply` nur bei `MAIL_RETENTION_ENABLED`; Auskunftsexport `mail:subject-access-export` und Admin-Seite `mail.admin.exports.*` (Bankdaten maskiert, JSON oder CSV plus manifest.json). Tests `RetentionApplyTest`, `SubjectAccessExportTest` |
+| 8 | Test der Entwurfsfreigabe ohne frische Zwei-Faktor-Sitzung | offen: Route trägt `2fa.fresh`, für Aktionspläne geprüft (`ApprovalCenterTest::test_approval_requires_fresh_reauthentication`), für `DraftService::approve` fehlt ein eigener Test |
+
+Weitere Ergänzungen im Abschlusslauf 2: Alias-Sync als Job (`AliasSyncJob`, täglich 03:45, nur akzeptierte sendAs-Aliasse, nicht mehr gelieferte auf `missing`), Drive-OAuth-Anmeldefluss nur mit `drive.readonly` (`DriveOAuthService`, weiter gehende Scopes werden verworfen und widerrufen, Audit `mail.drive.oauth.granted/revoked`), Push-Prune als Kommando `mail:push:prune` mit `withoutOverlapping`.
