@@ -15,7 +15,7 @@ Aufwand: etwa 20 bis 30 Minuten Skriptlaufzeit (apt, composer install), plus 30 
 
 | Nr. | Prüfpunkt | Erledigt |
 |---|---|---|
-| V1 | Server mit Ubuntu 24.04 LTS (Fallback 22.04 LTS, das Skript warnt dann, weil Ubuntu dort Redis 6 statt 7 liefert). Standort EU, AV-Vertrag mit dem Hoster liegt vor (Architekturentscheidung Abschnitt 7) | |
+| V1 | Server mit Ubuntu 24.04 LTS (getesteter Zielstand) oder Ubuntu 26.04 LTS (unterstützt, siehe Abschnitt 9). Andere Releases bricht das Skript ab. Standort EU, AV-Vertrag mit dem Hoster liegt vor (Architekturentscheidung Abschnitt 7) | |
 | V2 | Root-Zugang per SSH (Passwort oder Schlüssel), öffentliche IPv4 bekannt; IPv6 nur, wenn sie auch im DNS eingetragen wird | |
 | V3 | Mindestens 4 GB RAM, 2 vCPU, 40 GB SSD. MariaDB bekommt 512 MB Buffer Pool, Redis 256 MB (per Variablen anpassbar) | |
 | V4 | DNS: A-Record (und falls vorhanden AAAA) für `immoware.muellerhv.de` **und** `mail.muellerhv.de` auf die neue IP. TTL vorher auf 300 s senken. Prüfung: `dig +short A immoware.muellerhv.de @1.1.1.1` | |
@@ -44,7 +44,7 @@ ADMIN_EMAIL="it@muellerhv.de" SSH_PUBKEY="..." BRANCH="main" \
 bash /root/IMMOWARE24/deploy/scripts/server-bootstrap.sh                  # 2. ausführen
 ```
 
-Variablen (alle per Umgebung überschreibbar): `HUB_DOMAIN`, `MAIL_DOMAIN`, `DEPLOY_USER` (immoware), `APP_DIR` (/var/www/immoware-hub), `DB_NAME`, `DB_USER`, `ADMIN_EMAIL`, `REPO_URL`, `BRANCH`, `SSH_PUBKEY`, `DEPLOY_SSH_PUBKEY`, `SERVER_IPV4`, `MARIADB_SOURCE` (mariadb = 11.4 LTS von mariadb.org, distro = Ubuntu-Paket 10.11), `MARIADB_BUFFER_POOL`, `REDIS_MAXMEMORY`.
+Variablen (alle per Umgebung überschreibbar): `HUB_DOMAIN`, `MAIL_DOMAIN`, `DEPLOY_USER` (immoware), `APP_DIR` (/var/www/immoware-hub), `DB_NAME`, `DB_USER`, `ADMIN_EMAIL`, `REPO_URL`, `BRANCH`, `SSH_PUBKEY`, `DEPLOY_SSH_PUBKEY`, `SERVER_IPV4`, `PHP_SOURCE` (auto, distro, ondrej, sury; Standard auto, siehe Abschnitt 9), `MARIADB_SOURCE` (auto, mariadb = 11.4 LTS von mariadb.org, distro = Ubuntu-Paket; Standard auto: 24.04 mariadb, 26.04 distro), `MARIADB_MIN_DISTRO_VERSION` (11.4), `MARIADB_BUFFER_POOL`, `REDIS_MAXMEMORY`, `BOOTSTRAP_FAKE_RELEASE` (nur mit `--dry-run`).
 
 Optionen: `--dry-run` (nichts verändern), `--skip-tls` (kein certbot, nginx bleibt HTTP-only, sinnvoll solange DNS noch auf den alten Server zeigt), `--skip-deploy` (alles einrichten, `deploy.sh` nicht ausführen).
 
@@ -55,9 +55,9 @@ Was das Skript tut (Reihenfolge wie in der Ausgabe):
 3. Nutzer `immoware` (Passwort gesperrt, Anmeldung nur per Schlüssel), eigener ed25519-Schlüssel für `git clone`, sudoers nur für `systemctl reload php8.4-fpm` und `systemctl stop|start|restart|status immoware-hub-*` (das braucht `deploy.sh`).
 4. Verzeichnisse nach 01-deployment.md Abschnitt 4.1 plus `/etc/immoware-hub`, `/var/log/immoware-hub`, `/var/backups/immoware-hub`, `/var/www/letsencrypt`.
 5. Erreichbarkeit des Repositories als `immoware` prüfen. Ist es nicht erreichbar, gibt das Skript den öffentlichen Deploy-Schlüssel aus und bricht ab; nach Hinterlegen in GitHub (Settings, Deploy keys, nur Lesen) erneut starten.
-6. PHP 8.4 aus ppa:ondrej/php (fpm, cli, mysql, redis, intl, zip, mbstring, xml, curl, bcmath, gd, opcache), Composer 2 mit SHA-384-Prüfung gegen `composer.github.io/installer.sig`, php.ini-Werte aus `docker/php/php.ini`, OPcache aus `docker/php/opcache.ini`, php-fpm Pool `immoware` mit Unix-Socket `/run/php/php8.4-fpm-immoware.sock` (Werte aus `docker/php/www.conf`). Der Standard-Pool `www` wird deaktiviert.
-7. MariaDB 11.4 LTS (Signaturschlüssel per festem Fingerabdruck geprüft), `bind-address 127.0.0.1`, utf8mb4, Binlog ROW mit 7 Tagen Aufbewahrung, `log_bin_trust_function_creators` für die Integritätstrigger, nicht-interaktive Absicherung (anonyme Nutzer, Testdatenbank, Root nur lokal über unix_socket), Datenbank und Nutzer mit Zufallspasswort.
-8. Redis (nur 127.0.0.1, `requirepass` zufällig, `appendonly yes`, `maxmemory-policy noeviction`).
+6. PHP 8.4 (fpm, cli, mysql, redis, intl, zip, mbstring, xml, curl, bcmath, gd, opcache). Quelle nach `PHP_SOURCE=auto`: zuerst das Distro-Paket `php8.4-fpm`, sonst ppa:ondrej/php, wenn Launchpad das Release veröffentlicht (Prüfung per `apt-cache policy` nach `add-apt-repository`, bei Fehlen wird das PPA wieder entfernt), sonst Abbruch mit Meldung. Kein automatischer Wechsel auf PHP 8.5. Composer 2 mit SHA-384-Prüfung gegen `composer.github.io/installer.sig`, php.ini-Werte aus `docker/php/php.ini`, OPcache aus `docker/php/opcache.ini`, php-fpm Pool `immoware` mit Unix-Socket `/run/php/php8.4-fpm-immoware.sock` (Werte aus `docker/php/www.conf`). Der Standard-Pool `www` wird deaktiviert.
+7. MariaDB 11.x LTS (24.04: 11.4 von deb.mariadb.org, Signaturschlüssel per festem Fingerabdruck geprüft; 26.04: Distro-Paket, sofern mindestens 11.4, erwartet 11.8; die installierte Version wird protokolliert), `bind-address 127.0.0.1`, utf8mb4, Binlog ROW mit 7 Tagen Aufbewahrung, `log_bin_trust_function_creators` für die Integritätstrigger, nicht-interaktive Absicherung (anonyme Nutzer, Testdatenbank, Root nur lokal über unix_socket), Datenbank und Nutzer mit Zufallspasswort.
+8. Redis über das Paket `redis-server` (nur 127.0.0.1, `requirepass` zufällig, `appendonly yes`, `maxmemory-policy noeviction`). Fehlt das Paket oder fehlt `/etc/redis/redis.conf` nach der Installation, bricht das Skript mit Hinweis auf Valkey ab; es wechselt nicht stillschweigend.
 9. `shared/.env` aus `.env.example`: `APP_ENV=production`, `APP_DEBUG=false`, `APP_URL`, `MAIL_APP_DOMAIN`, DB- und Redis-Werte, `SESSION_SECURE_COOKIE=true`, `TRUSTED_PROXIES` leer (kein Proxy vor nginx), `LOG_CHANNEL=daily`, alle Schreib- und Versandflags false. `APP_KEY` und `HUB_HASH_PEPPER` werden einmalig erzeugt (Format wie `key:generate`); eine vorhandene `.env` wird nie überschrieben, `php artisan key:generate` darf danach nicht mehr laufen.
 10. nginx: zunächst HTTP-only-Blöcke für beide Domains (ACME-Challenge, Health-Check), Ubuntu-Default-Site entfernt.
 11. TLS: `dig`-Prüfung, dass A (und ggf. AAAA) beider Domains auf die Server-IP zeigen, sonst Abbruch mit klarer Meldung. Dann `certbot certonly --webroot` je Domain, Verlängerung über `certbot.timer` mit Deploy-Hook `systemctl reload nginx`. Anschließend werden die Server-Blöcke aus `deploy/nginx/*.conf` unverändert installiert. Bewusste Abweichung: nicht `certbot --nginx`, weil das Plugin die Konfigurationsdateien umschreiben würde; die Dateien im Repository bleiben die Referenz.
@@ -65,7 +65,7 @@ Was das Skript tut (Reihenfolge wie in der Ausgabe):
 13. logrotate für `shared/storage/logs/*.log` und `/var/log/immoware-hub/*.log` (14 Tage), Backup-Cron `/etc/cron.d/immoware-hub-backup` täglich 02:00 mit Umgebung `/etc/immoware-hub/backup.env`. **`BACKUP_GPG_RECIPIENT` ist dort leer und muss gesetzt werden, sonst bricht `backup.sh` ab** (siehe Abschnitt 4).
 14. Erster Deploy: `deploy/scripts/deploy.sh <BRANCH>` als `immoware` (Clone, `composer install`, `hub:doctor`, `migrate --force`, Caches, Symlink `current`, php-fpm reload, Health-Check gegen `/health/database` und `/health/queue`). Danach Start aller Units und Ausgabe von `hub:doctor`.
 
-Am Ende: Zusammenfassung, Pfad der Credentials-Datei `/root/immoware-hub-credentials.txt` (0600, enthält DB- und Redis-Passwort; dieselben Werte stehen in `shared/.env`), nächste Schritte.
+Am Ende: Zusammenfassung mit allen Erkennungen (Release, PHP-Quelle, MariaDB-Quelle und Version, Redis-Paket, certbot), Pfad der Credentials-Datei `/root/immoware-hub-credentials.txt` (0600, enthält DB- und Redis-Passwort; dieselben Werte stehen in `shared/.env`), nächste Schritte.
 
 Erneuter Lauf: jederzeit möglich. Vorhandene Secrets, `.env`, Zertifikate und `backup.env` bleiben unverändert; Konfigurationsdateien werden nur bei Änderung neu geschrieben; `deploy.sh` läuft als Update.
 
@@ -129,7 +129,46 @@ Erneuter Lauf: jederzeit möglich. Vorhandene Secrets, `.env`, Zertifikate und `
 
 | Datei | Prüfung am 20.09.2026 |
 |---|---|
-| `deploy/scripts/server-bootstrap.sh` | `bash -n` ohne Fehler, `--dry-run` in der Entwicklungsumgebung (Ubuntu 24.04, simulierter root) vollständig durchlaufen, HTTP-only-nginx-Block gerendert und geprüft. shellcheck in der Entwicklungsumgebung nicht verfügbar. Kein echter Serverlauf: vor Produktion auf einer Wegwerf-VM mit 24.04 ausführen |
+| `deploy/scripts/server-bootstrap.sh` | `bash -n` ohne Fehler, `--dry-run` in der Entwicklungsumgebung (Ubuntu 24.04, root) vollständig durchlaufen, ebenso `BOOTSTRAP_FAKE_RELEASE=26.04 ... --dry-run` (simuliertes 26.04, Exit 0) und `BOOTSTRAP_FAKE_RELEASE=22.04` (Abbruch wie vorgesehen). HTTP-only-nginx-Block gerendert und geprüft. shellcheck in der Entwicklungsumgebung nicht verfügbar. Kein echter Serverlauf: vor Produktion auf einer Wegwerf-VM mit dem Zielrelease ausführen |
 | `deploy/scripts/deploy.sh`, `backup.sh`, `restore-test.sh` | `bash -n` ohne Fehler; Pfade, Nutzer und Socket stimmen mit dem Bootstrap überein (`/var/www/immoware-hub`, `immoware`, `/run/php/php8.4-fpm-immoware.sock`, `/usr/bin/php`, `/usr/local/bin/composer`) |
 | `deploy/systemd/*` | Hub-Worker `@1`, `@2`, Mail-Worker `@high`, `@sync`, Scheduler; neu `immoware-hub.target`, weil die Units `PartOf=immoware-hub.target` tragen. `systemd-analyze verify` läuft im Skript auf dem Zielsystem |
 | `.env.example` | `HUB_HASH_PEPPER` ergänzt: in production Pflicht (`hub:doctor` fail, sonst bricht `deploy.sh` ab), fehlte bislang |
+
+## 9. Ubuntu 26.04 LTS
+
+Stand der Recherche: 20.09.2026, ausschließlich über Web-Suchergebnisse (Snippets), weil packages.ubuntu.com, launchpad.net, packages.sury.org und deb.mariadb.org aus der Entwicklungsumgebung nicht direkt abrufbar waren. Alle Angaben vor dem ersten echten Lauf auf dem Zielserver mit `apt-cache policy` gegenprüfen.
+
+### 9.1 Rechercheergebnis
+
+| Punkt | Ergebnis | Quelle und Sicherheit |
+|---|---|---|
+| Codename | `resolute` (Resolute Raccoon), Release April 2026 | Ubuntu-Release-Notes, Launchpad-Seiten `ubuntu/resolute`; sicher |
+| PHP in der Distro | PHP 8.5 (Pakete `php8.5-*`), kein `php8.4-*` in main oder universe | packages.ubuntu.com/resolute, Launchpad; sicher. Das Projekt ist auf PHP 8.4 getestet (composer.json, CI), 8.5 wird nicht ohne Freigabe eingesetzt |
+| ppa:ondrej/php | veröffentlicht nur für `noble` und `jammy`, für `resolute` liefert Launchpad 404. Der Maintainer verweist für 26.04 auf packages.sury.org/php als kanonische Quelle (PHP 5.6 bis 8.6) | Launchpad-PPA-Seite (direkt abgerufen), Snippets; sicher zum Recherchestand, kann sich ändern |
+| MariaDB in der Distro | 11.8 LTS (`mariadb-server 1:11.8.6-5`) in main | Launchpad, ubuntuupdates.org; weitgehend sicher |
+| deb.mariadb.org | Suiten `noble` und `jammy`, keine Suite `resolute` für 11.4 | Snippets (linuxcapable, linuxconfig); mittlere Sicherheit, direkt nicht prüfbar |
+| Redis | Ubuntu 26.04 führt Valkey 9.0 als Standard (`valkey-server` in main). Ein Paket `redis-server` ist gelistet, laut Snippets als Übergangspaket beziehungsweise mit Alternativen zu `valkey-tools`; ob es einen echten Redis 7 oder ein Valkey-Binary mit `/etc/valkey` liefert, ist nicht verifiziert | packages.ubuntu.com/resolute/redis-server, ubuntu.com Blog; unsicher im Detail |
+| certbot | `certbot 4.0.0`, `python3-certbot-nginx 4.0.0-3` in universe | Snippets; weitgehend sicher |
+
+### 9.2 Was das Skript auf 26.04 erkennt und entscheidet
+
+- Release über `lsb_release` beziehungsweise `/etc/os-release`. Unterstützt sind 24.04 und 26.04, alles andere bricht in Schritt 0 ab. `BOOTSTRAP_FAKE_RELEASE=26.04` simuliert das Release nur zusammen mit `--dry-run`; Paketkandidaten des echten Systems werden dabei bewusst nicht übernommen.
+- PHP (`PHP_SOURCE=auto`): Distro-Paket `php8.4-fpm`, sonst ppa:ondrej/php mit Prüfung per `apt-cache policy` (bei Fehlen wird das PPA wieder entfernt), sonst Abbruch. Nach dem Recherchestand endet 26.04 damit im Abbruch, weil weder die Distro noch das PPA PHP 8.4 liefern. Der Weg über packages.sury.org ist als `PHP_SOURCE=sury` vorbereitet, wird nie automatisch gewählt und gilt als ungetestet: Der Signaturschlüssel wird aus dem Keyring-Paket `debsuryorg-archive-keyring.deb` installiert und nicht gegen einen fest hinterlegten Fingerabdruck geprüft, weil dieser aus der Entwicklungsumgebung nicht verifizierbar war.
+- MariaDB (`MARIADB_SOURCE=auto`): auf 26.04 Distro-Paket, wenn die Kandidatenversion mindestens `MARIADB_MIN_DISTRO_VERSION` (11.4) erreicht, erwartet 11.8. Andernfalls deb.mariadb.org, das bei fehlender Suite mit Meldung abbricht und den Eintrag wieder entfernt. Die installierte Version steht in der Zusammenfassung.
+- Redis: Paket `redis-server` ist Pflicht. Fehlt es, oder fehlt nach der Installation `/etc/redis/redis.conf`, bricht das Skript mit Hinweis auf Valkey ab. Liefert `redis-server` ein Valkey-Binary, läuft das Skript mit Hinweis weiter.
+- certbot: Kandidat wird geprüft und protokolliert, Vorgehen unverändert (`certonly --webroot`).
+
+### 9.3 Was ungetestet ist
+
+- Es gab keinen echten Lauf auf Ubuntu 26.04, nur `--dry-run` mit simuliertem Release. Weder PHP 8.4 aus packages.sury.org noch MariaDB 11.8 aus der Distro noch das Redis- oder Valkey-Paket von 26.04 sind mit dem Hub getestet (Tests und CI laufen gegen PHP 8.4 und MariaDB 11.4).
+- MariaDB 11.8 statt 11.4: Migrationen und Trigger (`docs/architecture/03-mariadb-triggers.sql`) sind auf 11.4 abgenommen. Vor Produktion `php artisan migrate --force` und `hub:doctor` auf einer Wegwerf-VM mit 26.04 prüfen.
+- Valkey statt Redis: Laravel-Queue, Cache und Locks sind gegen Redis 7 getestet. Ein Wechsel ist eine Freigabeentscheidung, keine Skriptautomatik.
+
+### 9.4 Vorgehen bei Fehlschlag auf 26.04
+
+1. Meldung des Skripts lesen, die Zusammenfassung nennt alle Erkennungen. Auf dem Server gegenprüfen: `apt-cache policy php8.4-fpm mariadb-server redis-server certbot`.
+2. PHP: Bricht das Skript wegen fehlendem PHP 8.4 ab, Entscheidung der Geschäftsführung beziehungsweise IT-Leitung einholen: entweder `PHP_SOURCE=sury` (Drittquelle, ungetestet, Signaturschlüssel vor dem Lauf manuell prüfen) oder Server mit Ubuntu 24.04 LTS bereitstellen (getesteter Zielstand, geringstes Risiko). PHP 8.5 nur nach Testlauf der gesamten Suite (`php artisan test`, PHPStan) auf 8.5.
+3. MariaDB: Bei Abbruch von deb.mariadb.org `MARIADB_SOURCE=distro` setzen, sofern die Distro-Version mindestens 11.4 ist. Liegt sie darunter, kein Betrieb ohne Rücksprache.
+4. Redis: Bei Abbruch wegen fehlendem `redis-server` oder Valkey-Übergangspaket nicht manuell auf `valkey` ausweichen. Erst Freigabe, dann Skript anpassen (Paket, Konfigurationspfad `/etc/valkey`, Unit `valkey-server`, `redis-cli` über `valkey-redis-compat`) und auf einer Wegwerf-VM testen.
+5. Alle Schritte sind idempotent: nach Behebung Skript erneut starten. Empfehlung: Ubuntu 24.04 LTS bleibt bis zu einem abgenommenen Referenzlauf auf 26.04 der Zielstand für Produktion.
+

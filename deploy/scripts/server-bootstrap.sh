@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Immoware Hub, Ersteinrichtung eines frischen dedizierten Ubuntu-Servers (Variante B, Host-Installation, kein Docker).
 #
-# Richtet auf einem Server mit Ubuntu 24.04 LTS (Fallback 22.04 LTS mit Hinweis) alles ein, was der Hub
+# Richtet auf einem Server mit Ubuntu 24.04 LTS oder 26.04 LTS alles ein, was der Hub
 # (immoware.muellerhv.de) und das Mail-Modul (mail.muellerhv.de) fuer den Betrieb brauchen:
-# Systemhaertung (ufw, fail2ban, sshd, unattended-upgrades), PHP 8.4 (ondrej/php), Composer 2, nginx, MariaDB 11.x,
-# Redis 7, certbot, Deploy-Nutzer, Verzeichnisstruktur nach docs/operations/01-deployment.md Abschnitt 4.1, php-fpm Pool,
+# Systemhaertung (ufw, fail2ban, sshd, unattended-upgrades), PHP 8.4 (Distro-Paket, sonst ppa:ondrej/php, sonst
+# packages.sury.org nur nach ausdruecklicher Freigabe), Composer 2, nginx, MariaDB 11.x, Redis (Paket redis-server),
+# certbot, Deploy-Nutzer, Verzeichnisstruktur nach docs/operations/01-deployment.md Abschnitt 4.1, php-fpm Pool,
 # nginx-Server-Bloecke aus deploy/nginx, systemd-Units aus deploy/systemd, shared/.env aus .env.example, logrotate,
 # Backup-Cron und den ersten Deploy ueber deploy/scripts/deploy.sh.
 #
@@ -22,6 +23,12 @@
 # Externe Downloads ausserhalb von apt: nur der Composer-Installer von getcomposer.org, geprueft gegen die von
 # composer.github.io veroeffentlichte SHA-384-Summe. Der MariaDB-Signaturschluessel wird per Fingerabdruck geprueft.
 # Leitdokument: docs/operations/06-neuer-server.md.
+#
+# Release-Erkennung (Abschnitt 0): unterstuetzt sind 24.04 (noble) und 26.04 (resolute), alles andere bricht ab.
+#   PHP_SOURCE=auto|distro|ondrej|sury   auto: Distro-Paket php8.4-*, sonst ppa:ondrej/php (nur wenn das Release dort
+#                                        veroeffentlicht ist), sonst Abbruch. sury (packages.sury.org) nur ausdruecklich.
+#   MARIADB_SOURCE=auto|mariadb|distro   auto: 24.04 mariadb.org 11.4, 26.04 Distro-Paket wenn >= 11.4 (11.8 erwartet).
+#   BOOTSTRAP_FAKE_RELEASE=26.04         nur fuer --dry-run: simuliert ein anderes Release (VERSION_ID und Codename).
 
 set -euo pipefail
 
@@ -41,8 +48,11 @@ SSH_PUBKEY="${SSH_PUBKEY:-}"                          # optional: oeffentlicher 
 DEPLOY_SSH_PUBKEY="${DEPLOY_SSH_PUBKEY:-}"            # optional: oeffentlicher Schluessel, mit dem GitHub Actions als DEPLOY_USER deployt
 SERVER_IPV4="${SERVER_IPV4:-}"                        # optional: oeffentliche IPv4, sonst automatisch ermittelt
 PHP_VERSION="${PHP_VERSION:-8.4}"
-MARIADB_SOURCE="${MARIADB_SOURCE:-mariadb}"           # mariadb = Repository von mariadb.org (11.x LTS), distro = Ubuntu-Paket
+PHP_SOURCE="${PHP_SOURCE:-auto}"                      # auto | distro | ondrej | sury (sury nur nach Ruecksprache, ungetestet)
+MARIADB_SOURCE="${MARIADB_SOURCE:-auto}"              # auto | mariadb (deb.mariadb.org 11.x LTS) | distro (Ubuntu-Paket)
 MARIADB_VERSION="${MARIADB_VERSION:-11.4}"            # nur bei MARIADB_SOURCE=mariadb; 11.4 ist LTS und entspricht compose.yaml und CI
+MARIADB_MIN_DISTRO_VERSION="${MARIADB_MIN_DISTRO_VERSION:-11.4}"   # Distro-Paket nur, wenn mindestens diese Version
+BOOTSTRAP_FAKE_RELEASE="${BOOTSTRAP_FAKE_RELEASE:-}"  # nur --dry-run: 24.04 oder 26.04 simulieren
 MARIADB_BUFFER_POOL="${MARIADB_BUFFER_POOL:-512M}"
 REDIS_MAXMEMORY="${REDIS_MAXMEMORY:-256mb}"
 CREDENTIALS_FILE="${CREDENTIALS_FILE:-/root/immoware-hub-credentials.txt}"
@@ -61,7 +71,7 @@ for arg in "$@"; do
         --dry-run) DRY_RUN=1 ;;
         --skip-tls) SKIP_TLS=1 ;;
         --skip-deploy) SKIP_DEPLOY=1 ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
         *) echo "Unbekannte Option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -122,6 +132,28 @@ credential_set() {
 
 CHANGED_FILES=()
 NEXT_STEPS=()
+DETECTED=()          # Erkennungen fuer die Zusammenfassung
+note() { DETECTED+=("$*"); log "$*"; }
+
+# version_ge <a> <b>: 1 wenn a >= b (numerischer Vergleich von Punktversionen)
+version_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]; }
+
+# apt_candidate <paket>: Kandidatenversion aus apt-cache policy, leer wenn kein Kandidat.
+apt_candidate() {
+    local c
+    # Simuliertes Release: Kandidaten des echten Systems wuerden das Bild verfaelschen, daher "kein Kandidat".
+    [[ -n "$BOOTSTRAP_FAKE_RELEASE" ]] && return 0
+    c="$(apt-cache policy "$1" 2>/dev/null | awk '/Candidate:/{print $2; exit}')"
+    [[ -n "$c" && "$c" != "(none)" && "$c" != "(keine)" ]] && printf '%s' "$c" || true
+}
+
+# apt_candidate_origin <paket>: Quelle (Hostname oder Site) der Kandidatenversion, z. B. ppa.launchpadcontent.net
+apt_candidate_origin() {
+    apt-cache policy "$1" 2>/dev/null | awk '/^ \*\*\*/{getline; print $2; exit}'
+}
+
+# pkg_installed <paket>
+pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"; }
 
 # ---------------------------------------------------------------------------
 # 0. Vorpruefungen
@@ -132,11 +164,29 @@ step "Vorpruefungen"
 # shellcheck source=/dev/null
 . /etc/os-release
 [[ "${ID:-}" == "ubuntu" ]] || fail "Unterstuetzt wird nur Ubuntu (gefunden: ${ID:-unbekannt})."
-case "${VERSION_ID:-}" in
-    24.04) log "Ubuntu 24.04 LTS erkannt." ;;
-    22.04) warn "Ubuntu 22.04 LTS erkannt. Fallback: Ubuntu liefert Redis 6 statt 7 (kompatibel, aber nicht Zielstand). Empfehlung: 24.04 LTS." ;;
-    *) fail "Ubuntu ${VERSION_ID:-unbekannt} wird nicht unterstuetzt. Ziel ist 24.04 LTS, Fallback 22.04 LTS." ;;
+RELEASE_ID="${VERSION_ID:-}"
+RELEASE_CODENAME="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+if command -v lsb_release >/dev/null 2>&1; then
+    lsb_id="$(lsb_release -rs 2>/dev/null || true)"; lsb_cn="$(lsb_release -cs 2>/dev/null || true)"
+    [[ -n "$lsb_id" ]] && RELEASE_ID="$lsb_id"
+    [[ -n "$lsb_cn" ]] && RELEASE_CODENAME="$lsb_cn"
+fi
+if [[ -n "$BOOTSTRAP_FAKE_RELEASE" ]]; then
+    [[ "$DRY_RUN" -eq 1 ]] || fail "BOOTSTRAP_FAKE_RELEASE ist nur zusammen mit --dry-run erlaubt."
+    RELEASE_ID="$BOOTSTRAP_FAKE_RELEASE"
+    case "$RELEASE_ID" in 24.04) RELEASE_CODENAME=noble ;; 26.04) RELEASE_CODENAME=resolute ;; *) RELEASE_CODENAME=unbekannt ;; esac
+    warn "Simuliertes Release: Ubuntu $RELEASE_ID ($RELEASE_CODENAME). Paketkandidaten werden nicht vom echten System uebernommen, es gelten die dokumentierten Annahmen."
+fi
+case "$RELEASE_ID" in
+    24.04) [[ -n "$RELEASE_CODENAME" ]] || RELEASE_CODENAME=noble
+           note "Release: Ubuntu 24.04 LTS ($RELEASE_CODENAME), getesteter Zielstand." ;;
+    26.04) [[ -n "$RELEASE_CODENAME" ]] || RELEASE_CODENAME=resolute
+           note "Release: Ubuntu 26.04 LTS ($RELEASE_CODENAME). Unterstuetzt, aber ohne echten Referenzlauf (docs/operations/06-neuer-server.md Abschnitt 9)." ;;
+    *) fail "Ubuntu ${RELEASE_ID:-unbekannt} wird nicht unterstuetzt. Unterstuetzt sind 24.04 LTS (noble) und 26.04 LTS (resolute)." ;;
 esac
+case "$PHP_SOURCE" in auto|distro|ondrej|sury) ;; *) fail "PHP_SOURCE ungueltig: $PHP_SOURCE (auto, distro, ondrej, sury)." ;; esac
+case "$MARIADB_SOURCE" in auto|mariadb|distro) ;; *) fail "MARIADB_SOURCE ungueltig: $MARIADB_SOURCE (auto, mariadb, distro)." ;; esac
+[[ "$PHP_VERSION" == "8.4" ]] || warn "PHP_VERSION=$PHP_VERSION abweichend vom getesteten Stand 8.4 (composer.json, CI). Nur nach Ruecksprache."
 [[ "$SKIP_TLS" -eq 1 || -n "$ADMIN_EMAIL" ]] || fail "ADMIN_EMAIL ist fuer certbot Pflicht (oder --skip-tls verwenden)."
 [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "DEPLOY_USER ungueltig: $DEPLOY_USER"
 [[ "$DB_NAME" =~ ^[A-Za-z0-9_]+$ && "$DB_USER" =~ ^[A-Za-z0-9_]+$ ]] || fail "DB_NAME und DB_USER duerfen nur Buchstaben, Ziffern und Unterstrich enthalten."
@@ -327,11 +377,103 @@ fi
 # ---------------------------------------------------------------------------
 # 6. PHP 8.4 (ondrej/php) und Composer 2
 # ---------------------------------------------------------------------------
-step "6. PHP $PHP_VERSION aus ppa:ondrej/php, Composer 2"
-if [[ ! -f /etc/apt/sources.list.d/ondrej-ubuntu-php-"${UBUNTU_CODENAME:-noble}".sources && ! -f /etc/apt/sources.list.d/ondrej-ubuntu-php-"${UBUNTU_CODENAME:-noble}".list ]]; then
-    run add-apt-repository -y ppa:ondrej/php
-    run apt-get update -q
-fi
+step "6. PHP $PHP_VERSION (Quelle: $PHP_SOURCE), Composer 2"
+# Reihenfolge bei auto: Distro-Paket, sonst ppa:ondrej/php (nur wenn Launchpad das Release veroeffentlicht), sonst Abbruch.
+# packages.sury.org (PHP_SOURCE=sury) wird nie automatisch gewaehlt: fuer 26.04 ist es laut Recherche der von Ondrej Sury
+# empfohlene Weg, im Projekt aber ungetestet (Ruecksprache erforderlich, docs/operations/06-neuer-server.md Abschnitt 9).
+PHP_PKG="php${PHP_VERSION}-fpm"
+PHP_ONDREJ_LIST="/etc/apt/sources.list.d/ondrej-ubuntu-php-${RELEASE_CODENAME}"
+PHP_SURY_LIST="/etc/apt/sources.list.d/sury-php.sources"
+PHP_SURY_KEYRING="/usr/share/keyrings/deb.sury.org-php.gpg"
+PHP_RESOLVED=""
+
+php_try_distro() {
+    local cand origin
+    cand="$(apt_candidate "$PHP_PKG")"
+    [[ -n "$cand" ]] || return 1
+    origin="$(apt_candidate_origin "$PHP_PKG")"
+    # Nur als Distro werten, wenn der Kandidat nicht aus einem Fremd-Repository kommt (Quelle oder Versionskennung).
+    case "$origin" in *launchpadcontent*|*ppa.launchpad*|*sury.org*) return 1 ;; esac
+    case "$cand" in *sury.org*|*ppa*) return 1 ;; esac
+    PHP_RESOLVED="distro"; note "PHP: $PHP_PKG $cand aus Ubuntu-Paketquelle (${origin:-lokal})."
+}
+
+php_try_ondrej() {
+    local cand
+    if [[ -f "$PHP_ONDREJ_LIST.sources" || -f "$PHP_ONDREJ_LIST.list" ]]; then
+        cand="$(apt_candidate "$PHP_PKG")"
+        [[ -n "$cand" ]] && { PHP_RESOLVED="ondrej"; note "PHP: $PHP_PKG $cand aus ppa:ondrej/php (bereits eingerichtet)."; return 0; }
+        return 1
+    fi
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "[dry-run] wuerde add-apt-repository -y ppa:ondrej/php versuchen und per apt-cache policy pruefen, ob $PHP_PKG fuer $RELEASE_CODENAME veroeffentlicht ist."
+        case "$RELEASE_CODENAME" in
+            noble|jammy) PHP_RESOLVED="ondrej"; note "PHP: ppa:ondrej/php veroeffentlicht fuer $RELEASE_CODENAME (Annahme im Dry-Run, Stand Recherche 20.09.2026)."; return 0 ;;
+            *) note "PHP: ppa:ondrej/php veroeffentlicht laut Recherche (20.09.2026) nicht fuer $RELEASE_CODENAME (nur noble, jammy)."; return 1 ;;
+        esac
+    fi
+    if ! add-apt-repository -y ppa:ondrej/php >/dev/null 2>&1 || ! apt-get update -q 2>/dev/null; then
+        warn "ppa:ondrej/php fuer $RELEASE_CODENAME nicht einrichtbar, PPA wird wieder entfernt."
+        add-apt-repository -r -y ppa:ondrej/php >/dev/null 2>&1 || rm -f "$PHP_ONDREJ_LIST.sources" "$PHP_ONDREJ_LIST.list"
+        apt-get update -q >/dev/null 2>&1 || true
+        return 1
+    fi
+    cand="$(apt_candidate "$PHP_PKG")"
+    if [[ -z "$cand" ]]; then
+        warn "ppa:ondrej/php liefert kein $PHP_PKG fuer $RELEASE_CODENAME, PPA wird wieder entfernt."
+        add-apt-repository -r -y ppa:ondrej/php >/dev/null 2>&1 || rm -f "$PHP_ONDREJ_LIST.sources" "$PHP_ONDREJ_LIST.list"
+        apt-get update -q >/dev/null 2>&1 || true
+        return 1
+    fi
+    PHP_RESOLVED="ondrej"; note "PHP: $PHP_PKG $cand aus ppa:ondrej/php."
+}
+
+php_try_sury() {
+    # Ausdruecklich angefordert (PHP_SOURCE=sury). Schluessel kommt aus dem von packages.sury.org veroeffentlichten
+    # Keyring-Paket; der Fingerabdruck konnte in der Entwicklungsumgebung nicht verifiziert werden (Egress gesperrt).
+    warn "PHP_SOURCE=sury: packages.sury.org wird eingerichtet. Im Projekt ungetestet, Signaturschluessel wird nicht gegen einen festen Fingerabdruck geprueft."
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "[dry-run] wuerde https://packages.sury.org/debsuryorg-archive-keyring.deb installieren und $PHP_SURY_LIST (Suite $RELEASE_CODENAME) anlegen."
+        PHP_RESOLVED="sury"; note "PHP: $PHP_PKG aus packages.sury.org (Annahme im Dry-Run)."; return 0
+    fi
+    if [[ ! -f "$PHP_SURY_KEYRING" ]]; then
+        tmpd="$(mktemp -d)"
+        curl -fsSL https://packages.sury.org/debsuryorg-archive-keyring.deb -o "$tmpd/keyring.deb" || { rm -rf "$tmpd"; fail "packages.sury.org Keyring nicht abrufbar."; }
+        dpkg -i "$tmpd/keyring.deb" >/dev/null || { rm -rf "$tmpd"; fail "packages.sury.org Keyring nicht installierbar."; }
+        rm -rf "$tmpd"
+    fi
+    write_file "$PHP_SURY_LIST" 0644 root:root <<EOF
+# PHP von packages.sury.org (Ondrej Sury), eingerichtet durch deploy/scripts/server-bootstrap.sh (PHP_SOURCE=sury)
+Types: deb
+URIs: https://packages.sury.org/php/
+Suites: $RELEASE_CODENAME
+Components: main
+Signed-By: $PHP_SURY_KEYRING
+EOF
+    apt-get update -q
+    cand="$(apt_candidate "$PHP_PKG")"
+    [[ -n "$cand" ]] || fail "packages.sury.org liefert kein $PHP_PKG fuer $RELEASE_CODENAME."
+    PHP_RESOLVED="sury"; note "PHP: $PHP_PKG $cand aus packages.sury.org."
+}
+
+case "$PHP_SOURCE" in
+    distro) php_try_distro || fail "PHP_SOURCE=distro: $PHP_PKG ist in den Ubuntu-Paketquellen von $RELEASE_CODENAME nicht vorhanden." ;;
+    ondrej) php_try_ondrej || fail "PHP_SOURCE=ondrej: ppa:ondrej/php liefert kein $PHP_PKG fuer $RELEASE_CODENAME." ;;
+    sury)   php_try_sury ;;
+    auto)
+        php_try_distro || php_try_ondrej || {
+            distro_php="$(apt_candidate php-fpm)"
+            if [[ "$DRY_RUN" -eq 1 && -n "$BOOTSTRAP_FAKE_RELEASE" ]]; then
+                PHP_RESOLVED="keine"
+                note "PHP: kein $PHP_PKG fuer $RELEASE_CODENAME auffindbar. Auf dem Zielsystem bricht das Skript hier ab (kein PHP 8.5 ohne Ruecksprache; Option nach Freigabe: PHP_SOURCE=sury)."
+            else
+            fail "Kein PHP $PHP_VERSION fuer Ubuntu $RELEASE_ID ($RELEASE_CODENAME) gefunden: weder Distro-Paket $PHP_PKG noch ppa:ondrej/php. \
+Die Distro liefert php-fpm ${distro_php:-unbekannt} (26.04: PHP 8.5, im Projekt nicht getestet, kein Wechsel ohne Ruecksprache). \
+Optionen nach Ruecksprache: PHP_SOURCE=sury (packages.sury.org, ungetestet) oder Ubuntu 24.04 LTS verwenden."
+            fi
+        } ;;
+esac
+
 run apt-get install -y -q "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-cli" "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-redis" \
     "php${PHP_VERSION}-intl" "php${PHP_VERSION}-zip" "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml" "php${PHP_VERSION}-curl" \
     "php${PHP_VERSION}-bcmath" "php${PHP_VERSION}-gd" "php${PHP_VERSION}-opcache"
@@ -423,7 +565,29 @@ fi
 # ---------------------------------------------------------------------------
 # 7. MariaDB 11.x LTS
 # ---------------------------------------------------------------------------
-step "7. MariaDB ($MARIADB_SOURCE)"
+step "7. MariaDB (MARIADB_SOURCE=$MARIADB_SOURCE)"
+# Distro-Kandidat ermitteln (Upstream-Version ohne Epoch und Debian-Revision, z. B. 1:11.8.6-5 -> 11.8.6).
+MARIADB_DISTRO_CANDIDATE="$(apt_candidate mariadb-server)"
+MARIADB_DISTRO_UPSTREAM="${MARIADB_DISTRO_CANDIDATE#*:}"; MARIADB_DISTRO_UPSTREAM="${MARIADB_DISTRO_UPSTREAM%%-*}"
+if [[ "$MARIADB_SOURCE" == "auto" ]]; then
+    case "$RELEASE_ID" in
+        24.04)
+            # Recherche 20.09.2026: noble liefert 10.11, deb.mariadb.org veroeffentlicht fuer noble. Zielstand 11.4 LTS.
+            MARIADB_SOURCE="mariadb" ;;
+        26.04)
+            # Recherche 20.09.2026: resolute liefert 11.8 LTS, deb.mariadb.org veroeffentlicht (noch) nicht fuer resolute.
+            if [[ -n "$MARIADB_DISTRO_UPSTREAM" ]] && version_ge "$MARIADB_DISTRO_UPSTREAM" "$MARIADB_MIN_DISTRO_VERSION"; then
+                MARIADB_SOURCE="distro"
+            elif [[ "$DRY_RUN" -eq 1 && -z "$MARIADB_DISTRO_CANDIDATE" ]]; then
+                MARIADB_SOURCE="distro"
+                warn "[dry-run] apt kennt hier kein mariadb-server (simuliertes Release). Annahme fuer 26.04: Distro-Paket 11.8 (>= $MARIADB_MIN_DISTRO_VERSION)."
+            else
+                warn "Distro-MariaDB ${MARIADB_DISTRO_UPSTREAM:-unbekannt} liegt unter $MARIADB_MIN_DISTRO_VERSION, deb.mariadb.org wird versucht (fuer $RELEASE_CODENAME laut Recherche nicht veroeffentlicht)."
+                MARIADB_SOURCE="mariadb"
+            fi ;;
+    esac
+fi
+note "MariaDB: Quelle $MARIADB_SOURCE, Distro-Kandidat ${MARIADB_DISTRO_CANDIDATE:-keiner}$( [[ "$MARIADB_SOURCE" == mariadb ]] && echo ", deb.mariadb.org $MARIADB_VERSION Suite $RELEASE_CODENAME" )."
 if [[ "$MARIADB_SOURCE" == "mariadb" ]]; then
     MARIADB_KEYRING=/etc/apt/keyrings/mariadb-keyring.pgp
     MARIADB_FINGERPRINT="177F4010FE56CA3336300305F1656F24C74CD1D8"   # MariaDB Signing Key (mariadb.org), Fingerabdruck fest hinterlegt
@@ -446,15 +610,28 @@ if [[ "$MARIADB_SOURCE" == "mariadb" ]]; then
 X-Repolib-Name: MariaDB
 Types: deb
 URIs: https://deb.mariadb.org/$MARIADB_VERSION/ubuntu
-Suites: ${UBUNTU_CODENAME:-noble}
+Suites: $RELEASE_CODENAME
 Components: main main/debug
 Signed-By: $MARIADB_KEYRING
 EOF
-    if [[ "$DRY_RUN" -eq 0 ]] && file_changed /etc/apt/sources.list.d/mariadb.sources; then apt-get update -q; fi
+    if [[ "$DRY_RUN" -eq 0 ]] && file_changed /etc/apt/sources.list.d/mariadb.sources; then
+        if ! apt-get update -q 2>/dev/null; then
+            rm -f /etc/apt/sources.list.d/mariadb.sources; apt-get update -q >/dev/null 2>&1 || true
+            fail "deb.mariadb.org bietet fuer $RELEASE_CODENAME keine Suite $MARIADB_VERSION an (Repository wieder entfernt). Alternative: MARIADB_SOURCE=distro, wenn die Distro-Version ${MARIADB_DISTRO_UPSTREAM:-unbekannt} ausreicht (>= $MARIADB_MIN_DISTRO_VERSION)."
+        fi
+        cand_origin="$(apt_candidate_origin mariadb-server)"
+        [[ "$cand_origin" == *mariadb.org* ]] || warn "mariadb-server-Kandidat kommt nicht von deb.mariadb.org (${cand_origin:-unbekannt}), Repository greift nicht."
+    fi
 else
-    warn "MARIADB_SOURCE=distro: Ubuntu-Paket (24.04: MariaDB 10.11 LTS, 22.04: 10.6). Zielstand laut Doku ist 11.x."
+    if [[ -n "$MARIADB_DISTRO_UPSTREAM" ]] && ! version_ge "$MARIADB_DISTRO_UPSTREAM" "$MARIADB_MIN_DISTRO_VERSION"; then
+        warn "MARIADB_SOURCE=distro: Ubuntu-Paket $MARIADB_DISTRO_UPSTREAM liegt unter dem Zielstand $MARIADB_MIN_DISTRO_VERSION (compose.yaml, CI: 11.4)."
+    fi
 fi
 run apt-get install -y -q mariadb-server mariadb-client mariadb-backup
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    MARIADB_INSTALLED="$(mariadb --version 2>/dev/null | sed 's/.*Distrib \([0-9.]*\).*/\1/')"
+    note "MariaDB installiert: ${MARIADB_INSTALLED:-unbekannt} (Quelle $MARIADB_SOURCE)."
+fi
 
 write_file /etc/mysql/mariadb.conf.d/60-immoware.cnf 0644 root:root <<EOF
 # Immoware Hub, MariaDB (Werte analog compose.yaml). Nur lokale Verbindungen.
@@ -509,7 +686,25 @@ fi
 # 8. Redis
 # ---------------------------------------------------------------------------
 step "8. Redis (nur localhost, requirepass, appendonly, noeviction)"
+# Paket redis-server ist Pflicht. Ubuntu 26.04 fuehrt Valkey als Standard; ein Wechsel auf valkey erfolgt nicht
+# stillschweigend (Konfigurationspfade, Unit-Name und Kompatibilitaet sind im Projekt nicht getestet).
+REDIS_CANDIDATE="$(apt_candidate redis-server)"
+if [[ -z "$REDIS_CANDIDATE" ]]; then
+    if [[ "$DRY_RUN" -eq 1 && -n "$BOOTSTRAP_FAKE_RELEASE" ]]; then
+        warn "[dry-run] apt kennt hier kein redis-server (simuliertes Release). Auf dem Zielsystem bricht das Skript ab, wenn das Paket fehlt."
+    else
+        fail "Paket redis-server ist in den Paketquellen von Ubuntu $RELEASE_ID nicht vorhanden. Ubuntu 26.04 liefert stattdessen valkey (valkey-server, valkey-redis-compat). Kein automatischer Wechsel: Freigabe einholen, dann Skript anpassen (Paket, /etc/valkey, Unit valkey-server)."
+    fi
+fi
+note "Redis: Paket redis-server, Kandidat ${REDIS_CANDIDATE:-keiner}$( [[ -n "$REDIS_CANDIDATE" ]] && echo ", Quelle $(apt_candidate_origin redis-server)" )."
 run apt-get install -y -q redis-server
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    [[ -f /etc/redis/redis.conf ]] || fail "/etc/redis/redis.conf fehlt nach der Installation. redis-server ist auf diesem Release vermutlich ein Uebergangspaket auf valkey (/etc/valkey). Kein automatischer Wechsel, Ruecksprache erforderlich."
+    command -v redis-server >/dev/null 2>&1 || fail "Binary redis-server fehlt nach der Installation."
+    if redis-server --version 2>/dev/null | grep -qi valkey; then
+        warn "redis-server ist ein Valkey-Binary: $(redis-server --version). Kompatibel laut Ubuntu, im Projekt aber nicht getestet."
+    fi
+fi
 REDIS_PASSWORD="$(credential_get REDIS_PASSWORD)"
 if [[ -z "$REDIS_PASSWORD" && "$DRY_RUN" -eq 0 ]]; then
     REDIS_PASSWORD="$(random_secret)"
@@ -532,7 +727,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     systemctl enable redis-server
     systemctl restart redis-server
     redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG || fail "Redis antwortet nicht auf PING."
-    log "Redis $(redis-server --version | sed 's/.*v=\([0-9.]*\).*/\1/') laeuft."
+    note "Redis laeuft: $(redis-server --version | sed 's/.*v=\([0-9.]*\).*/\1/')."
 fi
 
 # ---------------------------------------------------------------------------
@@ -667,6 +862,11 @@ fi
 # 11. TLS mit certbot (DNS-Pruefung vorab)
 # ---------------------------------------------------------------------------
 step "11. TLS (certbot)"
+CERTBOT_CANDIDATE="$(apt_candidate certbot)"
+if [[ -z "$CERTBOT_CANDIDATE" && "$DRY_RUN" -eq 0 ]]; then
+    fail "Paket certbot ist in den Paketquellen nicht vorhanden (Komponente universe aktiv?)."
+fi
+note "certbot: Paket certbot ${CERTBOT_CANDIDATE:-kein Kandidat}, Plugin python3-certbot-nginx (wird nicht benutzt, certonly --webroot)."
 run apt-get install -y -q certbot python3-certbot-nginx
 if [[ "$SKIP_TLS" -eq 1 ]]; then
     warn "--skip-tls: nginx bleibt HTTP-only. Anmeldung funktioniert erst mit TLS (SESSION_SECURE_COOKIE=true). Spaeter: Skript ohne --skip-tls erneut ausfuehren."
@@ -829,8 +1029,8 @@ fi
 # ---------------------------------------------------------------------------
 step "Zusammenfassung"
 cat <<EOF
-Server:            Ubuntu ${VERSION_ID}, Zeitzone Europe/Berlin, ufw 22/80/443, fail2ban sshd, unattended-upgrades
-PHP:               $PHP_VERSION (fpm Pool $DEPLOY_USER, Socket $FPM_SOCKET), Composer /usr/local/bin/composer
+Server:            Ubuntu ${RELEASE_ID} (${RELEASE_CODENAME}), Zeitzone Europe/Berlin, ufw 22/80/443, fail2ban sshd, unattended-upgrades
+PHP:               $PHP_VERSION aus $PHP_RESOLVED (fpm Pool $DEPLOY_USER, Socket $FPM_SOCKET), Composer /usr/local/bin/composer
 MariaDB:           $MARIADB_SOURCE, Datenbank $DB_NAME, Nutzer $DB_USER, nur 127.0.0.1, Binlog aktiv
 Redis:             127.0.0.1, requirepass, appendonly yes, maxmemory-policy noeviction
 nginx:             $HUB_SITE, $MAIL_SITE $( [[ "$SKIP_TLS" -eq 1 ]] && echo "(HTTP-only)" || echo "(TLS, Let's Encrypt, certbot.timer)" )
@@ -849,5 +1049,8 @@ Naechste Schritte:
      (Ausgabe von: ssh-keyscan -t ed25519 $HUB_DOMAIN).
 EOF
 for s in "${NEXT_STEPS[@]:-}"; do [[ -n "$s" ]] && echo "  * $s"; done
+echo
+echo "Erkennungen:"
+for d in "${DETECTED[@]:-}"; do [[ -n "$d" ]] && echo "  - $d"; done
 echo
 echo "Vollstaendige Checkliste: docs/operations/06-neuer-server.md"
