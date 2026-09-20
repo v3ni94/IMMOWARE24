@@ -1,0 +1,14 @@
+# Immoware Hub, Sammel-Target fuer alle Hub-Dienste (Betrieb ohne Docker).
+# Ablage: /etc/systemd/system/immoware-hub.target
+# Die Worker- und Scheduler-Units tragen PartOf=immoware-hub.target. Damit stoppt
+#   systemctl stop immoware-hub.target
+# Hub-Worker, Mail-Worker und Scheduler gemeinsam (z. B. vor einem Vollrestore, docs/operations/02-backup-restore.md
+# Abschnitt 5). Gestartet werden die Units einzeln ueber ihre eigene Aktivierung (WantedBy=multi-user.target), ein
+# "systemctl start immoware-hub.target" startet deshalb nur die Units, die es ueber Wants kennt (keine).
+
+[Unit]
+Description=Immoware Hub (Worker, Mail-Worker, Scheduler)
+Documentation=file:/var/www/immoware-hub/current/docs/operations/01-deployment.md
+
+[Install]
+WantedBy=multi-user.target

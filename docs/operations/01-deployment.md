@@ -73,6 +73,8 @@ Der Worker beendet sich nach `--max-time=3600` und wird durch `restart: unless-s
 
 ### 4.2 Einrichtung
 
+Für einen frischen dedizierten Server erledigt `deploy/scripts/server-bootstrap.sh` die Schritte 1 bis 5 dieses Abschnitts einschließlich Systemhärtung, MariaDB, Redis, TLS, `shared/.env`, logrotate und Backup-Cron in einem idempotenten Lauf; Checkliste und Nacharbeiten in `docs/operations/06-neuer-server.md`. Die Units tragen `PartOf=immoware-hub.target` (`deploy/systemd/immoware-hub.target`), damit `systemctl stop immoware-hub.target` alle Hub-Dienste gemeinsam anhält. `HUB_HASH_PEPPER` ist in production Pflicht (`hub:doctor` meldet sonst fail und `deploy.sh` bricht ab).
+
 1. nginx: `deploy/nginx/immoware.muellerhv.de.conf` nach `/etc/nginx/sites-available/`, Symlink nach `sites-enabled`, Zertifikat per certbot, `nginx -t`, `systemctl reload nginx`.
 2. php-fpm Pool `/etc/php/8.4/fpm/pool.d/immoware.conf`: `user = immoware`, `listen = /run/php/php8.4-fpm-immoware.sock`, `listen.owner = www-data`, Werte aus `docker/php/www.conf` übernehmen. OPcache-Werte aus `docker/php/opcache.ini`.
 3. Worker: entweder `deploy/supervisor/immoware-hub-worker.conf` nach `/etc/supervisor/conf.d/` oder `deploy/systemd/immoware-hub-worker@.service` nach `/etc/systemd/system/` und `systemctl enable --now immoware-hub-worker@1 immoware-hub-worker@2`. Nicht beides.
