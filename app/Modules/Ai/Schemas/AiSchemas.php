@@ -33,6 +33,12 @@ final class AiSchemas
             AiTask::MatchCandidates => $this->matchCandidates(),
             AiTask::DraftReply => $this->draftReply(),
             AiTask::NextSteps => $this->nextSteps(),
+            AiTask::LearningDocumentRules => $this->learningDocumentRules(),
+            AiTask::LearningFieldMapping => $this->learningFieldMapping(),
+            AiTask::LearningContactMapping => $this->learningFieldMapping(),
+            AiTask::LearningCalendarMapping => $this->learningFieldMapping(),
+            AiTask::PlaybookMatch => $this->playbookMatch(),
+            AiTask::PlaybookDraftSteps => $this->playbookDraftSteps(),
         };
     }
 
@@ -179,6 +185,83 @@ final class AiSchemas
                 'requires_approval' => ['type' => 'boolean'],
             ], ['action_type', 'description', 'due_in_business_days', 'requires_approval'])],
         ], ['steps']);
+    }
+
+    /**
+     * Lernphase Immoware24 (Modul Learning): Vorschläge für Dokument-Zuordnungsregeln (config hub.documents.type_rules
+     * und assignment_rules). Reine Empfehlung, keine automatische Änderung der Konfiguration.
+     *
+     * @return array<string, mixed>
+     */
+    private function learningDocumentRules(): array
+    {
+        return $this->object([
+            'new_rules' => ['type' => 'array', 'maxItems' => 20, 'items' => $this->object([
+                'document_type' => ['type' => 'string', 'maxLength' => 60],
+                'pattern_hint' => ['type' => 'string', 'maxLength' => 300],
+                'reason' => ['type' => 'string', 'maxLength' => 300],
+                'example_paths' => ['type' => 'array', 'maxItems' => 5, 'items' => ['type' => 'string', 'maxLength' => 300]],
+            ], ['document_type', 'pattern_hint', 'reason', 'example_paths'])],
+            'unmatched_folders' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string', 'maxLength' => 300]],
+            'notes' => ['type' => 'array', 'maxItems' => 10, 'items' => ['type' => 'string', 'maxLength' => 300]],
+        ], ['new_rules', 'unmatched_folders', 'notes']);
+    }
+
+    /**
+     * Lernphase Immoware24: Vorschläge für Feldzuordnungen (WebDAV-Exporte, CardDAV, CalDAV). Reine Empfehlung,
+     * die Übernahme in eine aktive Mapping-Version erfolgt weiterhin über die bestehende Freigabe (Sync-Modul).
+     *
+     * @return array<string, mixed>
+     */
+    private function learningFieldMapping(): array
+    {
+        return $this->object([
+            'field_suggestions' => ['type' => 'array', 'maxItems' => 30, 'items' => $this->object([
+                'external_field' => ['type' => 'string', 'maxLength' => 120],
+                'suggested_local_field' => ['type' => 'string', 'maxLength' => 120],
+                'confidence_percent' => self::CONFIDENCE,
+                'reason' => ['type' => 'string', 'maxLength' => 300],
+            ], ['external_field', 'suggested_local_field', 'confidence_percent', 'reason'])],
+            'unmapped_fields' => ['type' => 'array', 'maxItems' => 30, 'items' => ['type' => 'string', 'maxLength' => 120]],
+            'notes' => ['type' => 'array', 'maxItems' => 10, 'items' => ['type' => 'string', 'maxLength' => 300]],
+        ], ['field_suggestions', 'unmapped_fields', 'notes']);
+    }
+
+    /**
+     * Prozessdatenbank (Modul Playbooks): Auswahl der passenden Vorlage für einen neuen Vorgang.
+     *
+     * @return array<string, mixed>
+     */
+    private function playbookMatch(): array
+    {
+        return $this->object([
+            'best_match' => ['type' => ['object', 'null'], 'properties' => [
+                'playbook_id' => ['type' => 'string', 'maxLength' => 60],
+                'confidence_percent' => self::CONFIDENCE,
+                'reason' => ['type' => 'string', 'maxLength' => 400],
+            ], 'required' => ['playbook_id', 'confidence_percent', 'reason'], 'additionalProperties' => false],
+            'deviations' => ['type' => 'array', 'maxItems' => 10, 'items' => ['type' => 'string', 'maxLength' => 300]],
+            'no_match_reason' => ['type' => ['string', 'null'], 'maxLength' => 400],
+        ], ['best_match', 'deviations', 'no_match_reason']);
+    }
+
+    /**
+     * Prozessdatenbank: Entwurf einer neuen, verallgemeinerten Prozessvorlage aus einem abgeschlossenen Vorgang.
+     *
+     * @return array<string, mixed>
+     */
+    private function playbookDraftSteps(): array
+    {
+        return $this->object([
+            'title' => ['type' => 'string', 'maxLength' => 200],
+            'steps' => ['type' => 'array', 'minItems' => 1, 'maxItems' => 15, 'items' => $this->object([
+                'action_type' => ['type' => 'string', 'enum' => $this->allowedActionTypes()],
+                'description' => ['type' => 'string', 'maxLength' => 400],
+                'typical_offset_hours' => ['type' => ['integer', 'null'], 'minimum' => 0, 'maximum' => 2160],
+                'requires_approval' => ['type' => 'boolean'],
+            ], ['action_type', 'description', 'typical_offset_hours', 'requires_approval'])],
+            'notes' => ['type' => 'array', 'maxItems' => 10, 'items' => ['type' => 'string', 'maxLength' => 300]],
+        ], ['title', 'steps', 'notes']);
     }
 
     /**

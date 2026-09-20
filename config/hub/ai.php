@@ -3,13 +3,20 @@
 declare(strict_types=1);
 
 /*
- * Konfiguration des Moduls Ai (OpenAI-Adapter). Zugriff über config('hub.ai.*'). Alle Aussagen zur OpenAI-API
- * (Endpunkte, Feldnamen, Structured Outputs) stammen aus Snippets und sind vor Inbetriebnahme am Original zu prüfen.
- * KI-Ausgaben sind stets Vorschläge (mail_ai_suggestions, Status proposed), werden Schema- und fachlich validiert und
- * wirken nie ohne menschliche Entscheidung. Eingaben werden vor dem Aufruf maskiert (PromptMasker).
- * Ohne Modellname (MAIL_AI_MODEL leer) gilt die Integration als "Nicht eingerichtet"; es gibt keinen Standardwert.
+ * Konfiguration des Moduls Ai (OpenAI- und Anthropic-Adapter). Zugriff über config('hub.ai.*'). Alle Aussagen zu den
+ * Anbieter-APIs (Endpunkte, Feldnamen, Structured Outputs) stammen aus Snippets und sind vor Inbetriebnahme am
+ * Original zu prüfen. KI-Ausgaben sind stets Vorschläge (mail_ai_suggestions, Status proposed), werden Schema- und
+ * fachlich validiert und wirken nie ohne menschliche Entscheidung. Eingaben werden vor dem Aufruf maskiert (PromptMasker).
+ * Ohne Modellname gilt die jeweilige Integration als "Nicht eingerichtet"; es gibt keinen Standardwert.
+ *
+ * Anbieterauswahl (SelectingAiProvider, Änderungsvermerk 21.09.2026): provider_priority legt die Reihenfolge fest,
+ * in der eingerichtete Anbieter versucht werden (Standard OpenAI vor Anthropic, aus Kostengründen). Ist der
+ * bevorzugte Anbieter nicht eingerichtet oder nicht erreichbar, greift automatisch der nächste eingerichtete
+ * Anbieter aus der Liste. mail_ai_runs.provider zeigt, welcher Anbieter einen Lauf tatsächlich bedient hat.
  */
 return [
+
+    'provider_priority' => array_values(array_filter(array_map('trim', explode(',', (string) env('MAIL_AI_PROVIDER_PRIORITY', 'openai,anthropic'))))),
 
     'base_url' => env('MAIL_AI_BASE_URL', 'https://api.openai.com/v1'),
     'api_key' => env('MAIL_AI_API_KEY'),
@@ -22,6 +29,31 @@ return [
     'endpoints' => [
         'responses' => '/responses',
         'chat' => '/chat/completions',
+    ],
+
+    /*
+     * Anthropic-Adapter (Messages API, strukturierte Ausgabe über erzwungenen Tool-Aufruf). Zweiter Anbieter,
+     * derzeit nachrangig zu OpenAI (Kostenentscheidung, siehe provider_priority). Aus Snippets, am Original zu prüfen.
+     */
+    'anthropic' => [
+        'base_url' => env('MAIL_AI_ANTHROPIC_BASE_URL', 'https://api.anthropic.com/v1'),
+        'api_key' => env('MAIL_AI_ANTHROPIC_API_KEY'),
+        // Kein Default: der Modellname ist eine betriebliche Entscheidung und wird nicht behauptet.
+        'model' => env('MAIL_AI_ANTHROPIC_MODEL'),
+        'version' => env('MAIL_AI_ANTHROPIC_VERSION', '2023-06-01'),
+        'temperature' => 0,
+        'timeout_seconds' => (int) env('MAIL_AI_ANTHROPIC_TIMEOUT_SECONDS', 60),
+        'connect_timeout_seconds' => 10,
+        'max_output_tokens' => (int) env('MAIL_AI_ANTHROPIC_MAX_OUTPUT_TOKENS', 2000),
+        'retry' => [
+            'times' => (int) env('MAIL_AI_ANTHROPIC_RETRY_TIMES', 2),
+            'sleep_ms' => [500, 2000],
+        ],
+        // Cent je 1.000.000 Token. Leer = kein Preis konfiguriert, keine Kostenschätzung.
+        'pricing' => [
+            'input_cents_per_million' => env('MAIL_AI_ANTHROPIC_PRICE_INPUT_CENTS_PER_MILLION'),
+            'output_cents_per_million' => env('MAIL_AI_ANTHROPIC_PRICE_OUTPUT_CENTS_PER_MILLION'),
+        ],
     ],
 
     // Keine Speicherung beim Anbieter (store: false laut Snippets). AVV und EU-Verarbeitung durch Geschäftsführung zu klären.
@@ -70,7 +102,12 @@ return [
         'names' => (bool) env('MAIL_AI_MASK_NAMES', true),
     ],
 
-    'tasks' => ['classify', 'summarize', 'extract', 'split_issues', 'match_candidates', 'draft_reply', 'next_steps'],
+    'tasks' => [
+        'classify', 'summarize', 'extract', 'split_issues', 'match_candidates', 'draft_reply', 'next_steps',
+        // Lernphase Immoware24 (Modul Learning) und Prozessdatenbank (Modul Playbooks), Änderungsvermerk 21.09.2026.
+        'learning_document_rules', 'learning_field_mapping', 'learning_contact_mapping', 'learning_calendar_mapping',
+        'playbook_match', 'playbook_draft_steps',
+    ],
 
     // Allowlist der Aktionstypen, die die KI in next_steps vorschlagen darf. Alles andere wird verworfen.
     'allowed_action_types' => [

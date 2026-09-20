@@ -278,7 +278,7 @@ final class AiSuggestionService
         $run->setAttribute('input_tokens', $in);
         $run->setAttribute('output_tokens', $out);
         $run->setAttribute('latency_ms', (int) ($meta['latency_ms'] ?? 0));
-        $run->setAttribute('cost_cents', $this->costs->estimateCents($in, $out));
+        $run->setAttribute('cost_cents', $this->costs->estimateCents($in, $out, (string) ($meta['provider'] ?? 'openai')));
     }
 
     /**

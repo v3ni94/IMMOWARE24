@@ -8,13 +8,13 @@ use App\Core\Contracts\Mail\AiProviderInterface;
 use App\Modules\Ai\Contracts\AiContextSourceInterface;
 use App\Modules\Ai\Services\NotConfiguredAiProvider;
 use App\Modules\Ai\Services\NullAiContextSource;
-use App\Modules\Ai\Services\OpenAiProvider;
+use App\Modules\Ai\Services\SelectingAiProvider;
 use App\Modules\Ai\Testing\FakeAiProvider;
 use Illuminate\Support\ServiceProvider;
 
 /**
- * Modul Ai: OpenAI-Adapter mit Schema-Validierung, Maskierung und Kostenzähler. Ausgaben sind stets Vorschläge.
- * Routen aus routes/modules/ai.php sind API- und Webhook-Routen ohne Domain-Bindung; Oberflächenrouten
+ * Modul Ai: OpenAI- und Anthropic-Adapter mit Schema-Validierung, Maskierung und Kostenzähler. Ausgaben sind stets
+ * Vorschläge. Routen aus routes/modules/ai.php sind API- und Webhook-Routen ohne Domain-Bindung; Oberflächenrouten
  * gehören in routes/modules/mail.php (Domain mail.muellerhv.de, Modul MailUi).
  */
 class AiServiceProvider extends ServiceProvider
@@ -33,7 +33,7 @@ class AiServiceProvider extends ServiceProvider
             $this->app->singleton(FakeAiProvider::class);
             $this->app->bind(AiProviderInterface::class, FakeAiProvider::class);
         } elseif ($this->shouldBindLive()) {
-            $this->app->bind(AiProviderInterface::class, OpenAiProvider::class);
+            $this->app->bind(AiProviderInterface::class, SelectingAiProvider::class);
         } else {
             $this->app->bind(AiProviderInterface::class, NotConfiguredAiProvider::class);
         }
@@ -45,18 +45,29 @@ class AiServiceProvider extends ServiceProvider
     }
 
     /**
-     * Live nur bei MAIL_AI_PROVIDER=live und vorhandenem API-Key und Modellname. Fehlt eines davon, bleibt die
-     * Integration sichtbar "Nicht eingerichtet"; es wird kein Modellname angenommen.
+     * Live nur bei MAIL_AI_PROVIDER=live und mindestens einem eingerichteten Anbieter (API-Key und Modellname).
+     * Welcher Anbieter tatsächlich einen Lauf bedient, entscheidet SelectingAiProvider anhand provider_priority
+     * (Standard OpenAI vor Anthropic). Fehlt bei allen Anbietern eines der beiden, bleibt die Integration sichtbar
+     * "Nicht eingerichtet"; es wird kein Modellname angenommen.
      */
     private function shouldBindLive(): bool
     {
         $mode = config('hub.mail.providers.ai');
-        $key = config('hub.ai.api_key');
-        $model = config('hub.ai.model');
 
-        return is_string($mode) && strtolower(trim($mode)) === 'live'
-            && is_string($key) && trim($key) !== ''
-            && is_string($model) && trim($model) !== '';
+        if (! is_string($mode) || strtolower(trim($mode)) !== 'live') {
+            return false;
+        }
+
+        return $this->isConfigured('hub.ai.api_key', 'hub.ai.model')
+            || $this->isConfigured('hub.ai.anthropic.api_key', 'hub.ai.anthropic.model');
+    }
+
+    private function isConfigured(string $keyPath, string $modelPath): bool
+    {
+        $key = config($keyPath);
+        $model = config($modelPath);
+
+        return is_string($key) && trim($key) !== '' && is_string($model) && trim($model) !== '';
     }
 
     public function boot(): void
