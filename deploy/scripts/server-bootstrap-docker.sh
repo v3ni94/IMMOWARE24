@@ -1109,7 +1109,7 @@ Credentials:       $CREDENTIALS_FILE (0600, nur root). Werte stehen zusaetzlich 
 
 Naechste Schritte:
   1. Ersten Admin-Nutzer anlegen (Rolle owner), danach 2FA bei der ersten Anmeldung einrichten:
-       sudo -u $DEPLOY_USER -H docker compose --project-directory $APP_DIR exec app php artisan hub:user:create <email> --role=owner --name="<Name>"
+       sudo -u $DEPLOY_USER -H docker compose --project-directory $APP_DIR exec app php artisan hub:user:create <email> --role=owner --name="<Name>" --organization-name="Hausverwaltung Müller GmbH"
   2. hub:doctor pruefen: sudo -u $DEPLOY_USER -H docker compose --project-directory $APP_DIR exec app php artisan hub:doctor
   3. Health: curl -fsS https://$HUB_DOMAIN/health/database && curl -fsS https://$HUB_DOMAIN/health/queue && curl -fsS https://$MAIL_DOMAIN/up
   4. Update spaeter: git pull, docker compose build app, up -d, exec app php artisan migrate --force (docs/operations/06-neuer-server.md, Abschnitt Docker)

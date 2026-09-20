@@ -42,6 +42,30 @@ final class ConsoleCommandsTest extends TestCase
         $this->assertDatabaseCount('users', 1);
     }
 
+    public function test_user_create_command_creates_first_organization_on_initial_setup(): void
+    {
+        $this->artisan('hub:user:create', ['email' => 'owner@muellerhv.de', '--role' => 'owner', '--password' => 'ein-langes-passwort-123'])
+            ->assertFailed();
+        $this->assertDatabaseCount('organizations', 0);
+
+        $this->artisan('hub:user:create', [
+            'email' => 'owner@muellerhv.de',
+            '--role' => 'owner',
+            '--password' => 'ein-langes-passwort-123',
+            '--organization-name' => 'Hausverwaltung Müller GmbH',
+        ])->assertSuccessful();
+
+        $this->assertDatabaseHas('organizations', ['name' => 'Hausverwaltung Müller GmbH', 'legal_entity_code' => 'HVM']);
+        $this->assertDatabaseCount('organizations', 1);
+
+        $this->artisan('hub:user:create', [
+            'email' => 'zweiter@muellerhv.de',
+            '--password' => 'ein-langes-passwort-123',
+            '--organization-name' => 'Zweite GmbH',
+        ])->assertSuccessful();
+        $this->assertDatabaseCount('organizations', 1);
+    }
+
     public function test_api_key_create_command_prints_plaintext_once(): void
     {
         $organization = $this->createOrganization();

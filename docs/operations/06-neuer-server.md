@@ -73,7 +73,7 @@ Erneuter Lauf: jederzeit möglich. Vorhandene Secrets, `.env`, Zertifikate und `
 
 | Nr. | Schritt | Befehl oder Ort | Erledigt |
 |---|---|---|---|
-| N1 | Admin-Nutzer anlegen (Rolle owner) | `sudo -u immoware -H bash -c 'cd /var/www/immoware-hub/current && php artisan hub:user:create <email> --role=owner --name="<Name>"'` | |
+| N1 | Admin-Nutzer anlegen (Rolle owner) | `sudo -u immoware -H bash -c 'cd /var/www/immoware-hub/current && php artisan hub:user:create <email> --role=owner --name="<Name>" --organization-name="Hausverwaltung Müller GmbH"'` | |
 | N2 | Erste Anmeldung unter https://immoware.muellerhv.de, 2FA einrichten (Pflicht), Wiederherstellungscodes sicher ablegen | Browser | |
 | N3 | Immoware-Connection anlegen: technischer Nutzer, Freigabe-Link, Freigabe-Passwort über die Admin-UI (verschlüsselt in der Datenbank, nie in der `.env`); Probe ausführen | Admin-UI, `docs/immoware/04-authentication.md` | |
 | N4 | Backup: öffentlichen GPG-Schlüssel importieren, Empfänger eintragen, Probelauf | `sudo -u immoware -H gpg --import backup-public.asc`; `BACKUP_GPG_RECIPIENT=<Key-ID>` in `/etc/immoware-hub/backup.env`; `sudo -u immoware bash -c '. /etc/immoware-hub/backup.env && /var/www/immoware-hub/current/deploy/scripts/backup.sh'` | |
@@ -241,7 +241,7 @@ Schritte des Skripts:
 Nacharbeiten wie Abschnitt 4, Befehle in der Compose-Form:
 
 ```
-sudo -u immoware -H docker compose --project-directory /opt/immoware-hub exec app php artisan hub:user:create <email> --role=owner --name="<Name>"
+sudo -u immoware -H docker compose --project-directory /opt/immoware-hub exec app php artisan hub:user:create <email> --role=owner --name="<Name>" --organization-name="Hausverwaltung Müller GmbH"
 sudo -u immoware -H docker compose --project-directory /opt/immoware-hub exec app php artisan hub:doctor
 gpg --import backup-public.asc                                  # als root
 sed -i 's/^BACKUP_GPG_RECIPIENT=.*/BACKUP_GPG_RECIPIENT=<Key-ID>/' /etc/immoware-hub/backup.env

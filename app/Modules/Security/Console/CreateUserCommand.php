@@ -20,6 +20,8 @@ final class CreateUserCommand extends Command
         {--role=read_only : Rolle (owner, administrator, developer, operator, read_only)}
         {--name= : Anzeigename}
         {--organization= : ID der Organisation, Standard: erste Organisation}
+        {--organization-name= : Legt die Organisation an, wenn noch keine existiert (Erstinbetriebnahme)}
+        {--organization-code=HVM : Kürzel der Gesellschaft für die neue Organisation}
         {--password= : Passwort, sonst Abfrage per Prompt}';
 
     protected $description = 'Legt einen Hub-Nutzer mit E-Mail, Rolle und Passwort an.';
@@ -54,8 +56,17 @@ final class CreateUserCommand extends Command
             ? (int) $this->option('organization')
             : Organization::query()->orderBy('id')->value('id');
 
+        if ($organizationId === null && $this->option('organization-name') !== null && ! Organization::query()->exists()) {
+            $organization = Organization::query()->create([
+                'name' => trim((string) $this->option('organization-name')),
+                'legal_entity_code' => mb_strtoupper(trim((string) $this->option('organization-code'))),
+            ]);
+            $organizationId = (int) $organization->getKey();
+            $this->info(sprintf('Organisation "%s" (ID %d) angelegt.', $organization->name, $organizationId));
+        }
+
         if ($organizationId === null || ! Organization::query()->whereKey($organizationId)->exists()) {
-            $this->error('Keine gültige Organisation gefunden. Bitte --organization angeben.');
+            $this->error('Keine gültige Organisation gefunden. Bei der Erstinbetriebnahme --organization-name="Hausverwaltung Müller GmbH" angeben, sonst --organization=<ID>.');
 
             return self::FAILURE;
         }
