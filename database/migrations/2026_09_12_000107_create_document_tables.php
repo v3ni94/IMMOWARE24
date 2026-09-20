@@ -29,7 +29,7 @@ return new class extends Migration
             $table->timestamps();
             $table->softDeletes();
             $table->unique(['connection_id', 'path_hash']);
-            $table->index(['connection_id', 'scan_priority', 'last_scanned_at']);
+            $table->index(['connection_id', 'scan_priority', 'last_scanned_at'], 'document_folders_scan_idx');
             $table->index('parent_id');
             $table->index('deleted_at');
         });

@@ -32,7 +32,7 @@ return new class extends Migration
             $table->foreignId('configured_by')->nullable()->constrained('users')->nullOnDelete();
             $table->timestamps();
             $table->softDeletes();
-            $table->unique(['organization_id', 'legal_entity_code']);
+            $table->unique(['organization_id', 'legal_entity_code'], 'mail_lexware_conn_org_entity_uq');
             $table->index('status');
         });
 
@@ -51,7 +51,7 @@ return new class extends Migration
             $table->string('purpose', 24)->default('lookup');
             $table->timestamp('fetched_at');
             $table->timestamp('created_at')->nullable();
-            $table->index(['lexware_contact_id', 'fetched_at']);
+            $table->index(['lexware_contact_id', 'fetched_at'], 'mail_lexware_snap_contact_fetched_idx');
             $table->index('case_id');
         });
     }

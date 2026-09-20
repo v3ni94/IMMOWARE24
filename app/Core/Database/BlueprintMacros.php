@@ -11,6 +11,14 @@ use Illuminate\Database\Schema\Blueprint;
  */
 final class BlueprintMacros
 {
+    /**
+     * Kuerzt lange Tabellennamen fuer Indexnamen (MariaDB-Grenze 64 Zeichen).
+     */
+    public static function shortIndexPrefix(string $table): string
+    {
+        return strlen($table) > 40 ? substr($table, 0, 32).'_'.substr(hash('crc32b', $table), 0, 6) : $table;
+    }
+
     public static function register(): void
     {
         if (Blueprint::hasMacro('externalIdentity')) {
@@ -50,10 +58,13 @@ final class BlueprintMacros
             $this->index('updated_at');
             $this->index('deleted_at');
 
+            // Explizite kurze Indexnamen: MariaDB erlaubt hoechstens 64 Zeichen, die von Laravel
+            // generierten Namen ueberschreiten das bei langen Tabellennamen (Befund Deploy 20.09.2026).
+            $prefix = BlueprintMacros::shortIndexPrefix($this->getTable());
             if ($uniqueExternal && $withOrganization) {
-                $this->unique(['organization_id', 'source_system', 'external_id_hash']);
+                $this->unique(['organization_id', 'source_system', 'external_id_hash'], $prefix.'_ext_uq');
             } elseif ($uniqueExternal) {
-                $this->unique(['connection_id', 'source_system', 'external_id_hash']);
+                $this->unique(['connection_id', 'source_system', 'external_id_hash'], $prefix.'_ext_conn_uq');
             }
         });
 
