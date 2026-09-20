@@ -3,13 +3,21 @@
 #
 # Zielsystem: IONOS Dedicated Server, Ubuntu 26.04 LTS (resolute), Image "Linux + Docker" (Docker Engine und
 # Compose-Plugin vorinstalliert; fehlen sie, installiert das Skript beide aus dem offiziellen Docker-Repository).
-# Der Server terminiert TLS mit einem nginx auf dem Host (certbot, Webroot) und reicht HTTP an den Container "web"
-# auf 127.0.0.1:8080 weiter. MariaDB und Redis laufen ausschliesslich im internen Docker-Netz ohne veroeffentlichte Ports.
+# MariaDB und Redis laufen ausschliesslich im internen Docker-Netz ohne veroeffentlichte Ports.
+#
+# TLS-Terminierung, zwei Betriebsarten (PROXY_MODE):
+#   traefik (Standard) Der Server betreibt bereits einen Traefik-Container mit Docker-Provider (exposedbydefault=false),
+#                      Entrypoint websecure (:443), Zertifikatsresolver letsencrypt und dem Docker-Netz traefik-proxy.
+#                      Der Container "web" wird zusaetzlich in dieses Netz gehaengt, veroeffentlicht keinen Host-Port und
+#                      erhaelt Traefik-Labels fuer beide Hostnamen. Kein Host-nginx, kein certbot. Port 80/443 gehoeren Traefik.
+#   nginx              Frischer Server ohne Proxy: nginx auf dem Host terminiert TLS (certbot, Webroot) und reicht HTTP an
+#                      den Container "web" auf 127.0.0.1:8080 weiter.
 #
 # Aufruf als root:
-#   ADMIN_EMAIL=it@example.org bash deploy/scripts/server-bootstrap-docker.sh [--dry-run] [--skip-tls] [--skip-deploy]
+#   bash deploy/scripts/server-bootstrap-docker.sh [--dry-run] [--skip-tls] [--skip-deploy]
+#   PROXY_MODE=nginx ADMIN_EMAIL=it@example.org bash deploy/scripts/server-bootstrap-docker.sh
 #     --dry-run     zeigt alle Schritte, veraendert nichts
-#     --skip-tls    kein certbot, Host-nginx bleibt HTTP-only (solange DNS noch nicht auf diesen Server zeigt)
+#     --skip-tls    nur PROXY_MODE=nginx: kein certbot, Host-nginx bleibt HTTP-only (solange DNS noch nicht auf diesen Server zeigt)
 #     --skip-deploy alles einrichten, aber kein docker compose build/up, keine Migration
 #     --help        diese Beschreibung
 #
@@ -23,8 +31,13 @@
 # unabhaengig von der Paketlage des Releases mit. Leitdokument: docs/operations/06-neuer-server.md, Abschnitt Docker.
 #
 # ufw und Docker: Docker schreibt eigene iptables-Regeln und umgeht ufw fuer veroeffentlichte Container-Ports. Deshalb
-# veroeffentlicht compose.yaml nur den Web-Port und nur an 127.0.0.1; MariaDB und Redis bleiben ohne Port-Publish.
+# veroeffentlicht compose.yaml nur den Web-Port und nur an 127.0.0.1 (im Traefik-Modus gar keinen Port); MariaDB und
+# Redis bleiben ohne Port-Publish. Andere Compose-Projekte auf demselben Host bleiben unberuehrt, das Skript aendert
+# nur die hier genannten Dateien. ufw- und sshd-Aenderungen gelten fuer den ganzen Host (Abschnitt 10 der Doku).
 # IONOS-Image: cloud-init (sshd-Drop-in 50-cloud-init.conf), eventuell vorinstalliertes ufw und Docker werden toleriert.
+#
+# Wiederanlauf: Alle Schritte sind idempotent. Ein Lauf auf einem teilweise eingerichteten Server (Nutzer vorhanden,
+# Checkout vorhanden, Verzeichnisse vorhanden) setzt an der jeweiligen Stelle fort, ohne Bestehendes zu ueberschreiben.
 
 set -euo pipefail
 
@@ -34,7 +47,12 @@ set -euo pipefail
 HUB_DOMAIN="${HUB_DOMAIN:-immoware.muellerhv.de}"
 MAIL_DOMAIN="${MAIL_DOMAIN:-mail.muellerhv.de}"
 SERVER_IPV4="${SERVER_IPV4:-82.165.98.36}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-immoware@muellerhv.de}"                        # Pflicht fuer certbot (Ablaufhinweise von Let's Encrypt)
+ADMIN_EMAIL="${ADMIN_EMAIL:-immoware@muellerhv.de}"                        # nur PROXY_MODE=nginx: Pflicht fuer certbot (Ablaufhinweise von Let's Encrypt)
+PROXY_MODE="${PROXY_MODE:-traefik}"                   # traefik (bestehender Traefik-Container terminiert TLS) oder nginx (Host-nginx + certbot)
+TRAEFIK_NETWORK="${TRAEFIK_NETWORK:-traefik-proxy}"   # bestehendes externes Docker-Netz, in dem Traefik seine Backends erreicht
+TRAEFIK_ENTRYPOINT="${TRAEFIK_ENTRYPOINT:-websecure}" # Traefik-Entrypoint :443 (web :80 leitet bei Traefik selbst auf websecure um)
+TRAEFIK_CERTRESOLVER="${TRAEFIK_CERTRESOLVER:-letsencrypt}"
+TRAEFIK_SUBNET=""                                     # wird zur Laufzeit aus docker network inspect ermittelt
 REPO_URL="${REPO_URL:-https://github.com/v3ni94/IMMOWARE24}"
 BRANCH="${BRANCH:-claude/vibrant-lovelace-c624qw}"
 APP_DIR="${APP_DIR:-/opt/immoware-hub}"
@@ -69,7 +87,7 @@ for arg in "$@"; do
         --dry-run) DRY_RUN=1 ;;
         --skip-tls) SKIP_TLS=1 ;;
         --skip-deploy) SKIP_DEPLOY=1 ;;
-        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'; exit 0 ;;
         *) echo "Unbekannte Option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -155,8 +173,41 @@ case "$RELEASE_ID" in
     24.04) note "Release: Ubuntu 24.04 LTS ($RELEASE_CODENAME). Docker-Variante laeuft auch hier, Referenz ist 26.04." ;;
     *) warn "Ubuntu $RELEASE_ID ($RELEASE_CODENAME) ist nicht der dokumentierte Zielstand (26.04). Fortsetzung auf eigenes Risiko." ;;
 esac
-[[ "$SKIP_TLS" -eq 1 || -n "$ADMIN_EMAIL" ]] || fail "ADMIN_EMAIL ist fuer certbot Pflicht (oder --skip-tls verwenden)."
-[[ -z "$ADMIN_EMAIL" || "$ADMIN_EMAIL" == *@*.* ]] || fail "ADMIN_EMAIL sieht nicht wie eine E-Mail-Adresse aus: $ADMIN_EMAIL"
+case "$PROXY_MODE" in
+    traefik|nginx) ;;
+    *) fail "PROXY_MODE muss traefik oder nginx sein (gefunden: $PROXY_MODE)." ;;
+esac
+if [[ "$PROXY_MODE" == "traefik" ]]; then
+    [[ "$TRAEFIK_NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "TRAEFIK_NETWORK ungueltig: $TRAEFIK_NETWORK"
+    [[ "$TRAEFIK_ENTRYPOINT" =~ ^[A-Za-z0-9_-]+$ ]] || fail "TRAEFIK_ENTRYPOINT ungueltig: $TRAEFIK_ENTRYPOINT"
+    [[ "$TRAEFIK_CERTRESOLVER" =~ ^[A-Za-z0-9_-]+$ ]] || fail "TRAEFIK_CERTRESOLVER ungueltig: $TRAEFIK_CERTRESOLVER"
+    if [[ "$SKIP_TLS" -eq 1 ]]; then
+        warn "--skip-tls hat im Traefik-Modus keine Wirkung: TLS terminiert der bestehende Traefik-Container. Option wird ignoriert."
+        SKIP_TLS=0
+    fi
+    # Traefik laeuft bereits als Container, Docker muss also vorhanden sein. Das Backend-Netz von Traefik muss existieren,
+    # sonst haengt der Container web spaeter in einem Netz, das Traefik nicht sieht (compose wuerde es nicht anlegen: external).
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        if docker network inspect "$TRAEFIK_NETWORK" >/dev/null 2>&1; then
+            TRAEFIK_SUBNET="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$TRAEFIK_NETWORK" 2>/dev/null | tr -d '[:space:]')"
+            note "Traefik-Netz $TRAEFIK_NETWORK vorhanden, Subnetz ${TRAEFIK_SUBNET:-unbekannt}."
+            if ! docker ps --format '{{.Image}}' 2>/dev/null | grep -qi traefik; then
+                warn "Kein laufender Container mit Image traefik gefunden. Traefik muss laufen, sonst gibt es fuer $HUB_DOMAIN kein Zertifikat und kein Routing."
+            fi
+        elif [[ "$DRY_RUN" -eq 1 ]]; then
+            warn "Docker-Netz $TRAEFIK_NETWORK existiert nicht. Im echten Lauf Abbruch; Traefik-Netz pruefen (docker network ls) oder TRAEFIK_NETWORK setzen."
+        else
+            fail "Docker-Netz $TRAEFIK_NETWORK existiert nicht (docker network inspect). Traefik-Netz mit 'docker network ls' ermitteln und TRAEFIK_NETWORK setzen, oder PROXY_MODE=nginx fuer einen Server ohne Traefik verwenden."
+        fi
+    elif [[ "$DRY_RUN" -eq 1 ]]; then
+        warn "Docker nicht verfuegbar, Traefik-Netz $TRAEFIK_NETWORK kann im Dry-Run nicht geprueft werden."
+    else
+        fail "PROXY_MODE=traefik setzt eine laufende Docker Engine mit dem Traefik-Container voraus (docker info schlaegt fehl)."
+    fi
+else
+    [[ "$SKIP_TLS" -eq 1 || -n "$ADMIN_EMAIL" ]] || fail "ADMIN_EMAIL ist fuer certbot Pflicht (oder --skip-tls verwenden)."
+    [[ -z "$ADMIN_EMAIL" || "$ADMIN_EMAIL" == *@*.* ]] || fail "ADMIN_EMAIL sieht nicht wie eine E-Mail-Adresse aus: $ADMIN_EMAIL"
+fi
 [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "DEPLOY_USER ungueltig: $DEPLOY_USER"
 [[ "$DB_NAME" =~ ^[A-Za-z0-9_]+$ && "$DB_USER" =~ ^[A-Za-z0-9_]+$ ]] || fail "DB_NAME und DB_USER duerfen nur Buchstaben, Ziffern und Unterstrich enthalten."
 [[ "$SERVER_IPV4" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "SERVER_IPV4 ungueltig: $SERVER_IPV4"
@@ -169,6 +220,11 @@ if [[ "$MEM_TOTAL_GB" -gt 0 && "$MEM_TOTAL_GB" -lt 24 ]]; then
     warn "Nur ${MEM_TOTAL_GB} GB RAM erkannt. MARIADB_BUFFER_POOL=$MARIADB_BUFFER_POOL und REDIS_MAXMEMORY=$REDIS_MAXMEMORY sind fuer 256 GB ausgelegt, bitte anpassen."
 fi
 log "Hub: $HUB_DOMAIN, Mail: $MAIL_DOMAIN, IPv4: $SERVER_IPV4, Nutzer: $DEPLOY_USER, App: $APP_DIR, Repo: $REPO_URL ($BRANCH)"
+if [[ "$PROXY_MODE" == "traefik" ]]; then
+    note "Proxy-Modus: traefik (Netz $TRAEFIK_NETWORK, Entrypoint $TRAEFIK_ENTRYPOINT, Resolver $TRAEFIK_CERTRESOLVER). Kein Host-nginx, kein certbot."
+else
+    note "Proxy-Modus: nginx (Host-nginx mit certbot, Port 80/443 muessen frei sein)."
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Basissystem: Pakete, Updates, Zeitzone
@@ -180,8 +236,14 @@ if [[ "$DRY_RUN" -eq 0 ]] && command -v cloud-init >/dev/null 2>&1; then
 fi
 run apt-get update -q
 run apt-get -o Dpkg::Options::=--force-confold upgrade -y -q
-run apt-get install -y -q ca-certificates curl gnupg lsb-release git ufw fail2ban unattended-upgrades apt-listchanges \
-    dnsutils openssl jq logrotate cron zstd rsync nginx certbot
+BASE_PACKAGES=(ca-certificates curl gnupg lsb-release git ufw fail2ban unattended-upgrades apt-listchanges
+    dnsutils openssl jq logrotate cron zstd rsync)
+if [[ "$PROXY_MODE" == "nginx" ]]; then
+    BASE_PACKAGES+=(nginx certbot)
+else
+    log "Traefik-Modus: nginx und certbot werden nicht installiert (TLS terminiert Traefik)."
+fi
+run apt-get install -y -q "${BASE_PACKAGES[@]}"
 run timedatectl set-timezone Europe/Berlin
 
 write_file /etc/apt/apt.conf.d/20auto-upgrades 0644 root:root <<'EOF'
@@ -210,6 +272,8 @@ run systemctl enable --now unattended-upgrades
 # ---------------------------------------------------------------------------
 step "2. ufw (22, 80, 443), fail2ban sshd, sshd-Haertung"
 # ufw kann im IONOS-Image bereits aktiv sein; die Befehle sind idempotent ("Skipping adding existing rule").
+# Die Regeln gelten fuer den ganzen Host, also auch fuer bereits laufende Anwendungen anderer Compose-Projekte.
+warn "ufw: Docker umgeht ufw fuer veroeffentlichte Container-Ports (eigene iptables-Ketten DOCKER, DOCKER-USER). Ports, die andere Container mit -p oder ports: an 0.0.0.0 binden, bleiben trotz 'default deny incoming' von aussen erreichbar. Bestand vorher mit 'docker ps' und 'ss -tlnp' pruefen (docs/operations/06-neuer-server.md, Abschnitt 10.8)."
 run ufw default deny incoming
 run ufw default allow outgoing
 run ufw allow 22/tcp
@@ -319,6 +383,16 @@ echo "$existing" | jq -e . >/dev/null 2>&1 || fail "$DAEMON_JSON ist kein guelti
 echo "$existing" | jq --indent 4 '. + {"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "5"}, "live-restore": true}' \
     | write_file "$DAEMON_JSON" 0644 root:root
 run systemctl enable docker
+# Traefik-Modus nutzt in compose.override.yaml "ports: !reset []" (Compose ab 2.24, Januar 2024).
+if [[ "$PROXY_MODE" == "traefik" ]] && command -v docker >/dev/null 2>&1; then
+    compose_ver="$(docker compose version --short 2>/dev/null | sed 's/^v//')"
+    if [[ -n "$compose_ver" ]]; then
+        if [[ "$(printf '%s\n2.24.0\n' "$compose_ver" | sort -V | head -n1)" != "2.24.0" ]]; then
+            fail "Docker Compose $compose_ver ist zu alt fuer '!reset' in compose.override.yaml (mindestens 2.24). docker-compose-plugin aktualisieren."
+        fi
+        note "Docker Compose $compose_ver unterstuetzt !reset (Traefik-Modus)."
+    fi
+fi
 if [[ "$DRY_RUN" -eq 0 ]]; then
     if file_changed "$DAEMON_JSON"; then
         systemctl restart docker
@@ -410,13 +484,20 @@ note "Stand: $BRANCH @ $GIT_SHA"
 step "5b. Datenverzeichnisse unter $DATA_DIR, $ETC_DIR, $LOG_DIR, $BACKUP_DIR"
 # Bind-Quellen der Compose-Volumes. Eigentuemer entsprechen den Container-Nutzern: MariaDB und Redis (999) chownen selbst,
 # storage und imports gehoeren www-data des Alpine-Images (uid 82), nicht www-data des Hosts (uid 33).
+# install -o/-g akzeptiert nur Namen, die auf dem Host existieren ("install: invalid user: '82'"). Die Container-UIDs
+# 999 und 82 gibt es auf dem Host nicht, deshalb Verzeichnis ohne Eigentuemer anlegen und numerisch chownen.
 run install -d -m 755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$DATA_DIR"
-run install -d -m 750 -o 999 -g 999 "$DATA_DIR/mariadb" "$DATA_DIR/redis"
-run install -d -m 775 -o 82 -g 82 "$DATA_DIR/storage" "$DATA_DIR/imports"
+run install -d -m 750 "$DATA_DIR/mariadb" "$DATA_DIR/redis"
+run chown 999:999 "$DATA_DIR/mariadb" "$DATA_DIR/redis"
+run install -d -m 775 "$DATA_DIR/storage" "$DATA_DIR/imports"
+run chown 82:82 "$DATA_DIR/storage" "$DATA_DIR/imports"
 run install -d -m 750 -o root -g root "$ETC_DIR"
-run install -d -m 750 -o root -g adm "$LOG_DIR" "$LOG_DIR/nginx"
+run install -d -m 750 -o root -g adm "$LOG_DIR"
 run install -d -m 700 -o root -g root "$BACKUP_DIR"
-run install -d -m 755 -o www-data -g www-data "$LETSENCRYPT_WEBROOT"
+if [[ "$PROXY_MODE" == "nginx" ]]; then
+    run install -d -m 750 -o root -g adm "$LOG_DIR/nginx"
+    run install -d -m 755 -o www-data -g www-data "$LETSENCRYPT_WEBROOT"
+fi
 
 # ---------------------------------------------------------------------------
 # 6. Zugangsdaten und .env
@@ -431,12 +512,29 @@ REDIS_PASSWORD="$(credential_get REDIS_PASSWORD)"
 credential_set DB_DATABASE "$DB_NAME"
 credential_set DB_USERNAME "$DB_USER"
 
+# TRUSTED_PROXIES: php-fpm sieht als Gegenstelle immer den Container web (Netz backend, DOCKER_SUBNET). Im Traefik-Modus
+# kommt das Subnetz des Traefik-Netzes hinzu, damit die Kette Traefik -> web -> app vollstaendig als vertrauenswuerdig
+# gilt. bootstrap/app.php verwirft '*' ausdruecklich (dann wuerde kein X-Forwarded-Header ausgewertet), deshalb ist der
+# Fallback bei unbekanntem Traefik-Subnetz DOCKER_SUBNET allein, nicht '*'.
+TRUSTED_PROXIES_VALUE="$DOCKER_SUBNET"
+if [[ "$PROXY_MODE" == "traefik" ]]; then
+    if [[ -n "$TRAEFIK_SUBNET" ]]; then
+        TRUSTED_PROXIES_VALUE="$DOCKER_SUBNET,$TRAEFIK_SUBNET"
+    else
+        warn "Subnetz des Traefik-Netzes $TRAEFIK_NETWORK konnte nicht ermittelt werden. TRUSTED_PROXIES=$DOCKER_SUBNET (nur Container web). Nach dem Lauf pruefen: docker network inspect $TRAEFIK_NETWORK, Wert in $APP_DIR/.env ergaenzen."
+    fi
+fi
+
 ENV_FILE="$APP_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
     log ".env vorhanden, wird nicht veraendert (Secrets bleiben erhalten). Nur IMAGE_TAG wird auf $GIT_SHA gesetzt."
     [[ "$DRY_RUN" -eq 1 ]] || sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=$GIT_SHA|" "$ENV_FILE"
+    current_tp="$(sed -n 's/^TRUSTED_PROXIES=//p' "$ENV_FILE" | head -n1)"
+    if [[ "$current_tp" != "$TRUSTED_PROXIES_VALUE" ]]; then
+        warn "TRUSTED_PROXIES in .env ist '${current_tp:-leer}', erwartet fuer PROXY_MODE=$PROXY_MODE: '$TRUSTED_PROXIES_VALUE'. Bei Bedarf manuell angleichen (.env wird nicht automatisch geaendert)."
+    fi
 elif [[ "$DRY_RUN" -eq 1 ]]; then
-    log "[dry-run] wuerde $ENV_FILE aus .env.example erzeugen (production, DB, Redis, APP_KEY, HUB_HASH_PEPPER, TRUSTED_PROXIES=$DOCKER_SUBNET, alle Flags false)."
+    log "[dry-run] wuerde $ENV_FILE aus .env.example erzeugen (production, DB, Redis, APP_KEY, HUB_HASH_PEPPER, TRUSTED_PROXIES=$TRUSTED_PROXIES_VALUE, alle Flags false)."
 else
     tmpenv="$(mktemp)"
     cp "$APP_DIR/.env.example" "$tmpenv"
@@ -471,7 +569,7 @@ else
     env_set SESSION_DRIVER redis
     env_set REDIS_QUEUE_RETRY_AFTER 3600
     env_set SESSION_SECURE_COOKIE true
-    env_set TRUSTED_PROXIES "$DOCKER_SUBNET"
+    env_set TRUSTED_PROXIES "$TRUSTED_PROXIES_VALUE"
     env_set HUB_HASH_PEPPER "$HUB_HASH_PEPPER"
     env_set HUB_DB_TRIGGERS true
     env_set MAIL_APP_DOMAIN "$MAIL_DOMAIN"
@@ -485,10 +583,12 @@ else
     cat >> "$tmpenv" <<EOF
 
 # Docker Compose (server-bootstrap-docker.sh). DB_ROOT_PASSWORD nur fuer den MariaDB-Container, IMAGE_TAG fuer Rollback.
+# WEB_BIND/WEB_PORT wirken nur in PROXY_MODE=nginx; im Traefik-Modus veroeffentlicht web keinen Host-Port (compose.override.yaml).
 DB_ROOT_PASSWORD=$DB_ROOT_PASSWORD
 IMAGE_TAG=$GIT_SHA
 WEB_BIND=127.0.0.1
 WEB_PORT=$WEB_PORT
+PROXY_MODE=$PROXY_MODE
 EOF
     install -m 600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$tmpenv" "$ENV_FILE"
     rm -f "$tmpenv"
@@ -521,17 +621,80 @@ decorate_workers_output = no
 access.log = /proc/self/fd/2
 EOF
 
-write_file "$APP_DIR/compose.override.yaml" 0640 "$DEPLOY_USER:$DEPLOY_USER" <<EOF
-# Immoware Hub, serverspezifische Ergaenzung zu compose.yaml (erzeugt von deploy/scripts/server-bootstrap-docker.sh).
-# Nicht im Repository. Keine Secrets: Passwoerter kommen aus .env.
-# Web-Port: compose.yaml bindet ueber WEB_BIND/WEB_PORT aus .env an 127.0.0.1:$WEB_PORT; beide Hostnamen laufen ueber
-# denselben Port, der Container-nginx unterscheidet per server_name.
+# Service web je Proxy-Modus. Traefik: kein Host-Port (ports per !reset geleert, Compose >= 2.24), zusaetzlich im externen
+# Traefik-Netz, Labels fuer beide Hostnamen auf einen Traefik-Service, der den Container-Port 8080 anspricht (listen 8080
+# in docker/nginx/*.conf; WEB_PORT ist nur der Host-Port des nginx-Modus). HSTS setzt sonst der Host-nginx, hier eine
+# Traefik-Middleware. X-Forwarded-Proto/-For setzt Traefik selbst.
+render_web_override() {
+    if [[ "$PROXY_MODE" == "traefik" ]]; then
+        cat <<EOF
+    web:
+        ports: !reset []
+        networks:
+            - backend
+            - $TRAEFIK_NETWORK
+        labels:
+            traefik.enable: "true"
+            traefik.docker.network: "$TRAEFIK_NETWORK"
+            traefik.http.routers.immoware-hub.rule: "Host(\`$HUB_DOMAIN\`)"
+            traefik.http.routers.immoware-hub.entrypoints: "$TRAEFIK_ENTRYPOINT"
+            traefik.http.routers.immoware-hub.tls.certresolver: "$TRAEFIK_CERTRESOLVER"
+            traefik.http.routers.immoware-hub.service: "immoware-hub"
+            traefik.http.routers.immoware-hub.middlewares: "immoware-hub-hsts"
+            traefik.http.routers.immoware-mail.rule: "Host(\`$MAIL_DOMAIN\`)"
+            traefik.http.routers.immoware-mail.entrypoints: "$TRAEFIK_ENTRYPOINT"
+            traefik.http.routers.immoware-mail.tls.certresolver: "$TRAEFIK_CERTRESOLVER"
+            traefik.http.routers.immoware-mail.service: "immoware-hub"
+            traefik.http.routers.immoware-mail.middlewares: "immoware-hub-hsts"
+            traefik.http.services.immoware-hub.loadbalancer.server.port: "8080"
+            traefik.http.middlewares.immoware-hub-hsts.headers.stsSeconds: "31536000"
+            traefik.http.middlewares.immoware-hub-hsts.headers.stsIncludeSubdomains: "true"
+
+EOF
+    fi
+}
+
+render_networks_override() {
+    cat <<EOF
+# Festes Subnetz, damit TRUSTED_PROXIES in .env ($DOCKER_SUBNET) zuverlaessig die Adresse des Containers web abdeckt.
+networks:
+    backend:
+        driver: bridge
+        ipam:
+            config:
+                - subnet: $DOCKER_SUBNET
+EOF
+    if [[ "$PROXY_MODE" == "traefik" ]]; then
+        cat <<EOF
+    # Bestehendes Netz des Traefik-Containers (nicht von diesem Projekt verwaltet, external).
+    $TRAEFIK_NETWORK:
+        external: true
+EOF
+    fi
+}
+
+if [[ "$PROXY_MODE" == "traefik" ]]; then
+    WEB_MODE_NOTE="Traefik-Modus: web veroeffentlicht keinen Host-Port, Traefik ($TRAEFIK_NETWORK) erreicht den Container-nginx auf Port 8080
+# und terminiert TLS fuer $HUB_DOMAIN und $MAIL_DOMAIN (Entrypoint $TRAEFIK_ENTRYPOINT, Resolver $TRAEFIK_CERTRESOLVER)."
+else
+    WEB_MODE_NOTE="nginx-Modus: compose.yaml bindet ueber WEB_BIND/WEB_PORT aus .env an 127.0.0.1:$WEB_PORT; beide Hostnamen laufen ueber
+# denselben Port, der Container-nginx unterscheidet per server_name."
+fi
+
+{
+cat <<EOF
+# Immoware Hub, serverspezifische Ergaenzung zu compose.yaml (erzeugt von deploy/scripts/server-bootstrap-docker.sh,
+# PROXY_MODE=$PROXY_MODE). Nicht im Repository. Keine Secrets: Passwoerter kommen aus .env.
+# $WEB_MODE_NOTE
 
 services:
     app:
         volumes:
             - $ETC_DIR/php-fpm-pool.conf:/usr/local/etc/php-fpm.d/zz-immoware.conf:ro
 
+EOF
+render_web_override
+cat <<EOF
     mariadb:
         command:
             - --character-set-server=utf8mb4
@@ -587,14 +750,34 @@ volumes:
             o: bind
             device: $DATA_DIR/imports
 
-# Festes Subnetz, damit TRUSTED_PROXIES in .env ($DOCKER_SUBNET) zuverlaessig die Adresse des Containers web abdeckt.
-networks:
-    backend:
-        driver: bridge
-        ipam:
-            config:
-                - subnet: $DOCKER_SUBNET
 EOF
+render_networks_override
+} | write_file "$APP_DIR/compose.override.yaml" 0640 "$DEPLOY_USER:$DEPLOY_USER"
+
+HUB_SITE="/etc/nginx/sites-available/$HUB_DOMAIN.conf"
+MAIL_SITE="/etc/nginx/sites-available/$MAIL_DOMAIN.conf"
+HUB_CERT="/etc/letsencrypt/live/$HUB_DOMAIN/fullchain.pem"
+MAIL_CERT="/etc/letsencrypt/live/$MAIL_DOMAIN/fullchain.pem"
+
+if [[ "$PROXY_MODE" == "traefik" ]]; then
+step "8. und 9. entfallen im Traefik-Modus (kein Host-nginx, kein certbot). DNS-Pruefung"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "[dry-run] wuerde DNS (A = $SERVER_IPV4) fuer $HUB_DOMAIN und $MAIL_DOMAIN pruefen; Zertifikate stellt Traefik ($TRAEFIK_CERTRESOLVER) beim ersten Aufruf aus."
+else
+    for domain in "$HUB_DOMAIN" "$MAIL_DOMAIN"; do
+        a_records="$(dig +short A "$domain" @1.1.1.1 | tr '\n' ' ')"
+        if [[ " $a_records" != *" $SERVER_IPV4 "* ]]; then
+            warn "DNS: A-Record von $domain ist '${a_records:-leer}', erwartet $SERVER_IPV4. Traefik kann ohne passenden A-Record kein Zertifikat (HTTP-Challenge) ausstellen."
+            NEXT_STEPS+=("DNS: A-Record $domain auf $SERVER_IPV4 setzen, danach stellt Traefik das Zertifikat automatisch aus (docker logs des Traefik-Containers pruefen).")
+        else
+            log "DNS ok: $domain -> $a_records"
+        fi
+    done
+fi
+if [[ -d /etc/nginx/sites-enabled || -d /etc/letsencrypt/live ]]; then
+    warn "Reste eines Host-nginx oder certbot gefunden (/etc/nginx bzw. /etc/letsencrypt). Im Traefik-Modus werden sie nicht angefasst; ein Host-nginx darf Port 80/443 nicht belegen."
+fi
+else
 
 # ---------------------------------------------------------------------------
 # 8. Host-nginx als TLS-Proxy (zunaechst HTTP-only mit ACME-Webroot)
@@ -699,11 +882,6 @@ server {
 EOF
 }
 
-HUB_SITE="/etc/nginx/sites-available/$HUB_DOMAIN.conf"
-MAIL_SITE="/etc/nginx/sites-available/$MAIL_DOMAIN.conf"
-HUB_CERT="/etc/letsencrypt/live/$HUB_DOMAIN/fullchain.pem"
-MAIL_CERT="/etc/letsencrypt/live/$MAIL_DOMAIN/fullchain.pem"
-
 install_tls_sites() {
     write_tls_site "$HUB_DOMAIN" "$HUB_SITE" 1 "$CLIENT_MAX_BODY_HUB"
     write_tls_site "$MAIL_DOMAIN" "$MAIL_SITE" 0 "$CLIENT_MAX_BODY_MAIL"
@@ -767,13 +945,18 @@ EOF
     log "TLS aktiv fuer $HUB_DOMAIN und $MAIL_DOMAIN."
 fi
 
+fi # PROXY_MODE
+
 # ---------------------------------------------------------------------------
-# 10. logrotate (Host-nginx) und Backup-Cron
+# 10. logrotate (Host-nginx nur im nginx-Modus) und Backup-Cron
 # ---------------------------------------------------------------------------
 step "10. logrotate fuer $LOG_DIR und Backup-Cron (taeglich 02:00)"
-# Container-Logs rotiert der Docker-Daemon (json-file 50m x 5). Hier nur Host-nginx und Backup-Log.
-write_file /etc/logrotate.d/immoware-hub 0644 root:root <<EOF
-# Immoware Hub, Host-nginx (TLS-Proxy) und Backup-Log
+# Container-Logs rotiert der Docker-Daemon (json-file 50m x 5). Hier nur Host-nginx (nginx-Modus) und Backup-Log.
+{
+cat <<EOF
+# Immoware Hub, $( [[ "$PROXY_MODE" == "nginx" ]] && echo "Host-nginx (TLS-Proxy) und " )Backup-Log (server-bootstrap-docker.sh, PROXY_MODE=$PROXY_MODE)
+EOF
+[[ "$PROXY_MODE" == "nginx" ]] && cat <<EOF
 $LOG_DIR/nginx/*.log {
     daily
     rotate 14
@@ -788,6 +971,8 @@ $LOG_DIR/nginx/*.log {
         [ -s /run/nginx.pid ] && kill -USR1 \$(cat /run/nginx.pid) || true
     endscript
 }
+EOF
+cat <<EOF
 $LOG_DIR/backup.log {
     weekly
     rotate 12
@@ -798,6 +983,7 @@ $LOG_DIR/backup.log {
     create 0640 root adm
 }
 EOF
+} | write_file /etc/logrotate.d/immoware-hub 0644 root:root
 if [[ ! -f "$ETC_DIR/backup.env" ]]; then
     write_file "$ETC_DIR/backup.env" 0600 root:root <<EOF
 # Immoware Hub, Umgebung fuer deploy/scripts/backup-docker.sh (docs/operations/02-backup-restore.md Abschnitt 3).
@@ -863,16 +1049,34 @@ else
     compose exec -T app php artisan hub:doctor --no-interaction | sed 's/^/    /' || warn "hub:doctor meldet Punkte, Ausgabe oben pruefen."
     compose ps | sed 's/^/    /' || true
 
-    # Health ueber den Host-nginx (bei --skip-tls per HTTP mit Host-Header, sonst per TLS von aussen)
+    # Health ueber den Proxy (nginx-Modus mit --skip-tls per HTTP mit Host-Header, sonst per TLS von aussen).
+    # Traefik-Modus: Traefik entdeckt den Container ueber Labels und fordert das Zertifikat erst beim ersten Aufruf an;
+    # das dauert bis zu einer Minute. TLS-Fehler (Standardzertifikat von Traefik) und 404/503 ohne Verbindung sind in
+    # dieser Phase normal, deshalb bis zu 12 Versuche im Abstand von 10 s.
     if [[ "$SKIP_TLS" -eq 1 ]]; then
         code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: $HUB_DOMAIN" "$HEALTH_URL" || true)"
+    elif [[ "$PROXY_MODE" == "traefik" ]]; then
+        log "Warte auf Routing und Zertifikat durch Traefik fuer $HUB_DOMAIN (bis 120 s)."
+        code=""
+        for attempt in $(seq 1 12); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_URL" 2>/dev/null || true)"
+            [[ "$code" == "200" || "$code" == "503" ]] && break
+            [[ "$attempt" -lt 12 ]] && sleep 10
+        done
     else
         code="$(curl -sS -o /dev/null -w '%{http_code}' "$HEALTH_URL" || true)"
     fi
     case "$code" in
         200) log "Health-Check $HEALTH_URL: 200" ;;
         503) warn "Health-Check $HEALTH_URL: 503. Erwartet, solange keine Immoware-Connection mit Sync-Stand existiert (Pruefpunkt immoware stale). Datenbank und Queue: /health/database, /health/queue." ;;
-        *) warn "Health-Check $HEALTH_URL: HTTP ${code:-keine Antwort}. Host-nginx und docker compose logs web pruefen." ;;
+        *)
+            if [[ "$PROXY_MODE" == "traefik" ]]; then
+                warn "Health-Check $HEALTH_URL: HTTP ${code:-keine Antwort oder TLS-Fehler} nach 120 s. Pruefen: docker logs des Traefik-Containers (Zertifikat, Router immoware-hub), 'docker network inspect $TRAEFIK_NETWORK' (Container immoware-hub-web enthalten?), DNS A-Record, docker compose logs web."
+                NEXT_STEPS+=("Health-Check wiederholen: curl -sSI https://$HUB_DOMAIN/health und curl -sSI https://$MAIL_DOMAIN/up")
+            else
+                warn "Health-Check $HEALTH_URL: HTTP ${code:-keine Antwort}. Host-nginx und docker compose logs web pruefen."
+            fi
+            ;;
     esac
 fi
 
@@ -887,8 +1091,19 @@ Docker:            $DAEMON_JSON (json-file 50m x 5, live-restore), Deploy-Nutzer
 Anwendung:         $APP_DIR ($BRANCH @ $GIT_SHA), compose.yaml + compose.override.yaml, Image immoware-hub:$GIT_SHA
 Daten:             $DATA_DIR/{mariadb,redis,storage,imports} (Bind-Volumes), MariaDB Buffer Pool $MARIADB_BUFFER_POOL, Redis $REDIS_MAXMEMORY
 php-fpm:           max_children=$PHP_FPM_MAX_CHILDREN ($ETC_DIR/php-fpm-pool.conf, Mount in app)
+$( if [[ "$PROXY_MODE" == "traefik" ]]; then
+cat <<EOT
+Netz:              Container web ohne Host-Port, zusaetzlich im Netz $TRAEFIK_NETWORK (${TRAEFIK_SUBNET:-Subnetz unbekannt}); MariaDB und Redis ohne Port-Publish
+TRUSTED_PROXIES:   $TRUSTED_PROXIES_VALUE (backend-Subnetz plus Traefik-Netz)
+Traefik:           Router immoware-hub (Host $HUB_DOMAIN) und immoware-mail (Host $MAIL_DOMAIN), Entrypoint $TRAEFIK_ENTRYPOINT, Resolver $TRAEFIK_CERTRESOLVER, Service immoware-hub -> Port 8080, HSTS-Middleware
+Host-nginx:        keiner (PROXY_MODE=traefik), kein certbot
+EOT
+else
+cat <<EOT
 Netz:              Container web nur 127.0.0.1:$WEB_PORT, MariaDB und Redis ohne Port-Publish, Subnetz $DOCKER_SUBNET = TRUSTED_PROXIES
 Host-nginx:        $HUB_SITE, $MAIL_SITE $( [[ "$SKIP_TLS" -eq 1 ]] && echo "(HTTP-only)" || echo "(TLS, Let's Encrypt, certbot.timer, Renewal-Hook reload)" )
+EOT
+fi )
 Backup:            /etc/cron.d/immoware-hub-backup taeglich 02:00 (root), deploy/scripts/backup-docker.sh, Umgebung $ETC_DIR/backup.env, Ziel $BACKUP_DIR
 Credentials:       $CREDENTIALS_FILE (0600, nur root). Werte stehen zusaetzlich in $APP_DIR/.env (0600, $DEPLOY_USER).
 
