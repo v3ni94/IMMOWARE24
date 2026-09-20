@@ -135,6 +135,7 @@ Erneuter Lauf: jederzeit möglich. Vorhandene Secrets, `.env`, Zertifikate und `
 | `.env.example` | `HUB_HASH_PEPPER` ergänzt: in production Pflicht (`hub:doctor` fail, sonst bricht `deploy.sh` ab), fehlte bislang |
 | `deploy/scripts/server-bootstrap-docker.sh`, `backup-docker.sh` | 20.09.2026: `bash -n` ohne Fehler, `--dry-run` vollständig (auch `--skip-tls --skip-deploy`, Abbruch ohne `ADMIN_EMAIL`), gerenderte `compose.override.yaml` mit `compose.yaml` per `docker compose config` gültig, TLS-Block gerendert. Kein echter Serverlauf, siehe Abschnitt 10.7 |
 | `compose.yaml`, `docker/nginx/*.conf` | 20.09.2026: MariaDB `--log-bin-trust-function-creators=1` ergänzt (Trigger-Migration unter Binlog), IPv6-Listener im Container entfernt, Kommentar zu `trustProxies` aktualisiert |
+| `compose.yaml`, `docker/nginx/*.conf` | 20.09.2026 (Deploy-Befund): nginx löste `app` nur beim Start auf; nach `docker compose up -d` mit neuem app-Container antwortete web dauerhaft mit 502 und wurde unhealthy. Behoben durch `resolver 127.0.0.11 valid=10s` und `fastcgi_pass $immoware_fpm` (Auflösung zur Laufzeit) sowie `depends_on.app.restart: true` für web. Sofortmaßnahme auf Bestandsservern: `docker compose restart web` |
 
 ## 9. Ubuntu 26.04 LTS
 
