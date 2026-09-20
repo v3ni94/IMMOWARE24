@@ -192,6 +192,9 @@ services:
             - --log-bin=mariadb-bin
             - --binlog-format=ROW
             - --expire-logs-days=7
+            # Integritaetstrigger (HUB_DB_TRIGGERS, Migration 2026_09_12_130000) legt der Anwendungsnutzer ohne SUPER an;
+            # mit aktivem Binlog verlangt MariaDB dafuer log_bin_trust_function_creators (wie Host-Variante).
+            - --log-bin-trust-function-creators=1
             - --max-connections=200
         environment:
             MARIADB_DATABASE: ${DB_DATABASE:-immoware_hub}

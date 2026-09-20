@@ -3,7 +3,7 @@
 Stand: 20.09.2026
 Gesellschaft: Hausverwaltung Müller GmbH (Betreiberin des Hubs)
 Domains: https://immoware.muellerhv.de (Hub), https://mail.muellerhv.de (Mail- und Vorgangsbearbeitung)
-Betriebsvariante: B, Host-Installation ohne Docker (`docs/operations/01-deployment.md` Abschnitt 4), weil ein dedizierter Server zur Verfügung steht.
+Betriebsvarianten: B, Host-Installation ohne Docker (`deploy/scripts/server-bootstrap.sh`, Abschnitte 1 bis 9, Zielstand Ubuntu 24.04) und A, Docker Compose auf Ubuntu 26.04 bei IONOS (`deploy/scripts/server-bootstrap-docker.sh`, Abschnitt 10). Für den neuen IONOS-Server gilt Abschnitt 10.
 
 ## 1. Ergebnis
 
@@ -133,6 +133,8 @@ Erneuter Lauf: jederzeit möglich. Vorhandene Secrets, `.env`, Zertifikate und `
 | `deploy/scripts/deploy.sh`, `backup.sh`, `restore-test.sh` | `bash -n` ohne Fehler; Pfade, Nutzer und Socket stimmen mit dem Bootstrap überein (`/var/www/immoware-hub`, `immoware`, `/run/php/php8.4-fpm-immoware.sock`, `/usr/bin/php`, `/usr/local/bin/composer`) |
 | `deploy/systemd/*` | Hub-Worker `@1`, `@2`, Mail-Worker `@high`, `@sync`, Scheduler; neu `immoware-hub.target`, weil die Units `PartOf=immoware-hub.target` tragen. `systemd-analyze verify` läuft im Skript auf dem Zielsystem |
 | `.env.example` | `HUB_HASH_PEPPER` ergänzt: in production Pflicht (`hub:doctor` fail, sonst bricht `deploy.sh` ab), fehlte bislang |
+| `deploy/scripts/server-bootstrap-docker.sh`, `backup-docker.sh` | 20.09.2026: `bash -n` ohne Fehler, `--dry-run` vollständig (auch `--skip-tls --skip-deploy`, Abbruch ohne `ADMIN_EMAIL`), gerenderte `compose.override.yaml` mit `compose.yaml` per `docker compose config` gültig, TLS-Block gerendert. Kein echter Serverlauf, siehe Abschnitt 10.7 |
+| `compose.yaml`, `docker/nginx/*.conf` | 20.09.2026: MariaDB `--log-bin-trust-function-creators=1` ergänzt (Trigger-Migration unter Binlog), IPv6-Listener im Container entfernt, Kommentar zu `trustProxies` aktualisiert |
 
 ## 9. Ubuntu 26.04 LTS
 
@@ -172,3 +174,104 @@ Stand der Recherche: 20.09.2026, ausschließlich über Web-Suchergebnisse (Snipp
 4. Redis: Bei Abbruch wegen fehlendem `redis-server` oder Valkey-Übergangspaket nicht manuell auf `valkey` ausweichen. Erst Freigabe, dann Skript anpassen (Paket, Konfigurationspfad `/etc/valkey`, Unit `valkey-server`, `redis-cli` über `valkey-redis-compat`) und auf einer Wegwerf-VM testen.
 5. Alle Schritte sind idempotent: nach Behebung Skript erneut starten. Empfehlung: Ubuntu 24.04 LTS bleibt bis zu einem abgenommenen Referenzlauf auf 26.04 der Zielstand für Produktion.
 
+
+## 10. Variante Docker auf Ubuntu 26.04 (IONOS)
+
+Stand: 20.09.2026. Zielsystem: IONOS Dedicated Server, Rechenzentrum Baden-Baden, Ubuntu 26.04 LTS, Image "Linux + Docker", root per SSH-Schlüssel, IPv4 82.165.98.36, keine IPv6, 32 Kerne, 256 GB RAM, 2 x 1,9 TB NVMe im RAID 1. Neuanfang ohne Datenübernahme. Skript: `deploy/scripts/server-bootstrap-docker.sh`. Backup: `deploy/scripts/backup-docker.sh`.
+
+### 10.1 Begründung
+
+Ubuntu 26.04 liefert PHP 8.5, MariaDB 11.8 und Valkey statt Redis (Abschnitt 9.1). Die Host-Variante endet dort nach Recherchestand im Abbruch oder in ungetesteten Drittquellen. Das Image aus dem `Dockerfile` bringt die getesteten Versionen mit (PHP 8.4 auf `php:8.4-fpm-alpine`, MariaDB 11.4, Redis 7, wie CI und `compose.yaml`), unabhängig von der Paketlage des Releases. Auf dem Host bleiben nur nginx als TLS-Proxy, certbot, ufw, fail2ban und die Docker Engine. Ein Release-Wechsel des Hosts ändert damit nichts an den Laufzeitversionen der Anwendung. Preis: Docker Engine und Compose-Plugin als zusätzliche Komponente, Rollback und Update laufen über Image-Tags statt über Release-Verzeichnisse.
+
+### 10.2 Vorbedingungen
+
+Wie Abschnitt 2 mit diesen Abweichungen:
+
+| Nr. | Prüfpunkt | Erledigt |
+|---|---|---|
+| V1d | Ubuntu 26.04 LTS mit IONOS-Image "Linux + Docker". Fehlen Docker Engine oder Compose-Plugin, installiert das Skript beide aus dem offiziellen Docker-Repository (Signaturschlüssel per festem Fingerabdruck geprüft, Suite aus `/etc/os-release`, bei fehlender Suite Abbruch mit Hinweis `DOCKER_CODENAME=noble`) | |
+| V2d | DNS: A-Records für `immoware.muellerhv.de` und `mail.muellerhv.de` auf 82.165.98.36. Kein AAAA-Record, weil der Server keine IPv6 hat; ein vorhandener AAAA-Record bricht den TLS-Schritt ab | |
+| V3d | `ADMIN_EMAIL` (Pflicht, sonst Abbruch), optional `SSH_PUBKEY`. Den bei IONOS hinterlegten root-Schlüssel erkennt das Skript und schaltet die Passwort-Anmeldung ab | |
+| V4d | Repository `https://github.com/v3ni94/IMMOWARE24`, Branch `claude/vibrant-lovelace-c624qw` (Variablen `REPO_URL`, `BRANCH`). Bei privatem Repository: SSH-URL setzen und den ausgegebenen Deploy Key (nur Lesen) hinterlegen, das Skript wartet in einer interaktiven Sitzung auf Enter | |
+| V5d | GPG-Schlüsselpaar für Backups, nur der öffentliche Teil kommt in den Schlüsselbund von root (Cron läuft als root wegen `docker compose exec`) | |
+
+### 10.3 Ablauf
+
+```
+git clone --depth 1 --branch claude/vibrant-lovelace-c624qw https://github.com/v3ni94/IMMOWARE24 /root/IMMOWARE24
+ADMIN_EMAIL="it@muellerhv.de" bash /root/IMMOWARE24/deploy/scripts/server-bootstrap-docker.sh --dry-run
+ADMIN_EMAIL="it@muellerhv.de" bash /root/IMMOWARE24/deploy/scripts/server-bootstrap-docker.sh
+```
+
+Variablen mit Vorbelegung: `HUB_DOMAIN`, `MAIL_DOMAIN`, `SERVER_IPV4` (82.165.98.36), `ADMIN_EMAIL` (leer, Pflicht), `REPO_URL`, `BRANCH`, `APP_DIR` (/opt/immoware-hub), `DEPLOY_USER` (immoware, Gruppe docker), `MARIADB_BUFFER_POOL` (16G), `REDIS_MAXMEMORY` (4gb), `PHP_FPM_MAX_CHILDREN` (2 x Kerne, bei 32 Kernen 64, memory_limit 512M je Kind), `DOCKER_SUBNET` (172.28.0.0/16, zugleich `TRUSTED_PROXIES`), `WEB_PORT` (8080), `SSH_PUBKEY`, `DOCKER_CODENAME`. Optionen: `--dry-run`, `--skip-tls`, `--skip-deploy`, `--help`.
+
+Schritte des Skripts:
+
+1. Wartet auf cloud-init, apt update und upgrade, Pakete (nginx, certbot, ufw, fail2ban, unattended-upgrades, dnsutils, jq, zstd), Zeitzone Europe/Berlin. unattended-upgrades ohne automatischen Neustart, Docker-Pakete auf der Sperrliste, damit ein Engine-Update nie ungeplant Container neu startet.
+2. ufw 22, 80, 443 (idempotent, auch wenn das IONOS-Image ufw bereits aktiviert hat), fail2ban für sshd, sshd-Drop-in `00-immoware-hardening.conf` vor `50-cloud-init.conf`. Passwort-Anmeldung aus, sobald ein root-Schlüssel vorliegt.
+3. Docker prüfen, sonst installieren. `/etc/docker/daemon.json` per jq ergänzt (json-file 50m x 5, live-restore), vorhandene Schlüssel des Images bleiben erhalten, Neustart nur bei Änderung.
+4. Nutzer `immoware` (Passwort gesperrt, Gruppe docker, keine sudo-Rechte), eigener ed25519-Schlüssel für `git clone`.
+5. Clone nach `/opt/immoware-hub` (oder Update auf `origin/BRANCH`), `data/`, `compose.override.yaml` und `.env` in `.git/info/exclude`. Datenverzeichnisse `/opt/immoware-hub/data/{mariadb,redis,storage,imports}` mit den Container-Eigentümern (999 für MariaDB und Redis, 82 für www-data im Alpine-Image), `/etc/immoware-hub`, `/var/log/immoware-hub/nginx`, `/var/backups/immoware-hub`, `/var/www/letsencrypt`.
+6. Zufallspasswörter (DB, DB-Root, Redis), `APP_KEY` und `HUB_HASH_PEPPER` einmalig, Ablage nur in `/root/immoware-hub-credentials.txt` (0600) und `/opt/immoware-hub/.env` (0600, immoware). `.env` aus `.env.example` mit production-Werten: `APP_URL`, `MAIL_APP_DOMAIN`, `LOG_CHANNEL=stderr`, `SESSION_SECURE_COOKIE=true`, `TRUSTED_PROXIES=172.28.0.0/16`, `REDIS_QUEUE_RETRY_AFTER=3600`, `HUB_DB_TRIGGERS=true`, alle Schreib- und Versandflags false, zusätzlich `DB_ROOT_PASSWORD`, `IMAGE_TAG` (Git-Kurzhash), `WEB_BIND=127.0.0.1`, `WEB_PORT`. Eine vorhandene `.env` bleibt unverändert, nur `IMAGE_TAG` wird fortgeschrieben.
+7. `compose.override.yaml`: Bind-Volumes unter `data/`, MariaDB mit `innodb_buffer_pool_size` aus der Variablen, `innodb_log_file_size 2G`, `log_bin_trust_function_creators` (Integritätstrigger unter Binlog), `max_connections 300`; Redis `maxmemory` aus der Variablen; festes Subnetz des Netzes `backend`; php-fpm Pool `/etc/immoware-hub/php-fpm-pool.conf` als Mount über `docker/php/www.conf`. Der Container `web` bindet über `WEB_BIND`/`WEB_PORT` nur `127.0.0.1:8080`; beide Hostnamen laufen über diesen einen Port, der Container-nginx unterscheidet per `server_name`. MariaDB und Redis veröffentlichen keine Ports (ufw-Docker-Konflikt: Docker umgeht ufw für veröffentlichte Ports, deshalb nur Loopback).
+8. Host-nginx: Upstream `127.0.0.1:8080`, Snippet mit `X-Forwarded-Proto`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Port`, `X-Real-IP`, HTTP-only-Blöcke für beide Domains mit ACME-Webroot, Logs unter `/var/log/immoware-hub/nginx`. `client_max_body_size` 34m (Hub, entspricht `post_max_size` in `docker/php/php.ini`) und 4m (Mail, wie Container-nginx).
+9. TLS: `dig` gegen 1.1.1.1, A-Record muss 82.165.98.36 sein, AAAA darf fehlen, ein falscher AAAA bricht ab. `certbot certonly --webroot` je Domain (ECDSA), Renewal-Hook `systemctl reload nginx`, dann TLS-Blöcke mit `proxy_pass`, HSTS, TLS 1.2 und 1.3, HTTP-Redirect.
+10. logrotate für Host-nginx und Backup-Log (Container-Logs rotiert der Docker-Daemon). `/etc/immoware-hub/backup.env` (root, 0600), Cron `/etc/cron.d/immoware-hub-backup` täglich 02:00 als root mit `backup-docker.sh`.
+11. `docker compose config -q`, `build --pull app`, `up -d --remove-orphans`, Warten auf healthy (app, web, mariadb, redis, bis 300 s), `php artisan migrate --force` im Container `app` (idempotent), Neustart der Worker und des Schedulers, `hub:doctor`, Health-Check `https://immoware.muellerhv.de/health` (503 ist erwartet, solange keine Immoware-Connection mit Sync-Stand existiert).
+
+### 10.4 Nacharbeiten und Abnahme
+
+Nacharbeiten wie Abschnitt 4, Befehle in der Compose-Form:
+
+```
+sudo -u immoware -H docker compose --project-directory /opt/immoware-hub exec app php artisan hub:user:create <email> --role=owner --name="<Name>"
+sudo -u immoware -H docker compose --project-directory /opt/immoware-hub exec app php artisan hub:doctor
+gpg --import backup-public.asc                                  # als root
+sed -i 's/^BACKUP_GPG_RECIPIENT=.*/BACKUP_GPG_RECIPIENT=<Key-ID>/' /etc/immoware-hub/backup.env
+bash -c '. /etc/immoware-hub/backup.env && /opt/immoware-hub/deploy/scripts/backup-docker.sh'
+```
+
+Abnahme wie Abschnitt 5 mit diesen Ersetzungen:
+
+| Nr. | Prüfung | Erwartung |
+|---|---|---|
+| A5d | `docker compose --project-directory /opt/immoware-hub exec app php artisan hub:doctor` | keine Zeile `fail` |
+| A6d | `docker compose --project-directory /opt/immoware-hub ps` | app, web, worker, mail-worker-high, mail-worker, scheduler, mariadb, redis `running`, Healthchecks `healthy` |
+| A10d | `ufw status verbose`, `ss -tlnp` und von außen `nmap -p 22,80,443,3306,6379,8080 82.165.98.36` | nur 22, 80, 443 offen; 8080 nur auf 127.0.0.1, 3306 und 6379 nicht gebunden |
+| A14 | Client-IP: nach einer Anmeldung `ip_address_hash` im Audit beziehungsweise Login-Throttle reagiert auf die echte Client-IP, nicht auf 172.28.x.x | `TRUSTED_PROXIES` greift |
+| A15 | `curl -sSI https://immoware.muellerhv.de/login` | `Strict-Transport-Security` (Host-nginx) und `X-Frame-Options` (Container-nginx) gesetzt, kein Redirect auf http |
+| A16 | `docker info \| grep -i "live restore"` und `cat /etc/docker/daemon.json` | live-restore aktiv, json-file 50m x 5 |
+
+### 10.5 Rollback
+
+- Fehlgeschlagener Skriptlauf: Abbruch beim ersten Fehler, Zwischenstand konsistent, alle Schritte idempotent. Ursache beheben, erneut starten.
+- Fehlgeschlagene Migration beim Erststart: `docker compose logs mariadb app`, Ursache beheben, `docker compose exec -T app php artisan migrate --force` erneut. Bei Neuanfang ohne Daten ist auch `docker compose down` und Leeren von `/opt/immoware-hub/data/mariadb` zulässig (nur vor der ersten produktiven Anmeldung, danach gilt das Backup).
+- Fehlgeschlagenes späteres Release: `IMAGE_TAG` in `/opt/immoware-hub/.env` auf den vorherigen Git-Kurzhash setzen (`docker image ls immoware-hub` zeigt die vorhandenen Tags), dann `docker compose up -d` und `docker compose exec app php artisan queue:restart`. Der Code im Checkout wird mit `git checkout <alter Hash>` angeglichen, damit `./public` und `docker/nginx` zum Image passen. Migrationen werden nicht zurückgerollt, dafür gilt das Backup vor dem Update. Voller Stopp: `docker compose down` (Daten bleiben unter `data/`).
+- Serverwechsel gescheitert: DNS auf den alten Server zurückstellen, dort Dienste wieder starten (Abschnitt 6).
+
+### 10.6 Update
+
+```
+cd /opt/immoware-hub
+bash -c '. /etc/immoware-hub/backup.env && /opt/immoware-hub/deploy/scripts/backup-docker.sh'   # als root, Backup vor jedem Update
+sudo -u immoware -H git pull --ff-only origin claude/vibrant-lovelace-c624qw
+TAG=$(sudo -u immoware -H git rev-parse --short HEAD)
+sudo -u immoware -H sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$TAG/" .env
+sudo -u immoware -H docker compose build --pull app
+sudo -u immoware -H docker compose up -d
+sudo -u immoware -H docker compose exec -T app php artisan migrate --force
+sudo -u immoware -H docker compose exec app php artisan queue:restart
+sudo -u immoware -H docker compose exec app php artisan hub:doctor
+curl -fsS https://immoware.muellerhv.de/health/database && curl -fsS https://mail.muellerhv.de/up
+```
+
+Alternativ das Bootstrap-Skript erneut ausführen: es aktualisiert den Checkout, setzt `IMAGE_TAG`, baut und startet neu und migriert; `.env`, Zertifikate und Passwörter bleiben unverändert. Ein Update der Docker Engine ist von unattended-upgrades ausgenommen und wird im Wartungsfenster manuell mit `apt-get install docker-ce docker-ce-cli containerd.io docker-compose-plugin` eingespielt (live-restore hält die Container während des Engine-Neustarts).
+
+### 10.7 Was ungetestet ist
+
+- Kein echter Lauf auf dem IONOS-Server. Geprüft wurden `bash -n`, `--dry-run` (mit und ohne `--skip-tls --skip-deploy`, Abbruch ohne `ADMIN_EMAIL`), die gerenderte `compose.override.yaml` zusammen mit `compose.yaml` per `docker compose config` und der gerenderte nginx-TLS-Block auf Platzhalter. `nginx -t`, certbot, der Image-Build und die Migration gegen MariaDB 11.4 im Container liefen nicht in der Entwicklungsumgebung.
+- Inhalt des IONOS-Images "Linux + Docker": ob Docker aus dem offiziellen Repository oder aus `docker.io` stammt, ob `daemon.json` vorbelegt ist und ob ufw aktiv ist, wird zur Laufzeit erkannt und protokolliert, nicht vorab geprüft. Existiert die Suite `resolute` auf download.docker.com noch nicht, bricht die Installation mit Hinweis ab.
+- Bind-Volumes mit `driver_opts` (type none, bind): Docker befüllt ein leeres benanntes Volume beim ersten Start aus dem Image. Sollte `storage/` leer bleiben, legt der Entrypoint die Framework-Verzeichnisse an; die Eigentümer 82:82 sind vorbereitet.
+- Dimensionierung 16G Buffer Pool, 4gb Redis, 64 php-fpm-Kinder bei 512M memory_limit ist eine Vorgabe für 256 GB RAM, nicht gemessen. Monitoring nach `03-monitoring.md` anschließen und nach zwei Wochen nachjustieren.
+- Backup über `docker compose exec mariadb` (`backup-docker.sh`) ist nicht gegen eine laufende Instanz getestet; Probelauf und Restore-Test (N4, N6) sind Pflicht vor Abnahme. `deploy/scripts/backup.sh` funktioniert im Compose-Betrieb nicht, weil `mariadb-dump` und der Port 3306 auf dem Host fehlen.
+- Die Host-Variante für Ubuntu 26.04 (Abschnitt 9) bleibt als Alternative dokumentiert und ist ebenso ungetestet.

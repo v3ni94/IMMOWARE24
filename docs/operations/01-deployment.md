@@ -109,7 +109,7 @@ Die zuvor vorhandenen Laravel-Standard-Workflows (dependabot-auto-merge, issues,
 
 | Punkt | Zuständig | Hinweis |
 |---|---|---|
-| `bootstrap/app.php` registriert kein `trustProxies`; hinter dem TLS-Proxy erkennt Laravel HTTPS nur, weil nginx im Container `HTTPS` anhand von `X-Forwarded-Proto` setzt | Entwicklung (Core) | Vor Go-live `$middleware->trustProxies(at: ...)` mit dem Proxy-Netz ergänzen |
+| `bootstrap/app.php` registriert `trustProxies` mit `TRUSTED_PROXIES` (erledigt). Im Compose-Betrieb ist das der Container `web`, also das Docker-Subnetz des Netzes `backend` (`server-bootstrap-docker.sh` setzt `172.28.0.0/16`), nicht 127.0.0.1 | Betrieb | `TRUSTED_PROXIES` je Betriebsvariante prüfen (`06-neuer-server.md` Abschnitt 10) |
 | Health-Check `queue` zählt die Tabelle `jobs`; bei `QUEUE_CONNECTION=redis` ist die Tiefe dort immer 0 | Entwicklung (Api, Sync) | Monitoring nutzt ergänzend `queue:monitor`, siehe `03-monitoring.md` Abschnitt 5 |
 | Erster Docker-Build und `nginx -t` ungetestet | Betrieb | Auf Staging vor Produktion |
 | Hoster, Serverdimensionierung, AV-Vertrag | Geschäftsführung | Freigabe erforderlich |
