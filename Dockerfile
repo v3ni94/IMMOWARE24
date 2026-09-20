@@ -18,7 +18,7 @@ WORKDIR /build
 COPY composer.json composer.lock ./
 RUN composer install \
         --no-dev --no-interaction --no-progress --no-scripts \
-        --prefer-dist --optimize-autoloader --classmap-authoritative
+        --prefer-dist --optimize-autoloader
 
 # ---------------------------------------------------------------------------
 # Stufe 2: Laufzeit
@@ -50,6 +50,15 @@ WORKDIR /var/www/html
 # Anwendungscode (Ausschluesse ueber .dockerignore) und Vendor aus Stufe 1
 COPY --chown=www-data:www-data . .
 COPY --chown=www-data:www-data --from=vendor /build/vendor ./vendor
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+
+# Autoloader erst hier mit dem Anwendungscode erzeugen. In Stufe 1 liegt nur composer.json vor;
+# ein dort erzeugter autoritativer Classmap kennt keine Klassen unter app/ (Fehlerbild 20.09.2026:
+# "Class App\\Modules\\Sync\\Schedule\\SyncSchedule not found").
+RUN set -eux; \
+    composer dump-autoload --no-dev --optimize --classmap-authoritative --no-interaction --no-scripts; \
+    rm -f /usr/local/bin/composer; \
+    chown -R www-data:www-data vendor/composer
 
 RUN set -eux; \
     chmod +x /usr/local/bin/immoware-entrypoint; \
