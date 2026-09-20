@@ -27,6 +27,7 @@ return [
         ['key' => 'connections', 'label' => 'Immoware-Verbindung', 'route' => 'admin.connections.index', 'permission' => 'connections.manage'],
         ['key' => 'capabilities', 'label' => 'Capabilities', 'route' => 'admin.capabilities.index', 'permission' => null],
         ['key' => 'sync', 'label' => 'Synchronisation', 'route' => 'admin.sync.index', 'permission' => null],
+        ['key' => 'learning', 'label' => 'Lernphase Immoware24', 'route' => 'admin.learning.index', 'permission' => 'learning.manage'],
         ['key' => 'mapping', 'label' => 'Mapping', 'route' => 'admin.mapping.index', 'permission' => null],
         ['key' => 'conflicts', 'label' => 'Konflikte', 'route' => 'admin.conflicts.index', 'permission' => null],
         ['key' => 'dlq', 'label' => 'Fehlerqueue', 'route' => 'admin.dlq.index', 'permission' => null],

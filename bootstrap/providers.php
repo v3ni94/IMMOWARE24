@@ -13,6 +13,7 @@ use App\Modules\Drive\DriveServiceProvider;
 use App\Modules\Estate\EstateServiceProvider;
 use App\Modules\Gmail\GmailServiceProvider;
 use App\Modules\Imports\ImportsServiceProvider;
+use App\Modules\Learning\LearningServiceProvider;
 use App\Modules\Lexware\LexwareServiceProvider;
 use App\Modules\Mail\MailServiceProvider;
 use App\Modules\MailIntegration\MailIntegrationServiceProvider;
@@ -34,6 +35,7 @@ return [
     EstateServiceProvider::class,
     SyncServiceProvider::class,
     ImportsServiceProvider::class,
+    LearningServiceProvider::class,
     ApiServiceProvider::class,
     WebhooksServiceProvider::class,
     McpServiceProvider::class,

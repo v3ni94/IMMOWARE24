@@ -84,8 +84,9 @@ return [
         'administrator' => [
             'connections.manage', 'sync.run', 'api_keys.manage', 'users.manage', 'audit.view', 'exports.run',
             'writes.request', 'imports.run', 'conflicts.resolve', 'webhooks.manage', 'records.view', 'payloads.view',
+            'learning.manage',
         ],
-        'developer' => ['sync.run', 'audit.view', 'exports.run', 'records.view', 'payloads.view'],
+        'developer' => ['sync.run', 'audit.view', 'exports.run', 'records.view', 'payloads.view', 'learning.manage'],
         'operator' => ['imports.run', 'conflicts.resolve', 'writes.request', 'exports.run', 'records.view'],
         'read_only' => ['audit.view', 'exports.run', 'records.view'],
         'api_client' => [],

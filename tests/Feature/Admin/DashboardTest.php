@@ -223,7 +223,7 @@ final class DashboardTest extends TestCase
         $response->assertDontSee('in Aufbau');
 
         $navigation = (array) config('hub.admin.navigation', []);
-        $this->assertCount(17, $navigation);
+        $this->assertCount(18, $navigation);
 
         foreach ($navigation as $entry) {
             $route = (string) $entry['route'];

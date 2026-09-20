@@ -12,6 +12,7 @@ use App\Modules\Admin\Http\Controllers\DiscoveryController;
 use App\Modules\Admin\Http\Controllers\DlqController;
 use App\Modules\Admin\Http\Controllers\ExportController;
 use App\Modules\Admin\Http\Controllers\ImportsController;
+use App\Modules\Admin\Http\Controllers\LearningController;
 use App\Modules\Admin\Http\Controllers\MappingController;
 use App\Modules\Admin\Http\Controllers\ProposalsController;
 use App\Modules\Admin\Http\Controllers\RecordsController;
@@ -125,6 +126,13 @@ Route::prefix('sync')->name('sync.')->group(function (): void {
     Route::post('/bootstrap', [SyncController::class, 'bootstrap'])->name('bootstrap');
     Route::get('/runs', [SyncController::class, 'runs'])->name('runs');
     Route::get('/runs/{id}', [SyncController::class, 'showRun'])->whereNumber('id')->name('runs.show');
+});
+
+Route::prefix('learning')->name('learning.')->group(function (): void {
+    Route::get('/', [LearningController::class, 'index'])->name('index');
+    Route::post('/', [LearningController::class, 'store'])->name('store');
+    Route::get('/{run}', [LearningController::class, 'show'])->whereNumber('run')->name('show');
+    Route::post('/{run}/decide', [LearningController::class, 'decide'])->whereNumber('run')->name('decide');
 });
 
 Route::prefix('mapping')->name('mapping.')->group(function (): void {
