@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Modules\MailUi\Http\Controllers\Admin\CalendarsController;
 use App\Modules\MailUi\Http\Controllers\Admin\ExportsController;
 use App\Modules\MailUi\Http\Controllers\Admin\MailboxesController;
+use App\Modules\MailUi\Http\Controllers\Admin\PlaybooksController;
 use App\Modules\MailUi\Http\Controllers\Admin\ResponsibilitiesController;
 use App\Modules\MailUi\Http\Controllers\Admin\SettingsController;
 use App\Modules\MailUi\Http\Controllers\Admin\SetupController;
@@ -95,6 +96,14 @@ Route::prefix('/admin')->name('admin.')->group(static function (): void {
 
     Route::get('/settings', [SettingsController::class, 'index'])->name('settings.index');
     Route::put('/settings/{key}', [SettingsController::class, 'update'])->where('key', '[a-z_]+')->name('settings.update');
+
+    // Prozessdatenbank (Modul Playbooks): Prozessvorlagen prüfen und aktivieren, offene Abgleiche entscheiden.
+    Route::get('/playbooks', [PlaybooksController::class, 'index'])->name('playbooks.index');
+    Route::get('/playbooks/matches', [PlaybooksController::class, 'matches'])->name('playbooks.matches');
+    Route::post('/playbooks/matches/{match}/decide', [PlaybooksController::class, 'decide'])->whereNumber('match')->name('playbooks.matches.decide');
+    Route::get('/playbooks/{playbook}', [PlaybooksController::class, 'show'])->whereNumber('playbook')->name('playbooks.show');
+    Route::post('/playbooks/{playbook}/activate', [PlaybooksController::class, 'activate'])->whereNumber('playbook')->name('playbooks.activate');
+    Route::post('/playbooks/{playbook}/retire', [PlaybooksController::class, 'retire'])->whereNumber('playbook')->name('playbooks.retire');
 
     // Auskunftsexport (DSGVO Art. 15): Anforderung asynchron, nur mit mail.export, Re-Auth, auditiert.
     Route::get('/exports', [ExportsController::class, 'index'])->name('exports.index');

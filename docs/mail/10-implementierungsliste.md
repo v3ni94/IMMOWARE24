@@ -59,6 +59,46 @@ Stand: 12.09.2026 nach Integrationslauf, Security-Review, Fix-Lauf, Abschlusslau
 | 21 | Tests | 20 Abnahmefälle plus Ergänzungen mit Http::fake; Mock ist kein Live-Test | tests/Feature/Mail*, tests/Unit/Mail* | 06 | implementiert, automatisiert getestet: 896 Tests, 888 bestanden, 8 übersprungen, 6.781 Assertions (Abschlusslauf 2 am 13.09.2026, davon 321 Tests der Mail-Module); Pint und PHPStan Level 5 ohne Befund; Status je Abnahmefall in 06; Mock ist kein Live-Test |
 | 22 | Dokumentation und Abnahme | README-Abschnitt "Mail-Modul", Testbericht, Freigaben der Geschäftsführung je Flag dokumentiert | README, `docs/mail/11-testbericht.md` | alle | implementiert (README Abschnitt Mail-Modul, docs/immoware/10-test-report.md Abschnitt 6, diese Liste); Freigaben der Geschäftsführung je Flag offen |
 
+## Nachtrag: KI-Anbieterauswahl, Lernphase Immoware24, Prozessdatenbank (21.09.2026)
+
+Auftrag der Geschäftsführung: KI-Einsatz mit OpenAI und Anthropic (OpenAI bevorzugt, Kostenentscheidung), eine
+wiederholbare Lernphase für die Immoware24-Struktur sowie eine Prozessdatenbank, die aus abgeschlossenen
+Vorgängen lernt und ähnliche neue Vorgänge schneller und mit bekanntem Vorgehen bearbeitet.
+
+- **Anbieterauswahl (Modul Ai)**: `AnthropicProvider` (Messages API, erzwungener Tool-Aufruf für strukturierte
+  Ausgaben) neben dem bestehenden `OpenAiProvider`; `SelectingAiProvider` wählt anhand `hub.ai.provider_priority`
+  (Standard `openai,anthropic`) und weicht bei Nichteinrichtung oder Nichterreichbarkeit automatisch aus.
+  Kostenschätzung jetzt je Anbieter. `mail_ai_runs.provider` zeigt den tatsächlich antwortenden Anbieter.
+  Implementiert, getestet (Http::fake, kein Live-Test möglich).
+- **Lernphase Immoware24 (neues Modul Learning, kein Bezug zu Vorgängen)**: erkundet lesend über die belegten
+  Zugangswege (WebDAV, CardDAV, CalDAV, bereits erfasste Dateiexporte) die aktuelle Struktur, tiefer und breiter
+  als der laufende Sync, vergleicht mit dem vorigen Lauf und kann eine KI-Auswertung anstoßen
+  (`learning_document_rules`, `learning_field_mapping`, `learning_contact_mapping`, `learning_calendar_mapping`
+  als neue Aufgaben des Moduls Ai, Ergebnis stets ein Vorschlag in `mail_ai_suggestions`). Schreibt nie nach
+  Immoware24 und ändert keine Konfigurationsdatei automatisch; eine Übernahme bleibt ein manueller Schritt.
+  Konsole `hub:immoware:learn`, Admin-Seite (Recht `learning.manage`, Tabelle `learning_runs`). Implementiert,
+  30 Tests.
+- **Prozessdatenbank (neues Modul Playbooks)**: `mail_playbooks` fasst zusammen, wie Vorgänge einer Kategorie
+  bisher bearbeitet wurden (Schrittfolge aus den erlaubten Aktionsarten, `hub.ai.allowed_action_types`).
+  `PlaybookMatchService` vergleicht einen neuen Vorgang zuerst regelbasiert und kostenlos mit den aktiven
+  Vorlagen (Stichwortähnlichkeit von Titel und Kategorie); nur bei unklarem, aber nicht aussichtslosem Ergebnis
+  (`hub.playbooks.match.low_threshold` bis `high_threshold`) wird die KI zur Einschätzung und für Abweichungen
+  hinzugezogen (neue Aufgaben `playbook_match`, `playbook_draft_steps`). Jeder Abgleich wird protokolliert
+  (`mail_playbook_matches`). `PlaybookLearningService` schlägt beim Abschluss eines Vorgangs ohne passende oder
+  abgelehnte Vorlage eine neue Prozessvorlage aus dem tatsächlichen Verlauf vor (Aufgaben, Statuswechsel der
+  Bearbeitungsdimension) und bei vermerkten Abweichungen eine verbesserte Fassung der genutzten Vorlage. Jeder
+  Vorschlag bleibt ein Entwurf, bis eine Person ihn prüft und aktiviert (`PlaybookService`, nur eine aktive
+  Vorlage je Kategorie und Organisation). Ereignisse `CaseOpened` (Abgleich) und `CaseStatusChanged`
+  (Dimension processing, Zielstatus closed; Lernen) lösen je einen Job auf der Queue `mail-ai` aus, beide hinter
+  `hub.playbooks.flags.enabled` beziehungsweise zusätzlich `.flags.ai`. Konsole `hub:playbooks:relearn` baut die
+  Datenbank rückwirkend aus bereits abgeschlossenen Vorgängen auf. Verwaltung unter mail.muellerhv.de,
+  Administration, Reiter Prozessdatenbank (Recht `mail.admin`, wie die übrigen Administrationsbereiche).
+  Implementiert, 27 Tests.
+- Offen: Die Prozessdatenbank ist noch nicht in die Vorgangsansicht selbst eingeblendet (kein Hinweis "passende
+  Vorlage gefunden" direkt im Vorgang); die Entscheidung über einen Abgleich erfolgt bislang ausschließlich über
+  die eigene Seite Offene Abgleiche. Eine engere Verzahnung mit `CaseController`/der Vorgangsansicht ist ein
+  sinnvoller nächster Schritt, sobald gewünscht.
+
 ## Verdrahtung (Modul MailIntegration, 12.09.2026)
 
 `app/Modules/MailIntegration` bindet die vier Verträge der Oberfläche (`CaseCommandInterface`, `DraftWorkflowInterface`, `ApprovalWorkflowInterface`, `CandidateResolverInterface`) an CaseService, DelegationService, TaskService, LockService, DraftService, SendService, ApprovalService, ActionPolicy und AssignmentService. Ereignisketten: Gmail `MessageImported` erzeugt Vorgang mit regelbasierten Teilanliegen (`CaseIntakeService`, config `hub.cases.intake`) oder schreibt bestehende Vorgänge des Threads fort; Gmail `GmailReplyDetected` erledigt den Kommunikationsbedarf (Modul Cases); Gmail `SendVerificationCompleted` setzt gesendet erst nach verifiziertem Abgleich; Cases `CaseOpened` startet `AiClassificationJob` auf mail-ai nur bei `MAIL_AI_ENABLED`; die P0-Regel löst die EmergencyQueue (mail-high) im CaseService aus; Actions `ExecutionVerified` schreibt Aufgabenstatus, Geschäftsstatus und einen Kommunikationsvorschlag (`ReplyProposalService`, lokaler Entwurf nur mit verifizierten Änderungen). Zeitpläne zentral in `routes/console.php`. Neue Oberflächenrouten: Aufgabe manuell bestätigen, Identitätsprüfung dokumentieren, offene Schritte erneut einplanen (alle mit 2fa.fresh).

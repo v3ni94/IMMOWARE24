@@ -19,6 +19,7 @@ use App\Modules\Mail\MailServiceProvider;
 use App\Modules\MailIntegration\MailIntegrationServiceProvider;
 use App\Modules\MailUi\MailUiServiceProvider;
 use App\Modules\Mcp\McpServiceProvider;
+use App\Modules\Playbooks\PlaybooksServiceProvider;
 use App\Modules\Security\SecurityServiceProvider;
 use App\Modules\Sla\SlaServiceProvider;
 use App\Modules\Sync\SyncServiceProvider;
@@ -50,6 +51,7 @@ return [
     AiServiceProvider::class,
     DriveServiceProvider::class,
     MailUiServiceProvider::class,
+    PlaybooksServiceProvider::class,
     // Verdrahtung der Mail-Module untereinander und mit der Oberfläche, immer als letzter Provider.
     MailIntegrationServiceProvider::class,
 ];
