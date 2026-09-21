@@ -153,6 +153,19 @@ Begriffe:
 | Delete Rule | Kopien folgen dem Soft Delete des Dokuments; Blobs mit personenbezogenem Inhalt werden nach DSGVO-Frist gelöscht, Hash bleibt |
 | Sync Frequency | ereignisgesteuert (bei erkannter Änderung), kein eigener Lauf |
 
+### Dokumente in Paperless-ngx (Ablage außerhalb von Immoware24, Änderungsvermerk 21.09.2026)
+
+| Aspekt | Regel |
+|---|---|
+| Source of Truth | Paperless-ngx (eigener Betrieb, nicht Immoware24). Kein Bezug zum DMS-Ordner Posteingang, kein Immoware24-Schreibpfad |
+| Read Direction | Paperless -> Hub, lesend über die Paperless-REST-API (Suche, Metadaten, Textauszug aus bereits vorhandener OCR) |
+| Write Direction | Hub -> Paperless, ausschließlich als neues Dokument (create-only, kein Überschreiben, kein Löschen), hinter Flag `paperless_write` (Standard aus) |
+| Conflict Rule | entfällt, Paperless ist eigenständig, kein Abgleich mit Immoware24-Dokumenten |
+| Delete Rule | keine Löschung durch den Hub |
+| Sync Frequency | ereignisgesteuert bei Suche oder Upload, kein eigener Hintergrundlauf |
+
+Objektzuordnung über ein in Paperless bereits gepflegtes Zusatzfeld (Objektnummer je Dokument), der Hub legt dieses Feld nicht an. Bekannte Lücke: Die Verknüpfung eines Paperless-Dokuments mit einem konkreten Vorgang (Fallansicht) ist noch nicht gebaut, bisher nur Suche und Objektzuordnung. Google Drive bleibt unverändert als zweite, rein lesende Dokumentenquelle bestehen (Ordnerzuordnung je Objekt, in Drive bereits real angelegt).
+
 ## C. Vorgänge
 
 ### cases (Vorgänge im Hub)

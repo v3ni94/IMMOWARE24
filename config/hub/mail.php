@@ -36,6 +36,7 @@ return [
         'gmail_send' => (bool) env('MAIL_GMAIL_SEND_ENABLED', false),
         'immoware_write' => (bool) env('MAIL_IMMOWARE_WRITE_ENABLED', false),
         'lexware_write' => (bool) env('MAIL_LEXWARE_WRITE_ENABLED', false),
+        'paperless_write' => (bool) env('MAIL_PAPERLESS_WRITE_ENABLED', false),
     ],
 
     // Flags mit Außenwirkung, die in Staging und außerhalb der Produktionsdomain nie true sein dürfen.
@@ -43,6 +44,7 @@ return [
         'gmail_send' => 'MAIL_GMAIL_SEND_ENABLED',
         'immoware_write' => 'MAIL_IMMOWARE_WRITE_ENABLED',
         'lexware_write' => 'MAIL_LEXWARE_WRITE_ENABLED',
+        'paperless_write' => 'MAIL_PAPERLESS_WRITE_ENABLED',
     ],
 
     /*
@@ -55,6 +57,7 @@ return [
         'ai' => env('MAIL_AI_PROVIDER'),
         'lexware' => env('MAIL_LEXWARE_PROVIDER'),
         'drive' => env('MAIL_DRIVE_PROVIDER'),
+        'paperless' => env('MAIL_PAPERLESS_PROVIDER'),
     ],
 
     /*

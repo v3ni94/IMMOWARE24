@@ -24,6 +24,8 @@ final class MailFeatureFlags
 
     public const string LEXWARE_WRITE = 'lexware_write';
 
+    public const string PAPERLESS_WRITE = 'paperless_write';
+
     public function __construct(private readonly Repository $config) {}
 
     public function enabled(string $flag): bool
@@ -59,6 +61,11 @@ final class MailFeatureFlags
     public function lexwareWriteEnabled(): bool
     {
         return $this->enabled(self::LEXWARE_WRITE);
+    }
+
+    public function paperlessWriteEnabled(): bool
+    {
+        return $this->enabled(self::PAPERLESS_WRITE);
     }
 
     /**

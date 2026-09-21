@@ -6,6 +6,7 @@ namespace App\Modules\MailUi\Services;
 
 use App\Core\Contracts\Mail\AiProviderInterface;
 use App\Core\Contracts\Mail\DocumentSourceInterface;
+use App\Core\Contracts\Mail\PaperlessSourceInterface;
 use App\Modules\Connector\Models\ImmowareConnection;
 use App\Modules\Drive\Models\DriveConnection;
 use App\Modules\Gmail\Models\MailSyncState;
@@ -110,7 +111,7 @@ final class IntegrationOverview
             ];
         }
 
-        foreach (['lexware' => 'Lexware Office', 'drive' => 'Google Drive', 'ai' => 'KI-Vorschläge (OpenAI)'] as $key => $name) {
+        foreach (['lexware' => 'Lexware Office', 'drive' => 'Google Drive', 'paperless' => 'Paperless-ngx', 'ai' => 'KI-Vorschläge (OpenAI)'] as $key => $name) {
             $hasRows = array_filter($rows, static fn (array $row): bool => $row['integration'] === $key) !== [];
 
             if ($key === 'ai' || ! $hasRows) {
@@ -165,6 +166,7 @@ final class IntegrationOverview
         $configured = match ($integration) {
             'lexware' => $this->lexware->status($organizationId) === LexwareConnectionResolver::STATUS_CONFIGURED,
             'drive' => $this->boundIsConfigured(DocumentSourceInterface::class),
+            'paperless' => $this->boundIsConfigured(PaperlessSourceInterface::class),
             'ai' => $this->boundIsConfigured(AiProviderInterface::class),
             default => false,
         };
