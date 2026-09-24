@@ -14,6 +14,8 @@ x-app-base: &app-base
         dockerfile: Dockerfile
     image: immoware-hub:${IMAGE_TAG:-local}
     restart: unless-stopped
+    # tini als PID 1 raeumt beendete Kindprozesse ab (schedule:work und Queue-Worker hinterliessen sonst Zombies)
+    init: true
     env_file:
         - .env
     environment:
