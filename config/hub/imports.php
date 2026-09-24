@@ -10,7 +10,8 @@ declare(strict_types=1);
 return [
 
     // Drop-Ordner für manuell erzeugte Exporte (absoluter Pfad, lokale Disk).
-    'drop_path' => env('HUB_IMPORT_DROP_PATH', storage_path('app/private/imports/drop')),
+    // Leerer Wert in der .env gilt als nicht gesetzt (env() liefert sonst '' statt des Standards).
+    'drop_path' => env('HUB_IMPORT_DROP_PATH') ?: storage_path('app/private/imports/drop'),
 
     // Ohne Metadaten-Sidecar <datei>.json landet die Datei in Quarantäne.
     'require_metadata' => (bool) env('HUB_IMPORT_REQUIRE_METADATA', true),
