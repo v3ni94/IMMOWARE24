@@ -104,7 +104,7 @@ Datenmigration: keine, das Mailprogramm ist nicht produktiv im Einsatz. Übernom
 1. Sollen Vorgänge und CRM-Tickets ein gemeinsames Objekt sein? Empfehlung: ja, der Mail-Vorgang ist ein Ticket mit Mail-Bezug.
 2. Erstes Postfach: `info@muellerhv.de` (entschieden 25.09.2026). Offen: welche Gesellschaften das Modul außerdem nutzen.
 3. Gmail bleibt der Mailanbieter, oder ist ein Wechsel geplant?
-4. Wer darf Aktionen mit Außenwirkung freigeben (Vier-Augen-Prinzip)?
+4. Freigabe (entschieden 25.09.2026): eigene Berechtigung „Mail freigeben“ (`mail.approve`), im CRM je Benutzer über Rollen vergeben. Vier-Augen-Prinzip: Wer einen Entwurf oder Aktionsplan erstellt, kann ihn nicht selbst freigeben.
 5. Soll `mail.muellerhv.de` nach der Umstellung auf `mail.mueller-holding.ag` weiterleiten?
 
 ## Zusammenfassung
