@@ -75,9 +75,10 @@ final class PaperlessProvider implements PaperlessSourceInterface
             return ['documents' => [], 'count' => 0, 'next' => false];
         }
 
-        // Filterparameter für Zusatzfelder sind je Paperless-Version unterschiedlich benannt (custom_field_query
-        // oder custom_fields__icontains), am eigenen Server zu prüfen. Hier der dokumentierte Query-Ausdruck.
-        $conditions = [[(int) $fieldId, 'exact', $objectNumber]];
+        // Feldwerte in Paperless: "523" oder "602, Bedburg, Am Fließ 6" (Objektnummer, Ort, Straße). Deshalb exakt ODER
+        // mit "<Nummer>, " beginnend; ein reines istartswith auf die Nummer träfe auch 5230.
+        $objectCondition = ['OR', [[(int) $fieldId, 'exact', $objectNumber], [(int) $fieldId, 'istartswith', $objectNumber.', ']]];
+        $conditions = [$objectCondition];
         $companyId = $this->companyOptionId($options['company'] ?? null);
 
         if ($companyId !== null) {
@@ -149,7 +150,7 @@ final class PaperlessProvider implements PaperlessSourceInterface
     }
 
     /**
-     * @param  array<int, array{0: int, 1: string, 2: string}>  $conditions
+     * @param  array<int, array<int, mixed>>  $conditions
      */
     private function encodeCustomFieldQuery(array $conditions): string
     {

@@ -119,7 +119,7 @@ final class PaperlessProviderTest extends TestCase
             $decoded = json_decode((string) $query['custom_field_query'], true);
 
             return $decoded[0] === 'AND'
-                && $decoded[1][0] === [7, 'exact', 'OBJ-0001']
+                && $decoded[1][0] === ['OR', [[7, 'exact', 'OBJ-0001'], [7, 'istartswith', 'OBJ-0001, ']]]
                 && $decoded[1][1] === [5, 'exact', '4WSfEGQWkgqHgXaO'];
         });
     }
