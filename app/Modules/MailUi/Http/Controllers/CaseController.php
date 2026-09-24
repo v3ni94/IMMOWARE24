@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Modules\MailUi\Http\Controllers;
 
+use App\Core\Contracts\Mail\PaperlessSourceInterface;
 use App\Modules\Actions\Exceptions\ActionPolicyException;
 use App\Modules\Actions\Models\ActionPlan;
 use App\Modules\Actions\Services\ManualTaskService;
@@ -16,6 +17,7 @@ use App\Modules\Drive\Models\DocumentReference;
 use App\Modules\Gmail\Models\MailAttachment;
 use App\Modules\Gmail\Models\MailDraft;
 use App\Modules\Gmail\Models\MailMessage;
+use App\Modules\Mail\Exceptions\MailRemoteException;
 use App\Modules\Mail\Models\MailboxAlias;
 use App\Modules\Mail\Models\TeamMember;
 use App\Modules\Mail\Services\MailFeatureFlags;
@@ -37,6 +39,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Vorgangsdetail dreispaltig: links Originalthread (sanitisiertes HTML aus body_html_sanitized, Anhänge mit Prüfstatus,
@@ -50,6 +53,7 @@ final class CaseController extends MailUiController
         private readonly CaseCommandInterface $commands,
         private readonly CandidateResolverInterface $candidates,
         private readonly MailFeatureFlags $flags,
+        private readonly PaperlessSourceInterface $paperless,
     ) {}
 
     public function show(Request $request, MailCase $case): View
@@ -117,6 +121,7 @@ final class CaseController extends MailUiController
             'activeDraft' => $activeDraft,
             'clocks' => $clocks,
             'documents' => $documents,
+            'paperless' => $this->paperlessDocuments($case),
             'lock' => $lock,
             'lockedByOther' => $lock !== null && (int) $lock->getAttribute('user_id') !== (int) $user->getKey(),
             'candidates' => $this->candidates->candidates($case),
@@ -266,6 +271,36 @@ final class CaseController extends MailUiController
         $this->audit('case.candidate_confirmed', $case, [], ['type' => $type, 'local_id' => $localId]);
 
         return $this->redirectWithResult('mail.cases.show', $result, ['case' => $case->getKey()]);
+    }
+
+    /**
+     * Paperless-Dokumente zum Objekt des Vorgangs, nur lesend. Ein Paperless-Ausfall darf die Fallansicht nicht blockieren.
+     *
+     * @return array{state: string, documents: array<int, array<string, mixed>>, count: int, base_url: string}
+     */
+    private function paperlessDocuments(MailCase $case): array
+    {
+        $result = ['state' => 'not_configured', 'documents' => [], 'count' => 0, 'base_url' => rtrim((string) config('hub.paperless.base_url', ''), '/')];
+
+        if (! $this->paperless->isConfigured()) {
+            return $result;
+        }
+
+        $objectNumber = trim((string) $case->property?->getAttribute('immoware_object_number'));
+
+        if ($objectNumber === '') {
+            return ['state' => 'no_property'] + $result;
+        }
+
+        try {
+            $list = $this->paperless->forProperty($objectNumber, ['page_size' => 10]);
+        } catch (MailRemoteException $e) {
+            Log::warning('Paperless in Fallansicht nicht abrufbar.', ['case_id' => $case->getKey(), 'http_status' => $e->httpStatus]);
+
+            return ['state' => 'error'] + $result;
+        }
+
+        return ['state' => 'ok', 'documents' => $list['documents'], 'count' => $list['count']] + $result;
     }
 
     /**

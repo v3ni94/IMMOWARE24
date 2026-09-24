@@ -306,6 +306,28 @@
                 @endforeach
             </section>
 
+            @if ($paperless['state'] !== 'not_configured')
+                <section class="mail-section">
+                    <h3>Paperless zum Objekt</h3>
+                    @if ($paperless['state'] === 'no_property')
+                        <p class="hub-muted">Kein Objekt zugeordnet, daher keine Paperless-Suche.</p>
+                    @elseif ($paperless['state'] === 'error')
+                        <p class="hub-muted">Paperless derzeit nicht erreichbar.</p>
+                    @else
+                        @forelse ($paperless['documents'] as $doc)
+                            <p><span class="hub-badge">{{ $doc['company'] ?? 'Paperless' }}</span>
+                                <a href="{{ $paperless['base_url'] }}/documents/{{ (int) $doc['id'] }}/details" rel="noopener noreferrer" target="_blank">{{ $doc['title'] }}</a>
+                                @if ($doc['created'])<small class="hub-muted">{{ GermanDate::format($doc['created']) }}</small>@endif</p>
+                        @empty
+                            <p class="hub-muted">Keine Dokumente zu diesem Objekt in Paperless.</p>
+                        @endforelse
+                        @if ($paperless['count'] > count($paperless['documents']))
+                            <p class="hub-small hub-muted">{{ count($paperless['documents']) }} von {{ $paperless['count'] }} angezeigt.</p>
+                        @endif
+                    @endif
+                </section>
+            @endif
+
             <section class="mail-section">
                 <h3>Historie</h3>
                 <ul class="mail-history">

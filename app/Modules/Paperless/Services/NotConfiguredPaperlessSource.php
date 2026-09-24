@@ -12,6 +12,11 @@ use App\Modules\Mail\Exceptions\MailIntegrationNotConfiguredException;
  */
 final class NotConfiguredPaperlessSource implements PaperlessSourceInterface
 {
+    public function isConfigured(): bool
+    {
+        return false;
+    }
+
     public function search(string $query, array $options = []): array
     {
         throw MailIntegrationNotConfiguredException::for('paperless');

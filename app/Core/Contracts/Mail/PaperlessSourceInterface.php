@@ -11,6 +11,8 @@ namespace App\Core\Contracts\Mail;
  */
 interface PaperlessSourceInterface
 {
+    public function isConfigured(): bool;
+
     /**
      * @param  array<string, mixed>  $options  z. B. ['page' => 1, 'page_size' => 25, 'company' => 'HVM']
      * @return array{documents: array<int, array{id: int, title: string, correspondent: ?string, document_type: ?string, created: ?string, tags: array<int, string>, object_number: ?string, company: ?string}>, count: int, next: bool}
