@@ -102,7 +102,7 @@ Datenmigration: keine, das Mailprogramm ist nicht produktiv im Einsatz. Übernom
 ## 8. Offene Fragen an den Betreiber
 
 1. Sollen Vorgänge und CRM-Tickets ein gemeinsames Objekt sein? Empfehlung: ja, der Mail-Vorgang ist ein Ticket mit Mail-Bezug.
-2. Welche Postfächer kommen zuerst (zum Beispiel `info@muellerhv.de`), und welche Gesellschaften nutzen das Modul?
+2. Erstes Postfach: `info@muellerhv.de` (entschieden 25.09.2026). Offen: welche Gesellschaften das Modul außerdem nutzen.
 3. Gmail bleibt der Mailanbieter, oder ist ein Wechsel geplant?
 4. Wer darf Aktionen mit Außenwirkung freigeben (Vier-Augen-Prinzip)?
 5. Soll `mail.muellerhv.de` nach der Umstellung auf `mail.mueller-holding.ag` weiterleiten?
