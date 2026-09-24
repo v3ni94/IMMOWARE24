@@ -101,7 +101,7 @@ Datenmigration: keine, das Mailprogramm ist nicht produktiv im Einsatz. Übernom
 
 ## 8. Offene Fragen an den Betreiber
 
-1. Sollen Vorgänge und CRM-Tickets ein gemeinsames Objekt sein? Empfehlung: ja, der Mail-Vorgang ist ein Ticket mit Mail-Bezug.
+1. Vorgang und Ticket (entschieden 25.09.2026): ein gemeinsames Objekt, das CRM-Ticket mit Verknüpfung zu Kontakten, Objekten, Einheiten und Verträgen. Jede eingehende Mail erzeugt ein Ticket, außer sie ist eine Antwort im bestehenden Verlauf oder betrifft erkennbar dasselbe Thema eines offenen Tickets; dann wird sie dort angehängt. Zusammenführen: Zwei Tickets zum selben Thema lassen sich nachträglich zusammenführen. Dabei werden beide geschlossen (mit Verweis auf das neue), ein neues Ticket mit neuer Nummer entsteht und erhält alle Inhalte (Mails, Notizen, Aufgaben, Dokumente, Verknüpfungen, Historie).
 2. Erstes Postfach: `info@muellerhv.de` (entschieden 25.09.2026). Offen: welche Gesellschaften das Modul außerdem nutzen.
 3. Gmail bleibt der Mailanbieter, oder ist ein Wechsel geplant?
 4. Freigabe (entschieden 25.09.2026): eigene Berechtigung „Mail freigeben“ (`mail.approve`), im CRM je Benutzer über Rollen vergeben. Vier-Augen-Prinzip: Wer einen Entwurf oder Aktionsplan erstellt, kann ihn nicht selbst freigeben.
