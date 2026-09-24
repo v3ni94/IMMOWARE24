@@ -28,9 +28,12 @@ return [
     'page_size' => 25,
 
     /*
-     * Zusatzfeld (Custom Field) in Paperless, das die Immoware-Objektnummer je Dokument trägt. Die Feld-ID ist in
-     * Paperless server- und installationsspezifisch (/api/custom_fields/) und muss dort bereits gepflegt sein, der
-     * Hub legt keine Zusatzfelder an. Ohne gesetzte ID liefert forProperty() eine leere Liste statt zu raten.
+     * Zusatzfeld (Custom Field) in Paperless, das die Objektzuordnung je Dokument trägt. Die Feld-ID ist in Paperless
+     * server- und installationsspezifisch (/api/custom_fields/) und muss dort bereits gepflegt sein, der Hub legt
+     * keine Zusatzfelder an. Ohne gesetzte ID liefert forProperty() eine leere Liste statt zu raten.
+     * Am eigenen Server (dms.muellerhv.de, Stand 24.09.2026) ist dies das Feld "MHV Objekt" (Feld-ID 7, data_type
+     * string, bereits über 21.000 Dokumente zugeordnet). Das gleichnamig wirkende Feld "Objekt-Nr" (Feld-ID 1,
+     * data_type integer) ist ungenutzt (0 Dokumente) und ist NICHT das richtige Feld.
      */
     'object_number_field_id' => env('MAIL_PAPERLESS_OBJECT_NUMBER_FIELD_ID'),
 
