@@ -139,6 +139,11 @@ find "$BACKUP_DIR/decisions" -type f -mtime +"$BACKUP_DECISION_RETENTION_DAYS" -
 # 6. Pruefung
 # ---------------------------------------------------------------------------
 [[ -s "$FULL" ]] || fail "Backupdatei leer: $FULL"
-gpg --batch --list-packets "$FULL" >/dev/null 2>&1 || fail "GPG-Paket nicht lesbar: $FULL"
+# gpg --list-packets versucht bei Public-Key-Verschluesselung zusaetzlich den Session-Key zu entschluesseln und liefert
+# ohne privaten Schluessel (bewusst nicht auf dem Server) einen Fehler-Exitcode, obwohl die Datei korrekt ist. Deshalb
+# wird der Exitcode von gpg hier bewusst ignoriert (set -o pipefail wuerde ihn sonst durchreichen) und nur die
+# Paketstruktur in der Ausgabe geprueft.
+PACKET_LISTING="$(gpg --batch --list-packets "$FULL" 2>/dev/null || true)"
+grep -q '^:pubkey enc packet:' <<< "$PACKET_LISTING" || fail "GPG-Paket nicht lesbar: $FULL"
 log "Backup abgeschlossen: $(du -h "$FULL" | cut -f1) $FULL"
 log "Erinnerung: Wiederherstellungstest quartalsweise, Protokoll in docs/operations/02-backup-restore.md Abschnitt 6."
