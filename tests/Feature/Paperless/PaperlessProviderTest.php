@@ -30,6 +30,11 @@ final class PaperlessProviderTest extends TestCase
         config()->set('hub.paperless.api_token', 'geheimer-token');
         config()->set('hub.paperless.retry.times', 1);
         config()->set('hub.paperless.object_number_field_id', 7);
+        config()->set('hub.paperless.company_field_id', 5);
+        config()->set('hub.paperless.company_options', [
+            '4WSfEGQWkgqHgXaO' => 'HVM',
+            'Xu9WRpfjgvf9ULDe' => 'MHAG',
+        ]);
     }
 
     private function provider(): PaperlessProvider
@@ -58,7 +63,7 @@ final class PaperlessProviderTest extends TestCase
                 'results' => [[
                     'id' => 42, 'title' => 'Nebenkostenabrechnung 2025', 'correspondent' => 'Verwaltung',
                     'document_type' => 'Abrechnung', 'created' => '2026-03-01T10:00:00Z', 'tags' => ['abrechnung'],
-                    'custom_fields' => [['field' => 7, 'value' => 'OBJ-0001']],
+                    'custom_fields' => [['field' => 7, 'value' => 'OBJ-0001'], ['field' => 5, 'value' => '4WSfEGQWkgqHgXaO']],
                 ]],
             ]),
         ]);
@@ -68,6 +73,7 @@ final class PaperlessProviderTest extends TestCase
         $this->assertSame(1, $result['count']);
         $this->assertFalse($result['next']);
         $this->assertSame('OBJ-0001', $result['documents'][0]['object_number']);
+        $this->assertSame('HVM', $result['documents'][0]['company']);
         $this->assertSame('Nebenkostenabrechnung 2025', $result['documents'][0]['title']);
 
         Http::assertSent(function (Request $request): bool {
@@ -100,6 +106,47 @@ final class PaperlessProviderTest extends TestCase
         $this->assertSame(['documents' => [], 'count' => 0, 'next' => false], $result);
     }
 
+    public function test_for_property_combines_object_number_and_company_with_and(): void
+    {
+        Http::fake([
+            'https://paperless.muellerhv.de/api/documents/*' => Http::response(['count' => 0, 'next' => null, 'results' => []]),
+        ]);
+
+        $this->provider()->forProperty('OBJ-0001', ['company' => 'HVM']);
+
+        Http::assertSent(function (Request $request): bool {
+            parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+            $decoded = json_decode((string) $query['custom_field_query'], true);
+
+            return $decoded[0] === 'AND'
+                && $decoded[1][0] === [7, 'exact', 'OBJ-0001']
+                && $decoded[1][1] === [5, 'exact', '4WSfEGQWkgqHgXaO'];
+        });
+    }
+
+    public function test_search_filters_by_company_and_unknown_label_is_ignored(): void
+    {
+        Http::fake([
+            'https://paperless.muellerhv.de/api/documents/*' => Http::response(['count' => 0, 'next' => null, 'results' => []]),
+        ]);
+
+        $this->provider()->search('Nebenkosten', ['company' => 'HVM']);
+
+        Http::assertSent(function (Request $request): bool {
+            parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+            return isset($query['custom_field_query']) && json_decode((string) $query['custom_field_query'], true) === [5, 'exact', '4WSfEGQWkgqHgXaO'];
+        });
+
+        $this->provider()->search('Nebenkosten', ['company' => 'Unbekannt']);
+
+        Http::assertSent(function (Request $request): bool {
+            parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+            return ! isset($query['custom_field_query']);
+        });
+    }
+
     public function test_upload_is_blocked_without_write_flag(): void
     {
         config()->set('hub.mail.flags.paperless_write', false);
@@ -116,12 +163,18 @@ final class PaperlessProviderTest extends TestCase
             'https://paperless.muellerhv.de/api/documents/post_document/' => Http::response('"3fa85f64-5717-4562-b3fc-2c963f66afa6"'),
         ]);
 
-        $taskId = $this->provider()->upload('beleg.pdf', 'Inhalt', 'application/pdf', 'Beleg Handwerker', 'OBJ-0001');
+        $taskId = $this->provider()->upload('beleg.pdf', 'Inhalt', 'application/pdf', 'Beleg Handwerker', 'OBJ-0001', 'HVM');
 
         $this->assertSame('3fa85f64-5717-4562-b3fc-2c963f66afa6', $taskId);
 
         Http::assertSent(function (Request $request): bool {
-            return str_contains($request->url(), 'post_document') && $request->isMultipart();
+            if (! str_contains($request->url(), 'post_document') || ! $request->isMultipart()) {
+                return false;
+            }
+
+            $expected = json_encode([['field' => 7, 'value' => 'OBJ-0001'], ['field' => 5, 'value' => '4WSfEGQWkgqHgXaO']], JSON_THROW_ON_ERROR);
+
+            return str_contains($request->body(), $expected);
         });
     }
 

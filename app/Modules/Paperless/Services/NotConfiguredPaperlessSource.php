@@ -27,7 +27,7 @@ final class NotConfiguredPaperlessSource implements PaperlessSourceInterface
         throw MailIntegrationNotConfiguredException::for('paperless');
     }
 
-    public function upload(string $filename, string $content, string $mimeType, string $title, ?string $objectNumber = null): string
+    public function upload(string $filename, string $content, string $mimeType, string $title, ?string $objectNumber = null, ?string $company = null): string
     {
         throw MailIntegrationNotConfiguredException::for('paperless');
     }

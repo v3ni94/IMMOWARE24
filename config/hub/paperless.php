@@ -37,6 +37,22 @@ return [
      */
     'object_number_field_id' => env('MAIL_PAPERLESS_OBJECT_NUMBER_FIELD_ID'),
 
+    /*
+     * Zusatzfeld "Gesellschaft" (data_type select), trennt Dokumente nach der handelnden Gesellschaft der Gruppe
+     * (Hausverwaltung Müller GmbH, Müller Holding AG, TMREV GmbH, Sonstige). Paperless speichert je Dokument nur die
+     * Options-ID, nicht das Label, daher die Zuordnung Options-ID zu Label in company_options. Am eigenen Server
+     * (dms.muellerhv.de, Stand 24.09.2026) per /api/custom_fields/ ermittelt, Feld-ID 5. Ändert sich die Auswahl in
+     * Paperless, sind auch diese Options-IDs neu zu ermitteln.
+     */
+    'company_field_id' => env('MAIL_PAPERLESS_COMPANY_FIELD_ID'),
+
+    'company_options' => [
+        '4WSfEGQWkgqHgXaO' => 'HVM',
+        'Xu9WRpfjgvf9ULDe' => 'MHAG',
+        'XSTnxr7YfHlfzXYM' => 'TMREV',
+        'o74Z9KVLPYshG5J1' => 'Sonstige',
+    ],
+
     // Textauszug für Suche und KI-Kontext (content-Feld des Dokuments, von Paperless per OCR bereits erzeugt).
     'excerpt' => [
         'max_chars' => (int) env('MAIL_PAPERLESS_EXCERPT_MAX_CHARS', 4000),

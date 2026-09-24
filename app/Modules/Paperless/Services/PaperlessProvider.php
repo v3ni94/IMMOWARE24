@@ -42,6 +42,12 @@ final class PaperlessProvider implements PaperlessSourceInterface
         $this->guard();
 
         $params = ['query' => $query];
+        $companyQuery = $this->companyCondition($options);
+
+        if ($companyQuery !== null) {
+            $params['custom_field_query'] = $companyQuery;
+        }
+
         $params += $this->pagination($options);
 
         return $this->mapList($this->client->listDocuments($params));
@@ -71,13 +77,20 @@ final class PaperlessProvider implements PaperlessSourceInterface
 
         // Filterparameter für Zusatzfelder sind je Paperless-Version unterschiedlich benannt (custom_field_query
         // oder custom_fields__icontains), am eigenen Server zu prüfen. Hier der dokumentierte Query-Ausdruck.
-        $params = ['custom_field_query' => sprintf('["%s", "exact", "%s"]', (int) $fieldId, $objectNumber)];
+        $conditions = [[(int) $fieldId, 'exact', $objectNumber]];
+        $companyId = $this->companyOptionId($options['company'] ?? null);
+
+        if ($companyId !== null) {
+            $conditions[] = [(int) $this->config->get('hub.paperless.company_field_id'), 'exact', $companyId];
+        }
+
+        $params = ['custom_field_query' => $this->encodeCustomFieldQuery($conditions)];
         $params += $this->pagination($options);
 
         return $this->mapList($this->client->listDocuments($params));
     }
 
-    public function upload(string $filename, string $content, string $mimeType, string $title, ?string $objectNumber = null): string
+    public function upload(string $filename, string $content, string $mimeType, string $title, ?string $objectNumber = null, ?string $company = null): string
     {
         $this->guard();
 
@@ -92,7 +105,59 @@ final class PaperlessProvider implements PaperlessSourceInterface
             $customFields[] = ['field' => (int) $fieldId, 'value' => $objectNumber];
         }
 
+        $companyId = $this->companyOptionId($company);
+        $companyFieldId = $this->config->get('hub.paperless.company_field_id');
+
+        if ($companyId !== null && is_numeric($companyFieldId)) {
+            $customFields[] = ['field' => (int) $companyFieldId, 'value' => $companyId];
+        }
+
         return $this->client->uploadDocument($filename, $content, $mimeType, $title, $customFields);
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    private function companyCondition(array $options): ?string
+    {
+        $companyId = $this->companyOptionId($options['company'] ?? null);
+        $fieldId = $this->config->get('hub.paperless.company_field_id');
+
+        if ($companyId === null || ! is_numeric($fieldId)) {
+            return null;
+        }
+
+        return $this->encodeCustomFieldQuery([[(int) $fieldId, 'exact', $companyId]]);
+    }
+
+    /**
+     * Bildet ein Gesellschafts-Label (z. B. "HVM") auf die in Paperless hinterlegte Options-ID ab.
+     */
+    private function companyOptionId(mixed $companyLabel): ?string
+    {
+        if (! is_string($companyLabel) || trim($companyLabel) === '') {
+            return null;
+        }
+
+        foreach ((array) $this->config->get('hub.paperless.company_options', []) as $optionId => $label) {
+            if (strcasecmp((string) $label, $companyLabel) === 0) {
+                return (string) $optionId;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<int, array{0: int, 1: string, 2: string}>  $conditions
+     */
+    private function encodeCustomFieldQuery(array $conditions): string
+    {
+        if (count($conditions) === 1) {
+            return json_encode($conditions[0], JSON_THROW_ON_ERROR);
+        }
+
+        return json_encode(['AND', $conditions], JSON_THROW_ON_ERROR);
     }
 
     /**
@@ -114,7 +179,7 @@ final class PaperlessProvider implements PaperlessSourceInterface
 
     /**
      * @param  array<string, mixed>  $json
-     * @return array{documents: array<int, array{id: int, title: string, correspondent: ?string, document_type: ?string, created: ?string, tags: array<int, string>, object_number: ?string}>, count: int, next: bool}
+     * @return array{documents: array<int, array{id: int, title: string, correspondent: ?string, document_type: ?string, created: ?string, tags: array<int, string>, object_number: ?string, company: ?string}>, count: int, next: bool}
      */
     private function mapList(array $json): array
     {
@@ -135,7 +200,7 @@ final class PaperlessProvider implements PaperlessSourceInterface
 
     /**
      * @param  array<string, mixed>  $document
-     * @return array{id: int, title: string, correspondent: ?string, document_type: ?string, created: ?string, tags: array<int, string>, object_number: ?string}
+     * @return array{id: int, title: string, correspondent: ?string, document_type: ?string, created: ?string, tags: array<int, string>, object_number: ?string, company: ?string}
      */
     private function mapDocument(array $document): array
     {
@@ -146,17 +211,16 @@ final class PaperlessProvider implements PaperlessSourceInterface
             'document_type' => isset($document['document_type']) ? (string) $document['document_type'] : null,
             'created' => isset($document['created']) ? (string) $document['created'] : null,
             'tags' => array_map('strval', (array) ($document['tags'] ?? [])),
-            'object_number' => $this->objectNumberFromCustomFields($document),
+            'object_number' => $this->customFieldValue($document, $this->config->get('hub.paperless.object_number_field_id')),
+            'company' => $this->companyLabel($document),
         ];
     }
 
     /**
      * @param  array<string, mixed>  $document
      */
-    private function objectNumberFromCustomFields(array $document): ?string
+    private function customFieldValue(array $document, mixed $fieldId): ?string
     {
-        $fieldId = $this->config->get('hub.paperless.object_number_field_id');
-
         if (! is_numeric($fieldId)) {
             return null;
         }
@@ -168,6 +232,22 @@ final class PaperlessProvider implements PaperlessSourceInterface
         }
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $document
+     */
+    private function companyLabel(array $document): ?string
+    {
+        $optionId = $this->customFieldValue($document, $this->config->get('hub.paperless.company_field_id'));
+
+        if ($optionId === null) {
+            return null;
+        }
+
+        $options = (array) $this->config->get('hub.paperless.company_options', []);
+
+        return isset($options[$optionId]) ? (string) $options[$optionId] : null;
     }
 
     /**
